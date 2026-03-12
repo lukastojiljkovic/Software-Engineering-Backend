@@ -9,6 +9,7 @@ import java.util.Set;
 public class UpdateEmployeeRequestDto {
     private String firstName;
     private String lastName;
+    private String email;
     private LocalDate dateOfBirth;
     private String gender;
     private String phone;

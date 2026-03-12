@@ -3,6 +3,7 @@ package rs.raf.banka2_bek.notification.service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
+import rs.raf.banka2_bek.notification.template.ActivationConfirmedEmailTemplate;
 import rs.raf.banka2_bek.notification.template.ActivationEmailTemplate;
 import rs.raf.banka2_bek.notification.template.PasswordResetEmailTemplate;
 
@@ -17,10 +18,12 @@ public class MailNotificationService {
     private final String activationPagePath;
     private final PasswordResetEmailTemplate passwordResetEmailTemplate;
     private final ActivationEmailTemplate activationEmailTemplate;
+    private final ActivationConfirmedEmailTemplate activationConfirmedEmailTemplate;
 
     public MailNotificationService(JavaMailSender mailSender,
                                    PasswordResetEmailTemplate passwordResetEmailTemplate,
                                    ActivationEmailTemplate activationEmailTemplate,
+                                   ActivationConfirmedEmailTemplate activationConfirmedEmailTemplate,
                                    @Value("${spring.mail.username}") String fromAddress,
                                    @Value("${notification.password-reset-url-base}") String passwordResetUrlBase,
                                    @Value("${notification.password-reset-page-path:/reset-password}") String passwordResetPagePath,
@@ -29,6 +32,7 @@ public class MailNotificationService {
         this.mailSender = mailSender;
         this.passwordResetEmailTemplate = passwordResetEmailTemplate;
         this.activationEmailTemplate = activationEmailTemplate;
+        this.activationConfirmedEmailTemplate = activationConfirmedEmailTemplate;
         this.fromAddress = fromAddress;
         this.passwordResetUrlBase = passwordResetUrlBase;
         this.passwordResetPagePath = passwordResetPagePath;
@@ -48,6 +52,13 @@ public class MailNotificationService {
         String activationLink = activationUrlBase + activationPagePath + "?token=" + token;
         String subject = activationEmailTemplate.buildSubject();
         String html = activationEmailTemplate.buildBody(activationLink, firstName);
+
+        HtmlMailSender.sendHtmlMail(mailSender, fromAddress, toEmail, subject, html);
+    }
+
+    public void sendActivationConfirmationMail(String toEmail, String firstName) {
+        String subject = activationConfirmedEmailTemplate.buildSubject();
+        String html = activationConfirmedEmailTemplate.buildBody(firstName);
 
         HtmlMailSender.sendHtmlMail(mailSender, fromAddress, toEmail, subject, html);
     }

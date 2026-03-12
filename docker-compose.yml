@@ -40,5 +40,28 @@ services:
       db:
         condition: service_healthy
 
+  # Seed data — ceka backend da kreira tabele pa ubaci podatke
+  seed:
+    image: mysql:8.0
+    container_name: banka2_seed
+    volumes:
+      - ./seed.sql:/seed.sql:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo 'Cekam da backend kreira tabele...'
+        sleep 25
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          mysql -h db -u banka2user -pbanka2pass banka2 -e 'SHOW TABLES LIKE "users"' 2>/dev/null | grep -q users && break
+          echo "Pokusaj $$i - tabele jos nisu kreirane, cekam..."
+          sleep 10
+        done
+        echo 'Ubacujem seed podatke...'
+        mysql -h db -u banka2user -pbanka2pass banka2 < /seed.sql
+        echo 'Seed uspesno ubasen!'
+    depends_on:
+      - backend
+
 volumes:
   mysql_data:

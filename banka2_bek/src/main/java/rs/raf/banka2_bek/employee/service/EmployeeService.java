@@ -21,6 +21,15 @@ public interface EmployeeService {
     EmployeeResponseDto createEmployee(CreateEmployeeRequestDto request);
 
     /**
+     * Returns a single employee by ID.
+     *
+     * @param id employee ID
+     * @return employee response DTO
+     * @throws IllegalArgumentException if employee not found
+     */
+    EmployeeResponseDto getEmployeeById(Long id);
+
+    /**
      * Returns a paginated list of employees, optionally filtered by email, first name, last name, and position.
      *
      * @param page     zero-based page index

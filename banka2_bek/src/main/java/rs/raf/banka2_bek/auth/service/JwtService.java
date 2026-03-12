@@ -6,6 +6,7 @@ import io.jsonwebtoken.security.Keys;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 import rs.raf.banka2_bek.auth.model.User;
+import rs.raf.banka2_bek.employee.model.Employee;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
@@ -31,9 +32,33 @@ public class JwtService {
                 .compact();
     }
 
+    public String generateAccessToken(Employee employee) {
+        // Determine role based on permissions
+        String role = employee.getPermissions() != null && employee.getPermissions().contains("ADMIN") 
+                ? "ADMIN" : "EMPLOYEE";
+        return Jwts.builder()
+                .setSubject(employee.getEmail())
+                .claim("role", role)
+                .claim("active", employee.getActive())
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + ACCESS_TOKEN_EXPIRATION))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
     public String generateRefreshToken(User user) {
         return Jwts.builder()
                 .setSubject(user.getEmail())
+                .claim("type", "refresh")
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + REFRESH_TOKEN_EXPIRATION))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    public String generateRefreshToken(Employee employee) {
+        return Jwts.builder()
+                .setSubject(employee.getEmail())
                 .claim("type", "refresh")
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + REFRESH_TOKEN_EXPIRATION))

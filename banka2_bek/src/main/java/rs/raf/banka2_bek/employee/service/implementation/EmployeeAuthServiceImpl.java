@@ -1,6 +1,7 @@
 package rs.raf.banka2_bek.employee.service.implementation;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2_bek.employee.model.ActivationToken;
@@ -8,6 +9,7 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.employee.service.EmployeeAuthService;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 
 import java.time.LocalDateTime;
 
@@ -21,10 +23,12 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
 
     private final ActivationTokenRepository activationTokenRepository;
     private final EmployeeRepository employeeRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final MailNotificationService mailNotificationService;
 
     @Override
     @Transactional
-    public void activateAccount(String tokenValue) {
+    public void activateAccount(String tokenValue, String newPassword) {
         ActivationToken token = activationTokenRepository.findByToken(tokenValue)
                 .orElseThrow(() -> new IllegalArgumentException("Invalid activation token."));
 
@@ -42,6 +46,9 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
             throw new IllegalStateException("Account is already active.");
         }
 
+        // Set the new password (hashed with existing salt)
+        String salt = employee.getSaltPassword();
+        employee.setPassword(passwordEncoder.encode(newPassword + salt));
         employee.setActive(true);
 
         token.setUsed(true);
@@ -50,5 +57,7 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
 
         employeeRepository.save(employee);
         activationTokenRepository.save(token);
+
+        mailNotificationService.sendActivationConfirmationMail(employee.getEmail(), employee.getFirstName());
     }
 }

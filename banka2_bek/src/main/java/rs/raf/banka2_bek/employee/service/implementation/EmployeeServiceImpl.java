@@ -87,6 +87,12 @@ public class EmployeeServiceImpl implements EmployeeService {
         return response;
     }
 
+    public EmployeeResponseDto getEmployeeById(Long id) {
+        Employee employee = employeeRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Employee with ID " + id + " not found."));
+        return toResponse(employee);
+    }
+
     public Page<EmployeeResponseDto> getEmployees(int page, int limit, String email,
                                                    String firstName, String lastName, String position) {
         Pageable pageable = PageRequest.of(page, limit);
@@ -97,6 +103,17 @@ public class EmployeeServiceImpl implements EmployeeService {
     public EmployeeResponseDto updateEmployee(Long id, UpdateEmployeeRequestDto request) {
         Employee employee = employeeRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Employee with ID " + id + " not found."));
+
+        if (isAdminEmployee(employee)) {
+            throw new IllegalStateException("Admin employees cannot be edited.");
+        }
+
+        if (request.getEmail() != null) {
+            if (employeeRepository.existsByEmailAndIdNot(request.getEmail(), id)) {
+                throw new IllegalArgumentException("An employee with this email already exists.");
+            }
+            employee.setEmail(request.getEmail());
+        }
 
         if (request.getFirstName() != null) employee.setFirstName(request.getFirstName());
         if (request.getLastName() != null) employee.setLastName(request.getLastName());
@@ -116,6 +133,10 @@ public class EmployeeServiceImpl implements EmployeeService {
     public void deactivateEmployee(Long id) {
         Employee employee = employeeRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Employee with ID " + id + " not found."));
+
+        if (isAdminEmployee(employee)) {
+            throw new IllegalStateException("Admin employees cannot be deactivated.");
+        }
 
         if (!employee.getActive()) {
             throw new IllegalStateException("Account is already deactivated.");
@@ -147,5 +168,9 @@ public class EmployeeServiceImpl implements EmployeeService {
                 .active(employee.getActive())
                 .permissions(employee.getPermissions())
                 .build();
+    }
+
+    private boolean isAdminEmployee(Employee employee) {
+        return employee.getPermissions() != null && employee.getPermissions().contains("ADMIN");
     }
 }

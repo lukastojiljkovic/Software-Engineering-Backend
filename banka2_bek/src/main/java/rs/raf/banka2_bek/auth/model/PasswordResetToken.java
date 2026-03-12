@@ -3,6 +3,7 @@ package rs.raf.banka2_bek.auth.model;
 import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
+import rs.raf.banka2_bek.employee.model.Employee;
 
 @Entity
 @Table(name = "password_reset_tokens")
@@ -15,9 +16,13 @@ public class PasswordResetToken {
     @Column(nullable = false, unique = true, length = 255)
     private String token;
 
-    @ManyToOne(optional = false, fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "employee_id")
+    private Employee employee;
 
     @Column(nullable = false)
     private LocalDateTime expiresAt;
@@ -35,6 +40,13 @@ public class PasswordResetToken {
         this.used = used;
     }
 
+    public PasswordResetToken(String token, Employee employee, LocalDateTime expiresAt, Boolean used) {
+        this.token = token;
+        this.employee = employee;
+        this.expiresAt = expiresAt;
+        this.used = used;
+    }
+
     public Long getId() {
         return id;
     }
@@ -45,6 +57,10 @@ public class PasswordResetToken {
 
     public User getUser() {
         return user;
+    }
+
+    public Employee getEmployee() {
+        return employee;
     }
 
     public LocalDateTime getExpiresAt() {
@@ -65,6 +81,10 @@ public class PasswordResetToken {
 
     public void setUser(User user) {
         this.user = user;
+    }
+
+    public void setEmployee(Employee employee) {
+        this.employee = employee;
     }
 
     public void setExpiresAt(LocalDateTime expiresAt) {

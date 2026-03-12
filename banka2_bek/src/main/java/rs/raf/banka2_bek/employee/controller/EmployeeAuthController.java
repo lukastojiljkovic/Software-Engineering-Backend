@@ -26,14 +26,14 @@ public class EmployeeAuthController {
 
     private final EmployeeAuthService employeeAuthService;
 
-    @Operation(summary = "Activate account", description = "Activates an employee account using the token sent by email. Token is single-use and time-limited (24h).")
+    @Operation(summary = "Activate account", description = "Activates an employee account using the token sent by email and sets the user's password. Token is single-use and time-limited (24h).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Account activated successfully"),
             @ApiResponse(responseCode = "400", description = "Invalid, expired or already used token")
     })
     @PostMapping("/activate")
     public ResponseEntity<Map<String, String>> activate(@Valid @RequestBody ActivateAccountRequestDto request) {
-        employeeAuthService.activateAccount(request.getToken());
+        employeeAuthService.activateAccount(request.getToken(), request.getPassword());
         return ResponseEntity.ok(Map.of("message", "Account activated successfully"));
     }
 }

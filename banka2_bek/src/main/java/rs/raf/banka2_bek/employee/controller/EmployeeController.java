@@ -49,6 +49,17 @@ public class EmployeeController {
         return ResponseEntity.ok(employeeService.getEmployees(page, limit, email, firstName, lastName, position));
     }
 
+    @Operation(summary = "Get employee by ID", description = "Returns a single employee by their ID.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Employee found", content = @Content(schema = @Schema(implementation = EmployeeResponseDto.class))),
+            @ApiResponse(responseCode = "404", description = "Employee not found")
+    })
+    @GetMapping("/{id}")
+    public ResponseEntity<EmployeeResponseDto> getEmployeeById(
+            @Parameter(description = "Employee ID") @PathVariable Long id) {
+        return ResponseEntity.ok(employeeService.getEmployeeById(id));
+    }
+
     @Operation(summary = "Update employee", description = "Updates an existing employee by ID. Only provided fields are updated.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Updated employee", content = @Content(schema = @Schema(implementation = EmployeeResponseDto.class))),

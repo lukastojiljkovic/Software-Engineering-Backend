@@ -7,11 +7,17 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import rs.raf.banka2_bek.employee.model.Employee;
 
+import java.util.Optional;
+
 public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
     boolean existsByEmail(String email);
 
+        boolean existsByEmailAndIdNot(String email, Long id);
+
     boolean existsByUsername(String username);
+
+    Optional<Employee> findByEmail(String email);
 
     @Query("SELECT e FROM Employee e WHERE " +
             "(:email IS NULL OR LOWER(e.email) LIKE LOWER(CONCAT('%', :email, '%'))) AND " +
