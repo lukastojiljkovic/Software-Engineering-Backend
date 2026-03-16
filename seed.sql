@@ -86,6 +86,18 @@ VALUES
    'Supervisor', 'Operations', 0)
 ON DUPLICATE KEY UPDATE email = email;
 
+-- ============================================================
+-- CURRENCIES (valute koje banka podrzava)
+-- ============================================================
+INSERT INTO currencies (id, code, name, symbol, country, description, active) VALUES
+(1, 'EUR', 'Euro', '€', 'European Union', 'Euro – official currency of the Eurozone', true),
+(2, 'CHF', 'Swiss Franc', 'CHF', 'Switzerland', 'Swiss Franc – currency of Switzerland', true),
+(3, 'USD', 'US Dollar', '$', 'United States', 'US Dollar – currency of the United States', true),
+(4, 'GBP', 'British Pound', '£', 'United Kingdom', 'British Pound – currency of the UK', true),
+(5, 'JPY', 'Japanese Yen', '¥', 'Japan', 'Japanese Yen – currency of Japan', true),
+(6, 'CAD', 'Canadian Dollar', '$', 'Canada', 'Canadian Dollar – currency of Canada', true),
+(7, 'AUD', 'Australian Dollar', '$', 'Australia', 'Australian Dollar – currency of Australia', true),
+(8, 'RSD', 'Serbian Dinar', 'RSD', 'Serbia', 'Serbian Dinar – currency of Serbia', true);
 
 -- ============================================================
 -- EMPLOYEE PERMISSIONS
