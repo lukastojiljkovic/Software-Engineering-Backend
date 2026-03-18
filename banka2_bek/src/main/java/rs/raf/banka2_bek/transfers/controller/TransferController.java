@@ -29,7 +29,7 @@ public class TransferController {
 
     @GetMapping
     public ResponseEntity<List<TransferResponseDto>> getAllTransfers() {
-        return ResponseEntity.ok(transferService.getAllTransfers(null));
+        return ResponseEntity.ok(transferService.getAllTransfers(null)); // zameniti null sa client
     }
 
     @GetMapping("/{transferId}")
