@@ -146,31 +146,56 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public Page<OrderDto> getAllOrders(String status, int page, int size) {
-        // TODO: Implementirati
-        // 1. Ako je status "ALL" ili null, dohvatiti sve ordere
-        // 2. Inace, filtrirati po statusu (PENDING, APPROVED, DECLINED, DONE)
-        // 3. Sortirati po createdAt DESC
-        // 4. Mapirati u OrderDto
-        throw new UnsupportedOperationException("TODO: Implementirati getAllOrders");
+        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+
+        if (status == null || status.isBlank() || status.equalsIgnoreCase("ALL")) {
+            return orderRepository.findAll(pageable).map(OrderMapper::toDto);
+        }
+
+        OrderStatus orderStatus;
+        try {
+            orderStatus = OrderStatus.valueOf(status.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid status: " + status +
+                    ". Valid status: ALL, PENDING, APPROVED, DECLINED, DONE");
+        }
+
+        return orderRepository.findByStatus(orderStatus, pageable).map(OrderMapper::toDto);
     }
 
     @Override
     public Page<OrderDto> getMyOrders(int page, int size) {
-        // TODO: Implementirati
-        // 1. Dohvatiti email iz SecurityContext
-        // 2. Naci userId na osnovu emaila
-        // 3. Dohvatiti ordere za tog korisnika
-        // 4. Mapirati u OrderDto
-        throw new UnsupportedOperationException("TODO: Implementirati getMyOrders");
-    }
+        String email = SecurityContextHolder.getContext().getAuthentication().getName();
+        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
 
+        Optional<Client> clientOpt = clientRepository.findByEmail(email);
+        if (clientOpt.isPresent()) {
+            return orderRepository.findByUserId(clientOpt.get().getId(), pageable).map(OrderMapper::toDto);
+        }
+
+        Employee employee = employeeRepository.findByEmail(email)
+                .orElseThrow(() -> new EntityNotFoundException("User not found"));
+        return orderRepository.findByUserId(employee.getId(), pageable).map(OrderMapper::toDto);
+    }
     @Override
     public OrderDto getOrderById(Long orderId) {
-        // TODO: Implementirati
-        // 1. Naci order po ID-ju
-        // 2. Proveriti da korisnik ima pristup (svoj order ili supervizor)
-        // 3. Mapirati u OrderDto
-        throw new UnsupportedOperationException("TODO: Implementirati getOrderById");
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new EntityNotFoundException("Order with ID " + orderId + " not found"));
+
+        boolean isSupervisor = SecurityContextHolder.getContext().getAuthentication()
+                .getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+
+        if (isSupervisor) {
+            return OrderMapper.toDto(order);
+        }
+
+        Long currentUserId = resolveCurrentUser().userId();
+        if (!order.getUserId().equals(currentUserId)) {
+            throw new IllegalStateException("You dont have access to this account");
+        }
+
+        return OrderMapper.toDto(order);
     }
 
     private UserContext resolveCurrentUser() {
