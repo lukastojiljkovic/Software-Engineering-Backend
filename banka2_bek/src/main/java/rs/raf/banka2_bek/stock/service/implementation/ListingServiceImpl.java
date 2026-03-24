@@ -2,7 +2,6 @@ package rs.raf.banka2_bek.stock.service.implementation;
 
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.apache.coyote.BadRequestException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -22,7 +21,6 @@ import rs.raf.banka2_bek.stock.service.ListingService;
 
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 @Service
@@ -96,7 +94,7 @@ public class ListingServiceImpl implements ListingService {
 
         else if ("MONTH".equalsIgnoreCase(period))
             dailyPrices = dailyPriceRepository.findByListingIdAndDateAfterOrderByDateDesc(
-                    listingId, now.minusMonths(1)
+                    listingId, now.minusDays(30)
             );
 
         else if ("YEAR".equalsIgnoreCase(period))

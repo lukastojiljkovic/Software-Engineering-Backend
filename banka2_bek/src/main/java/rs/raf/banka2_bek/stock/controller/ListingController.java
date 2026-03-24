@@ -6,7 +6,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
@@ -45,10 +44,13 @@ public class ListingController {
     }
 
 
-    @Operation(summary = "Get listing by ID")
+    @Operation(summary = "Get listing by ID",
+               description = "Vraca detaljan prikaz jedne hartije sa svim osnovnim i izvedenim podacima (changePercent, maintenanceMargin, initialMarginCost, marketCap). Klijenti ne mogu da pristupe FOREX hartijama.")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Hartija pronadjena"),
-            @ApiResponse(responseCode = "404", description = "Hartija nije pronadjena",
+            @ApiResponse(responseCode = "200", description = "Hartija uspesno pronadjena"),
+            @ApiResponse(responseCode = "403", description = "Klijent pokusao da pristupi FOREX hartiji, message: \"Klijenti nemaju pristup FOREX hartijama.\"",
+                    content = @Content(schema = @Schema(implementation = MessageResponseDto.class))),
+            @ApiResponse(responseCode = "404", description = "Hartija sa datim ID-jem ne postoji",
                     content = @Content(schema = @Schema(implementation = MessageResponseDto.class)))
     })
     @GetMapping("/{id}")
@@ -57,10 +59,14 @@ public class ListingController {
     }
 
     @Operation(summary = "Get price history for a listing",
-               description = "Vraca istorijske dnevne cene za grafik. Parametar period: DAY, WEEK, MONTH, YEAR, FIVE_YEARS, ALL")
+               description = "Vraca istorijske dnevne cene za grafik. Podrzani periodi: DAY (danas), WEEK (7 dana), MONTH (30 dana), YEAR (365 dana), FIVE_YEARS (5 godina), ALL (svi dostupni podaci). Klijenti ne mogu da pristupe FOREX istoriji.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Istorija cena uspesno vracena"),
-            @ApiResponse(responseCode = "404", description = "Hartija nije pronadjena",
+            @ApiResponse(responseCode = "400", description = "Nepoznat period, message: \"Period može biti: DAY, WEEK, MONTH, YEAR, FIVE_YEARS, ALL\"",
+                    content = @Content(schema = @Schema(implementation = MessageResponseDto.class))),
+            @ApiResponse(responseCode = "403", description = "Klijent pokusao da pristupi FOREX istoriji, message: \"Klijenti nemaju pristup FOREX hartijama.\"",
+                    content = @Content(schema = @Schema(implementation = MessageResponseDto.class))),
+            @ApiResponse(responseCode = "404", description = "Hartija sa datim ID-jem ne postoji",
                     content = @Content(schema = @Schema(implementation = MessageResponseDto.class)))
     })
     @GetMapping("/{id}/history")
