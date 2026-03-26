@@ -109,7 +109,7 @@ class ExchangeServiceTest {
     }
 
     @Test
-    void shouldReturnEmptyListWhenBodyIsNull() {
+    void shouldReturnFallbackRatesWhenBodyIsNull() {
         String expectedUrl =
                 "https://data.fixer.io/api/latest?access_key=test-key&symbols=RSD,EUR,CHF,USD,GBP,JPY,CAD,AUD";
 
@@ -119,7 +119,8 @@ class ExchangeServiceTest {
         List<ExchangeRateDto> result = exchangeService.getAllRates();
 
         assertNotNull(result);
-        assertTrue(result.isEmpty());
+        assertFalse(result.isEmpty());
+        assertEquals(8, result.size());
     }
 
     @Test
@@ -143,7 +144,7 @@ class ExchangeServiceTest {
         assertEquals("RSD rate not found.", ex.getMessage());
     }
     @Test
-    void shouldReturnEmptyListWhenRatesMissing() {
+    void shouldReturnFallbackRatesWhenRatesMissing() {
         Map<String, Object> body = new HashMap<>();
         body.put("success", true);
 
@@ -156,7 +157,8 @@ class ExchangeServiceTest {
         List<ExchangeRateDto> result = exchangeService.getAllRates();
 
         assertNotNull(result);
-        assertTrue(result.isEmpty());
+        assertFalse(result.isEmpty());
+        assertEquals(8, result.size());
     }
 
     //======================================

@@ -327,19 +327,24 @@ class PaymentServiceImplTest {
 
         assertThatThrownBy(() -> paymentService.createPayment(request))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Daily transfer limit exceeded");
+                .hasMessageContaining("Prekoracen dnevni limit");
     }
 
     @Test
-    void createPayment_throwsWhenDailyLimitMissing() {
+    void createPayment_succeedsWhenDailyLimitMissing() {
         fromAccount.setDailyLimit(null);
 
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getFromAccount())).thenReturn(Optional.of(fromAccount));
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getToAccount())).thenReturn(Optional.of(toAccount));
+        when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            p.setId(1L);
+            p.setCreatedAt(java.time.LocalDateTime.now());
+            return p;
+        });
 
-        assertThatThrownBy(() -> paymentService.createPayment(request))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Daily transfer limit exceeded");
+        PaymentResponseDto response = paymentService.createPayment(request);
+        assertThat(response.getId()).isEqualTo(1L);
     }
 
     @Test
@@ -351,19 +356,24 @@ class PaymentServiceImplTest {
 
         assertThatThrownBy(() -> paymentService.createPayment(request))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Monthly transfer limit exceeded");
+                .hasMessageContaining("Prekoracen mesecni limit");
     }
 
     @Test
-    void createPayment_throwsWhenMonthlyLimitMissing() {
+    void createPayment_succeedsWhenMonthlyLimitMissing() {
         fromAccount.setMonthlyLimit(null);
 
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getFromAccount())).thenReturn(Optional.of(fromAccount));
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getToAccount())).thenReturn(Optional.of(toAccount));
+        when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            p.setId(1L);
+            p.setCreatedAt(java.time.LocalDateTime.now());
+            return p;
+        });
 
-        assertThatThrownBy(() -> paymentService.createPayment(request))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Monthly transfer limit exceeded");
+        PaymentResponseDto response = paymentService.createPayment(request);
+        assertThat(response.getId()).isEqualTo(1L);
     }
 
     @Test
@@ -375,7 +385,7 @@ class PaymentServiceImplTest {
 
         assertThatThrownBy(() -> paymentService.createPayment(request))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Insufficient funds");
+                .hasMessageContaining("Nedovoljno sredstava");
     }
 
     @Test
@@ -387,7 +397,7 @@ class PaymentServiceImplTest {
 
         assertThatThrownBy(() -> paymentService.createPayment(request))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Insufficient funds");
+                .hasMessageContaining("Nedovoljno sredstava");
     }
 
     @Test

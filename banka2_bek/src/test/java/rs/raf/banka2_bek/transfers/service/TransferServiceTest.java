@@ -1,14 +1,19 @@
 package rs.raf.banka2_bek.transfers.service;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.model.AccountStatus;
 import rs.raf.banka2_bek.client.model.Client;
+import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.exchange.ExchangeService;
 import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
@@ -28,6 +33,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 
@@ -43,6 +49,9 @@ public class TransferServiceTest {
     @Mock
     private ExchangeService exchangeService;
 
+    @Mock
+    private ClientRepository clientRepository;
+
     @InjectMocks
     private TransferService transferService;
 
@@ -51,6 +60,17 @@ public class TransferServiceTest {
     private Client client;
     private Currency currency;
     private Currency eurCurrency;
+
+    private void authenticateAs(String email) {
+        org.springframework.security.core.userdetails.User principal =
+                new org.springframework.security.core.userdetails.User(
+                        email, "x",
+                        List.of(new SimpleGrantedAuthority("ROLE_CLIENT"))
+                );
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities())
+        );
+    }
 
     @BeforeEach
     void setUp() {
@@ -62,6 +82,7 @@ public class TransferServiceTest {
         client.setId(1L);
         client.setFirstName("Milica");
         client.setLastName("Zoranovic");
+        client.setEmail("milica@test.com");
 
         fromAccount = new Account();
         fromAccount.setAccountNumber("111111111111111111");
@@ -82,15 +103,20 @@ public class TransferServiceTest {
         eurCurrency = new Currency();
         eurCurrency.setId(2L);
         eurCurrency.setCode("EUR");
+
+        authenticateAs("milica@test.com");
+        lenient().when(clientRepository.findByEmail("milica@test.com")).thenReturn(Optional.of(client));
     }
 
-
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void internalTransferSucceeds() {
         when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
         when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
-        //when(transferRepository.save(any(Transfer.class))).thenAnswer(inv -> inv.getArgument(0));
         when(transferRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
@@ -126,10 +152,10 @@ public class TransferServiceTest {
 
     @Test
     void internalTransferFailsWhenDifferentCurrency() {
-        Currency eurCurrency = new Currency();
-        eurCurrency.setId(2L);
-        eurCurrency.setCode("EUR");
-        toAccount.setCurrency(eurCurrency);
+        Currency eurCurrencyLocal = new Currency();
+        eurCurrencyLocal.setId(2L);
+        eurCurrencyLocal.setCode("EUR");
+        toAccount.setCurrency(eurCurrencyLocal);
 
         when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
         when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
@@ -179,7 +205,7 @@ public class TransferServiceTest {
 
         assertThatThrownBy(() -> transferService.internalTransfer(request))
                 .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("Accounts must belong to the same client");
+                .hasMessageContaining("do not have access");
     }
 
     @Test
@@ -195,12 +221,15 @@ public class TransferServiceTest {
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Accounts must be different");
     }
+
     @Test
     void getTransferByIdSucceeds() {
         Transfer transfer = new Transfer();
         transfer.setFromAccount(fromAccount);
         transfer.setToAccount(toAccount);
         transfer.setFromAmount(new BigDecimal("1000"));
+        transfer.setFromCurrency(currency);
+        transfer.setToCurrency(currency);
         transfer.setExchangeRate(null);
         transfer.setCommission(BigDecimal.ZERO);
         transfer.setStatus(PaymentStatus.COMPLETED);
@@ -222,8 +251,6 @@ public class TransferServiceTest {
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Transfer not found");
     }
-
-
 
     @Test
     void fxTransferSucceeds() {
@@ -300,6 +327,7 @@ public class TransferServiceTest {
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Source account is not active");
     }
+
     @Test
     void fxTransferFailsWhenSameAccount() {
         when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
@@ -313,12 +341,15 @@ public class TransferServiceTest {
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Accounts must be different");
     }
+
     @Test
     void getAllTransfersSucceeds() {
         Transfer transfer1 = new Transfer();
         transfer1.setFromAccount(fromAccount);
         transfer1.setToAccount(toAccount);
         transfer1.setFromAmount(new BigDecimal("1000"));
+        transfer1.setFromCurrency(currency);
+        transfer1.setToCurrency(currency);
         transfer1.setExchangeRate(null);
         transfer1.setCommission(BigDecimal.ZERO);
         transfer1.setStatus(PaymentStatus.COMPLETED);
@@ -328,6 +359,8 @@ public class TransferServiceTest {
         transfer2.setFromAccount(fromAccount);
         transfer2.setToAccount(toAccount);
         transfer2.setFromAmount(new BigDecimal("2000"));
+        transfer2.setFromCurrency(currency);
+        transfer2.setToCurrency(currency);
         transfer2.setExchangeRate(null);
         transfer2.setCommission(BigDecimal.ZERO);
         transfer2.setStatus(PaymentStatus.COMPLETED);
