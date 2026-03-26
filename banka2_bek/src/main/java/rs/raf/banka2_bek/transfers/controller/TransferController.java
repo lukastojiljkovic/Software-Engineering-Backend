@@ -48,10 +48,14 @@ public class TransferController {
     }
 
     @GetMapping
-    public ResponseEntity<List<TransferResponseDto>> getAllTransfers() {
+    public ResponseEntity<List<TransferResponseDto>> getAllTransfers(
+            @RequestParam(required = false) String accountNumber,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate fromDate,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate toDate
+    ) {
         Client client = getOptionalClient();
         if (client == null) return ResponseEntity.ok(Collections.emptyList());
-        return ResponseEntity.ok(transferService.getAllTransfers(client));
+        return ResponseEntity.ok(transferService.getAllTransfers(client, accountNumber, fromDate, toDate));
     }
 
     @GetMapping("/{transferId}")

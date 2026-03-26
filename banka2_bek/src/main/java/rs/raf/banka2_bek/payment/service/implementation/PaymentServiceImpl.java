@@ -156,6 +156,7 @@ public class PaymentServiceImpl implements PaymentService {
             Pageable pageable,
             LocalDateTime fromDate,
             LocalDateTime toDate,
+            String accountNumber,
             BigDecimal minAmount,
             BigDecimal maxAmount,
             PaymentStatus status
@@ -166,6 +167,7 @@ public class PaymentServiceImpl implements PaymentService {
                         client.getId(),
                         fromDate,
                         toDate,
+                        accountNumber,
                         minAmount,
                         maxAmount,
                         status,

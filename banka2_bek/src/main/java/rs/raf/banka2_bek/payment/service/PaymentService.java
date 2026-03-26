@@ -17,13 +17,14 @@ public interface PaymentService {
     PaymentResponseDto createPayment(CreatePaymentRequestDto request);
 
     default Page<PaymentListItemDto> getPayments(Pageable pageable) {
-        return getPayments(pageable, null, null, null, null, null);
+        return getPayments(pageable, null, null, null, null, null, null);
     }
 
     Page<PaymentListItemDto> getPayments(
             Pageable pageable,
             LocalDateTime fromDate,
             LocalDateTime toDate,
+            String accountNumber,
             BigDecimal minAmount,
             BigDecimal maxAmount,
             PaymentStatus status

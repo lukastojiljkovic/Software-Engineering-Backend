@@ -66,6 +66,8 @@ public class PaymentController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) java.time.LocalDate fromDate,
             @Parameter(description = "Filter by createdAt <= toDate (ISO-8601 date-time)")
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) java.time.LocalDate toDate,
+            @Parameter(description = "Filter by account (matches fromAccount or toAccount)")
+            @RequestParam(required = false) String accountNumber,
             @Parameter(description = "Minimum amount filter")
             @RequestParam(required = false) BigDecimal minAmount,
             @Parameter(description = "Maximum amount filter")
@@ -75,7 +77,7 @@ public class PaymentController {
     ) {
         java.time.LocalDateTime fromDateTime = fromDate != null ? fromDate.atStartOfDay() : null;
         java.time.LocalDateTime toDateTime = toDate != null ? toDate.atTime(23, 59, 59) : null;
-        return ResponseEntity.ok(paymentService.getPayments(pageable, fromDateTime, toDateTime, minAmount, maxAmount, status));
+        return ResponseEntity.ok(paymentService.getPayments(pageable, fromDateTime, toDateTime, accountNumber, minAmount, maxAmount, status));
     }
 
     @Operation(summary = "Get payment by ID", description = "Returns a payment if it belongs to the authenticated client.")
