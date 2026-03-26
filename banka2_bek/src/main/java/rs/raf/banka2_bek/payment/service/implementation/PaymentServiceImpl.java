@@ -79,18 +79,18 @@ public class PaymentServiceImpl implements PaymentService {
 
         BigDecimal amount = request.getAmount();
 
-        if (fromAccount.getDailyLimit() == null
-                || fromAccount.getDailySpending().add(amount).compareTo(fromAccount.getDailyLimit()) > 0) {
-            throw new IllegalArgumentException("Daily transfer limit exceeded for the source account.");
-        }
-
-        if (fromAccount.getMonthlyLimit() == null
-                || fromAccount.getMonthlySpending().add(amount).compareTo(fromAccount.getMonthlyLimit()) > 0) {
-            throw new IllegalArgumentException("Monthly transfer limit exceeded for the source account.");
-        }
-
         if (fromAccount.getAvailableBalance() == null || fromAccount.getAvailableBalance().compareTo(amount) < 0) {
-            throw new IllegalArgumentException("Insufficient funds in the source account.");
+            throw new IllegalArgumentException("Nedovoljno sredstava na racunu");
+        }
+
+        if (fromAccount.getDailyLimit() != null
+                && fromAccount.getDailySpending().add(amount).compareTo(fromAccount.getDailyLimit()) > 0) {
+            throw new IllegalArgumentException("Prekoracen dnevni limit za ovaj racun");
+        }
+
+        if (fromAccount.getMonthlyLimit() != null
+                && fromAccount.getMonthlySpending().add(amount).compareTo(fromAccount.getMonthlyLimit()) > 0) {
+            throw new IllegalArgumentException("Prekoracen mesecni limit za ovaj racun");
         }
 
         BigDecimal transactionFee = BigDecimal.ZERO;
@@ -156,6 +156,7 @@ public class PaymentServiceImpl implements PaymentService {
             Pageable pageable,
             LocalDateTime fromDate,
             LocalDateTime toDate,
+            String accountNumber,
             BigDecimal minAmount,
             BigDecimal maxAmount,
             PaymentStatus status
@@ -166,6 +167,7 @@ public class PaymentServiceImpl implements PaymentService {
                         client.getId(),
                         fromDate,
                         toDate,
+                        accountNumber,
                         minAmount,
                         maxAmount,
                         status,

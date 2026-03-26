@@ -50,6 +50,11 @@ public class LoanController {
         return ResponseEntity.ok(loanService.getInstallments(id));
     }
 
+    @PostMapping("/{id}/early-repayment")
+    public ResponseEntity<LoanResponseDto> earlyRepayment(@PathVariable Long id) {
+        return ResponseEntity.ok(loanService.earlyRepayment(id, getEmail()));
+    }
+
     // --- Employee/Admin endpoints ---
 
     @GetMapping("/requests")

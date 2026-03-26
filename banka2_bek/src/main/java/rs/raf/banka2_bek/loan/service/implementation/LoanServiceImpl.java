@@ -199,6 +199,65 @@ public class LoanServiceImpl implements LoanService {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    @Transactional
+    public LoanResponseDto earlyRepayment(Long loanId, String clientEmail) {
+        Loan loan = loanRepository.findById(loanId)
+                .orElseThrow(() -> new RuntimeException("Kredit nije pronadjen"));
+
+        if (loan.getStatus() == LoanStatus.REJECTED || loan.getStatus() == LoanStatus.PENDING) {
+            throw new RuntimeException("Kredit nije aktivan");
+        }
+        if (loan.getStatus() == LoanStatus.PAID || loan.getStatus() == LoanStatus.PAID_OFF) {
+            throw new RuntimeException("Kredit je vec otplacen");
+        }
+
+        Client client = clientRepository.findByEmail(clientEmail)
+                .orElseThrow(() -> new RuntimeException("Klijent nije pronadjen"));
+
+        if (!loan.getClient().getId().equals(client.getId())) {
+            throw new RuntimeException("Kredit ne pripada klijentu");
+        }
+
+        BigDecimal payoffAmount = loan.getRemainingDebt();
+        if (payoffAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            loan.setRemainingDebt(BigDecimal.ZERO);
+            loan.setStatus(LoanStatus.PAID_OFF);
+            loan.setEndDate(LocalDate.now());
+            return toLoanResponse(loanRepository.save(loan));
+        }
+
+        Account account = loan.getAccount();
+        if (!account.getCurrency().getId().equals(loan.getCurrency().getId())) {
+            throw new RuntimeException("Valuta racuna i kredita se razlikuju");
+        }
+
+        if (account.getAvailableBalance().compareTo(payoffAmount) < 0) {
+            throw new RuntimeException("Nedovoljno sredstava na racunu");
+        }
+
+        account.setBalance(account.getBalance().subtract(payoffAmount));
+        account.setAvailableBalance(account.getAvailableBalance().subtract(payoffAmount));
+        accountRepository.save(account);
+
+        List<LoanInstallment> installments = installmentRepository.findByLoanIdOrderByExpectedDueDateAsc(loanId);
+        LocalDate today = LocalDate.now();
+        for (LoanInstallment installment : installments) {
+            if (!Boolean.TRUE.equals(installment.getPaid())) {
+                installment.setPaid(true);
+                installment.setActualDueDate(today);
+                installmentRepository.save(installment);
+            }
+        }
+
+        loan.setRemainingDebt(BigDecimal.ZERO);
+        loan.setStatus(LoanStatus.PAID_OFF);
+        loan.setEndDate(today);
+        loanRepository.save(loan);
+
+        return toLoanResponse(loan);
+    }
+
     // --- Interest rate tables from spec ---
 
     private BigDecimal getBaseRate(BigDecimal amount) {

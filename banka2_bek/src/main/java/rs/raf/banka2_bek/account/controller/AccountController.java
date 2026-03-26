@@ -229,6 +229,17 @@ public class AccountController {
         return ResponseEntity.ok(toRequestResponse(req));
     }
 
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<AccountResponseDto> changeAccountStatus(
+            @PathVariable Long id,
+            @RequestBody java.util.Map<String, String> body) {
+        String newStatus = body.get("status");
+        if (newStatus == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.ok(accountService.changeAccountStatus(id, newStatus));
+    }
+
     private AccountRequestResponseDto toRequestResponse(AccountRequest req) {
         return AccountRequestResponseDto.builder()
                 .id(req.getId())

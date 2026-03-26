@@ -134,7 +134,7 @@ class AccountServiceImplementationTest {
 
             mockAuthenticatedUser("stefan.jovanovic@gmail.com");
             when(clientRepository.findByEmail("stefan.jovanovic@gmail.com")).thenReturn(Optional.of(stefan));
-            when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(1L, AccountStatus.ACTIVE))
+            when(accountRepository.findAccessibleAccounts(1L, AccountStatus.ACTIVE))
                     .thenReturn(List.of(stednja, glavni, euro));
 
             List<AccountResponseDto> result = accountService.getMyAccounts();
@@ -157,7 +157,7 @@ class AccountServiceImplementationTest {
 
             mockAuthenticatedUser("stefan.jovanovic@gmail.com");
             when(clientRepository.findByEmail("stefan.jovanovic@gmail.com")).thenReturn(Optional.of(testClient));
-            when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(1L, AccountStatus.ACTIVE))
+            when(accountRepository.findAccessibleAccounts(1L, AccountStatus.ACTIVE))
                     .thenReturn(Collections.emptyList());
 
             assertTrue(accountService.getMyAccounts().isEmpty());

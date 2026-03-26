@@ -92,10 +92,12 @@ public class ClientServiceImpl implements ClientService {
         Client client = clientRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Klijent sa ID " + id + " nije pronadjen"));
 
+        if (request.getFirstName() != null) client.setFirstName(request.getFirstName());
         if (request.getLastName() != null) client.setLastName(request.getLastName());
         if (request.getGender() != null) client.setGender(request.getGender());
         if (request.getPhone() != null) client.setPhone(request.getPhone());
         if (request.getAddress() != null) client.setAddress(request.getAddress());
+        if (request.getDateOfBirth() != null) client.setDateOfBirth(request.getDateOfBirth());
 
         client = clientRepository.save(client);
 

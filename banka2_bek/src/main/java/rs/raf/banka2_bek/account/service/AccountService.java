@@ -54,4 +54,6 @@ public interface AccountService {
     Page<AccountResponseDto> getAllAccounts(int page, int limit, String ownerName);
 
     List<AccountResponseDto> getAccountsByClient(Long clientId);
+
+    AccountResponseDto changeAccountStatus(Long accountId, String newStatus);
 }

@@ -20,6 +20,18 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
 
     boolean existsByAccountNumber(String accountNumber);
 
+    @Query("""
+            SELECT DISTINCT a FROM Account a
+            LEFT JOIN a.client c
+            LEFT JOIN a.company co
+            LEFT JOIN co.authorizedPersons ap
+            WHERE (c.id = :clientId OR ap.client.id = :clientId)
+              AND (:status IS NULL OR a.status = :status)
+            ORDER BY a.availableBalance DESC
+            """)
+    List<Account> findAccessibleAccounts(@Param("clientId") Long clientId,
+                                         @Param("status") AccountStatus status);
+
     @Query("SELECT a FROM Account a LEFT JOIN a.client c LEFT JOIN a.company co WHERE "
             + "(:ownerName IS NULL OR "
             + "LOWER(CONCAT(c.firstName, ' ', c.lastName)) LIKE LOWER(CONCAT('%', :ownerName, '%')) OR "

@@ -28,7 +28,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
+import rs.raf.banka2_bek.notification.listener.AccountCreatedEvent;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -48,6 +50,7 @@ public class AccountServiceImplementation implements AccountService {
     private final EmployeeRepository employeeRepository;
     private final UserRepository userRepository;
     private final CardService cardService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public AccountServiceImplementation(AccountRepository accountRepository,
                                          ClientRepository clientRepository,
@@ -55,7 +58,8 @@ public class AccountServiceImplementation implements AccountService {
                                          CompanyRepository companyRepository,
                                          EmployeeRepository employeeRepository,
                                          UserRepository userRepository,
-                                         @Lazy CardService cardService) {
+                                         @Lazy CardService cardService,
+                                         ApplicationEventPublisher eventPublisher) {
         this.accountRepository = accountRepository;
         this.clientRepository = clientRepository;
         this.currencyRepository = currencyRepository;
@@ -63,6 +67,7 @@ public class AccountServiceImplementation implements AccountService {
         this.employeeRepository = employeeRepository;
         this.userRepository = userRepository;
         this.cardService = cardService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -168,6 +173,7 @@ public class AccountServiceImplementation implements AccountService {
                 .accountType(request.getAccountType())
                 .accountSubtype(request.getAccountSubtype())
                 .currency(currency)
+                // Poslovni račun mora imati samo company vlasnika (AssertTrue u Account)
                 .client(isBusiness ? null : client)
                 .company(company)
                 .employee(employee)
@@ -186,6 +192,15 @@ public class AccountServiceImplementation implements AccountService {
         // Auto-create card if requested
         if (Boolean.TRUE.equals(request.getCreateCard()) && client != null) {
             cardService.createCardForAccount(account.getId(), client.getId(), null);
+        }
+
+        // Send email notification
+        if (client != null && client.getEmail() != null) {
+            eventPublisher.publishEvent(new AccountCreatedEvent(
+                    client.getEmail(),
+                    client.getFirstName() + " " + client.getLastName(),
+                    account.getAccountNumber(),
+                    account.getCurrency().getCode()));
         }
 
         return toResponse(account);
@@ -207,6 +222,20 @@ public class AccountServiceImplementation implements AccountService {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    @Transactional
+    public AccountResponseDto changeAccountStatus(Long accountId, String newStatus) {
+        Account account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new RuntimeException("Racun sa ID " + accountId + " nije pronadjen"));
+        try {
+            account.setStatus(AccountStatus.valueOf(newStatus.toUpperCase()));
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Nepoznat status: " + newStatus);
+        }
+        account = accountRepository.save(account);
+        return toResponse(account);
+    }
+
     private Account checkAuth(Long accountId) throws IllegalStateException {
         Account account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -217,12 +246,23 @@ public class AccountServiceImplementation implements AccountService {
         Client client = getOptionalClient();
         if (client == null) return account;
 
-        if (account.getClient() == null || !account.getClient().getId().equals(client.getId())) {
-            throw new IllegalStateException(
-                    "You do not have access to account with ID " + accountId + "."
-            );
+        // Direktni vlasnik (licni racun)
+        if (account.getClient() != null && account.getClient().getId().equals(client.getId())) {
+            return account;
         }
-        return account;
+
+        // Ovlašćeno lice za kompaniju vlasnika (poslovni racun)
+        if (account.getCompany() != null) {
+            boolean authorized = account.getCompany().getAuthorizedPersons().stream()
+                    .anyMatch(ap -> ap.getClient() != null && ap.getClient().getId().equals(client.getId()));
+            if (authorized) {
+                return account;
+            }
+        }
+
+        throw new IllegalStateException(
+                "You do not have access to account with ID " + accountId + "."
+        );
     }
 
     @Override
@@ -230,10 +270,9 @@ public class AccountServiceImplementation implements AccountService {
     public List<AccountResponseDto> getMyAccounts() {
         Client client = getOptionalClient();
         if (client == null) return new ArrayList<>();
-        List<Account> accounts = accountRepository
-                .findByClientIdAndStatusOrderByAvailableBalanceDesc(
-                        client.getId(), AccountStatus.ACTIVE
-                );
+        List<Account> accounts = accountRepository.findAccessibleAccounts(
+                client.getId(), AccountStatus.ACTIVE
+        );
         return accounts.stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
