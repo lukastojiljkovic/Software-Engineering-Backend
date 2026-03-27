@@ -4,7 +4,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -52,7 +51,6 @@ public class TransferServiceTest {
     @Mock
     private ClientRepository clientRepository;
 
-    @InjectMocks
     private TransferService transferService;
 
     private Account fromAccount;
@@ -73,7 +71,14 @@ public class TransferServiceTest {
     }
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
+        transferService = new TransferService(
+                transferRepository, accountRepository, exchangeService,
+                clientRepository);
+        java.lang.reflect.Field field = TransferService.class.getDeclaredField("bankRegistrationNumber");
+        field.setAccessible(true);
+        field.set(transferService, "22200022");
+
         currency = new Currency();
         currency.setId(1L);
         currency.setCode("RSD");
@@ -115,8 +120,8 @@ public class TransferServiceTest {
 
     @Test
     void internalTransferSucceeds() {
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
         when(transferRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
@@ -136,8 +141,8 @@ public class TransferServiceTest {
 
     @Test
     void internalTransferFailsWhenInsufficientFunds() {
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -157,8 +162,8 @@ public class TransferServiceTest {
         eurCurrencyLocal.setCode("EUR");
         toAccount.setCurrency(eurCurrencyLocal);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -174,8 +179,8 @@ public class TransferServiceTest {
     void internalTransferFailsWhenAccountNotActive() {
         fromAccount.setStatus(AccountStatus.INACTIVE);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -195,8 +200,8 @@ public class TransferServiceTest {
         otherClient.setLastName("Draskovic");
         toAccount.setClient(otherClient);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -210,7 +215,7 @@ public class TransferServiceTest {
 
     @Test
     void internalTransferFailsWhenSameAccount() {
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
 
         TransferInternalRequestDto request = new TransferInternalRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -256,8 +261,24 @@ public class TransferServiceTest {
     void fxTransferSucceeds() {
         toAccount.setCurrency(eurCurrency);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        Account bankRsdAccount = new Account();
+        bankRsdAccount.setAccountNumber("BANK-RSD");
+        bankRsdAccount.setCurrency(currency);
+        bankRsdAccount.setBalance(new BigDecimal("1000000"));
+        bankRsdAccount.setAvailableBalance(new BigDecimal("1000000"));
+        bankRsdAccount.setStatus(AccountStatus.ACTIVE);
+
+        Account bankEurAccount = new Account();
+        bankEurAccount.setAccountNumber("BANK-EUR");
+        bankEurAccount.setCurrency(eurCurrency);
+        bankEurAccount.setBalance(new BigDecimal("1000000"));
+        bankEurAccount.setAvailableBalance(new BigDecimal("1000000"));
+        bankEurAccount.setStatus(AccountStatus.ACTIVE);
+
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankRsdAccount));
+        when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "EUR")).thenReturn(Optional.of(bankEurAccount));
         when(exchangeService.calculateCross(1000.0, "RSD", "EUR"))
                 .thenReturn(new CalculateExchangeResponseDto(9.5, 0.0095, "RSD", "EUR"));
         when(transferRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -278,8 +299,8 @@ public class TransferServiceTest {
 
     @Test
     void fxTransferFailsWhenSameCurrency() {
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferFxRequestDto request = new TransferFxRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -295,10 +316,8 @@ public class TransferServiceTest {
     void fxTransferFailsWhenInsufficientFunds() {
         toAccount.setCurrency(eurCurrency);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
-        when(exchangeService.calculateCross(99999.0, "RSD", "EUR"))
-                .thenReturn(new CalculateExchangeResponseDto(950.0, 0.0095, "RSD", "EUR"));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferFxRequestDto request = new TransferFxRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -315,8 +334,8 @@ public class TransferServiceTest {
         fromAccount.setStatus(AccountStatus.INACTIVE);
         toAccount.setCurrency(eurCurrency);
 
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
-        when(accountRepository.findByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("222222222222222222")).thenReturn(Optional.of(toAccount));
 
         TransferFxRequestDto request = new TransferFxRequestDto();
         request.setFromAccountNumber("111111111111111111");
@@ -330,7 +349,7 @@ public class TransferServiceTest {
 
     @Test
     void fxTransferFailsWhenSameAccount() {
-        when(accountRepository.findByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
+        when(accountRepository.findForUpdateByAccountNumber("111111111111111111")).thenReturn(Optional.of(fromAccount));
 
         TransferFxRequestDto request = new TransferFxRequestDto();
         request.setFromAccountNumber("111111111111111111");

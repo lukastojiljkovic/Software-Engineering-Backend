@@ -11,7 +11,9 @@ import org.springframework.mail.javamail.JavaMailSender;
 import rs.raf.banka2_bek.notification.template.AccountCreatedConfirmationEmailTemplate;
 import rs.raf.banka2_bek.notification.template.ActivationConfirmedEmailTemplate;
 import rs.raf.banka2_bek.notification.template.ActivationEmailTemplate;
+import rs.raf.banka2_bek.notification.template.OtpEmailTemplate;
 import rs.raf.banka2_bek.notification.template.PasswordResetEmailTemplate;
+import rs.raf.banka2_bek.notification.template.TransactionEmailTemplate;
 
 import java.util.Properties;
 
@@ -33,6 +35,10 @@ class MailNotificationServiceTest {
     private ActivationConfirmedEmailTemplate activationConfirmedTemplate;
     @Mock
     private AccountCreatedConfirmationEmailTemplate accountCreatedConfirmationEmailTemplate;
+    @Mock
+    private OtpEmailTemplate otpEmailTemplate;
+    @Mock
+    private TransactionEmailTemplate transactionEmailTemplate;
 
     private MailNotificationService service;
 
@@ -48,6 +54,8 @@ class MailNotificationServiceTest {
                 activationTemplate,
                 activationConfirmedTemplate,
                 accountCreatedConfirmationEmailTemplate,
+                otpEmailTemplate,
+                transactionEmailTemplate,
                 "from@test.com",
                 "http://localhost:3000",
                 "/reset-password",

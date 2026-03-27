@@ -5,7 +5,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
@@ -26,6 +25,7 @@ import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
 import rs.raf.banka2_bek.loan.service.implementation.LoanServiceImpl;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -46,16 +46,22 @@ class LoanServiceImplTest {
     @Mock private AccountRepository accountRepository;
     @Mock private ClientRepository clientRepository;
     @Mock private CurrencyRepository currencyRepository;
+    @Mock private MailNotificationService mailNotificationService;
 
-    @InjectMocks
     private LoanServiceImpl loanService;
 
     private Client client;
     private Account account;
+    private Account bankAccount;
     private Currency rsd;
 
     @BeforeEach
     void setUp() {
+        loanService = new LoanServiceImpl(
+                loanRequestRepository, loanRepository, installmentRepository,
+                accountRepository, clientRepository, currencyRepository,
+                mailNotificationService, "22200022");
+
         rsd = new Currency();
         rsd.setId(8L);
         rsd.setCode("RSD");
@@ -70,6 +76,15 @@ class LoanServiceImplTest {
                 .currency(rsd).client(client)
                 .balance(BigDecimal.valueOf(100000))
                 .availableBalance(BigDecimal.valueOf(100000))
+                .status(AccountStatus.ACTIVE)
+                .build();
+
+        bankAccount = Account.builder()
+                .id(99L).accountNumber("222000220000000001")
+                .accountType(AccountType.CHECKING)
+                .currency(rsd)
+                .balance(BigDecimal.valueOf(999999999))
+                .availableBalance(BigDecimal.valueOf(999999999))
                 .status(AccountStatus.ACTIVE)
                 .build();
     }
@@ -204,6 +219,8 @@ class LoanServiceImplTest {
                 l.setId(1L);
                 return l;
             });
+            when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+            when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankAccount));
             when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(installmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -340,6 +357,8 @@ class LoanServiceImplTest {
                 l.setId(1L);
                 return l;
             });
+            when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+            when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankAccount));
             when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(installmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -366,6 +385,8 @@ class LoanServiceImplTest {
                 l.setId(2L);
                 return l;
             });
+            when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+            when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankAccount));
             when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(installmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -392,6 +413,8 @@ class LoanServiceImplTest {
                 l.setId(3L);
                 return l;
             });
+            when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+            when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankAccount));
             when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(installmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 

@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
 import rs.raf.banka2_bek.notification.listener.AccountCreatedEvent;
@@ -51,6 +52,7 @@ public class AccountServiceImplementation implements AccountService {
     private final UserRepository userRepository;
     private final CardService cardService;
     private final ApplicationEventPublisher eventPublisher;
+    private final String bankRegistrationNumber;
 
     public AccountServiceImplementation(AccountRepository accountRepository,
                                          ClientRepository clientRepository,
@@ -59,7 +61,8 @@ public class AccountServiceImplementation implements AccountService {
                                          EmployeeRepository employeeRepository,
                                          UserRepository userRepository,
                                          @Lazy CardService cardService,
-                                         ApplicationEventPublisher eventPublisher) {
+                                         ApplicationEventPublisher eventPublisher,
+                                         @Value("${bank.registration-number}") String bankRegistrationNumber) {
         this.accountRepository = accountRepository;
         this.clientRepository = clientRepository;
         this.currencyRepository = currencyRepository;
@@ -68,6 +71,7 @@ public class AccountServiceImplementation implements AccountService {
         this.userRepository = userRepository;
         this.cardService = cardService;
         this.eventPublisher = eventPublisher;
+        this.bankRegistrationNumber = bankRegistrationNumber;
     }
 
     @Override
@@ -287,7 +291,7 @@ public class AccountServiceImplementation implements AccountService {
     @Override
     @Transactional
     public AccountResponseDto updateAccountName(Long accountId, String newName) {
-        Account account = accountRepository.findById(accountId).orElseThrow(()->new IllegalArgumentException("Account eith ID " + accountId + "not found. "));
+        Account account = accountRepository.findById(accountId).orElseThrow(()->new IllegalArgumentException("Account with ID " + accountId + " not found."));
 
         //samo vlasnik moze da menja naziv
         Client client = getAuthenticatedClient();
@@ -322,6 +326,7 @@ public class AccountServiceImplementation implements AccountService {
     }
 
     @Override
+    @Transactional
     public AccountResponseDto updateAccountLimits(Long accountId, BigDecimal dailyLimit, BigDecimal monthlyLimit) {
         Account account = checkAuth(accountId);
 
@@ -347,6 +352,14 @@ public class AccountServiceImplementation implements AccountService {
     }
 
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<AccountResponseDto> getBankAccounts() {
+        return accountRepository.findBankAccounts(bankRegistrationNumber).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
     private AccountResponseDto toResponse(Account account) {
         // rezervisana sredstva = stanje - raspolozivo stanje
         BigDecimal reservedFunds = account.getBalance()
@@ -364,8 +377,9 @@ public class AccountServiceImplementation implements AccountService {
         }
 
         // ime zaposlenog koji je kreirao racun
-        String employeeName = account.getEmployee().getFirstName() + " "
-                + account.getEmployee().getLastName();
+        String employeeName = account.getEmployee() != null
+                ? account.getEmployee().getFirstName() + " " + account.getEmployee().getLastName()
+                : "N/A";
 
         AccountResponseDto.AccountResponseDtoBuilder builder = AccountResponseDto.builder()
                 .id(account.getId())

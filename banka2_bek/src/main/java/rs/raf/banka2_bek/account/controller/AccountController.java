@@ -41,6 +41,12 @@ public class AccountController {
     private final ClientRepository clientRepository;
     private final CurrencyRepository currencyRepository;
 
+    @Operation(summary = "Get bank accounts", description = "Returns all bank-owned accounts with balances (admin only)")
+    @GetMapping("/bank")
+    public ResponseEntity<List<AccountResponseDto>> getBankAccounts() {
+        return ResponseEntity.ok(accountService.getBankAccounts());
+    }
+
     @Operation(summary = "Create account", description = "Employee creates a new checking or foreign currency account for a client or company")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Account created"),
@@ -142,7 +148,7 @@ public class AccountController {
     // ===== Account Requests (klijent podnosi zahtev, admin odobrava) =====
 
     @PostMapping("/requests")
-    public ResponseEntity<AccountRequestResponseDto> submitAccountRequest(@RequestBody AccountRequestDto dto) {
+    public ResponseEntity<AccountRequestResponseDto> submitAccountRequest(@Valid @RequestBody AccountRequestDto dto) {
         String email = SecurityContextHolder.getContext().getAuthentication().getName();
         Client client = clientRepository.findByEmail(email).orElse(null);
         String clientName = client != null ? client.getFirstName() + " " + client.getLastName() : email;

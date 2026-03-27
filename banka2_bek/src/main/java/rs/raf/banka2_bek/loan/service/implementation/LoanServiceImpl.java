@@ -1,6 +1,6 @@
 package rs.raf.banka2_bek.loan.service.implementation;
 
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -17,6 +17,7 @@ import rs.raf.banka2_bek.loan.service.LoanService;
 import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -27,7 +28,6 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class LoanServiceImpl implements LoanService {
 
     private final LoanRequestRepository loanRequestRepository;
@@ -36,6 +36,26 @@ public class LoanServiceImpl implements LoanService {
     private final AccountRepository accountRepository;
     private final ClientRepository clientRepository;
     private final CurrencyRepository currencyRepository;
+    private final MailNotificationService mailNotificationService;
+    private final String bankRegistrationNumber;
+
+    public LoanServiceImpl(LoanRequestRepository loanRequestRepository,
+                           LoanRepository loanRepository,
+                           LoanInstallmentRepository installmentRepository,
+                           AccountRepository accountRepository,
+                           ClientRepository clientRepository,
+                           CurrencyRepository currencyRepository,
+                           MailNotificationService mailNotificationService,
+                           @Value("${bank.registration-number}") String bankRegistrationNumber) {
+        this.loanRequestRepository = loanRequestRepository;
+        this.loanRepository = loanRepository;
+        this.installmentRepository = installmentRepository;
+        this.accountRepository = accountRepository;
+        this.clientRepository = clientRepository;
+        this.currencyRepository = currencyRepository;
+        this.mailNotificationService = mailNotificationService;
+        this.bankRegistrationNumber = bankRegistrationNumber;
+    }
 
     @Override
     @Transactional
@@ -73,7 +93,19 @@ public class LoanServiceImpl implements LoanService {
                 .employmentPeriod(request.getEmploymentPeriod())
                 .build();
 
-        return toRequestResponse(loanRequestRepository.save(loanRequest));
+        LoanRequestResponseDto response = toRequestResponse(loanRequestRepository.save(loanRequest));
+
+        try {
+            mailNotificationService.sendLoanRequestSubmittedMail(
+                    client.getEmail(),
+                    loanRequest.getLoanType().name(),
+                    loanRequest.getAmount(),
+                    currency.getCode());
+        } catch (Exception e) {
+            // Email failure must not roll back the loan request
+        }
+
+        return response;
     }
 
     @Override
@@ -137,23 +169,61 @@ public class LoanServiceImpl implements LoanService {
 
         loan = loanRepository.save(loan);
 
-        // Deposit loan amount to account
-        Account account = request.getAccount();
+        // Disburse loan: bank pays from its account, client receives funds
+        Account account = accountRepository.findForUpdateById(request.getAccount().getId())
+                .orElseThrow(() -> new RuntimeException("Racun klijenta nije pronadjen"));
+
+        String currencyCode = request.getCurrency().getCode();
+        Account bankAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, currencyCode)
+                .orElseThrow(() -> new RuntimeException("Bankovski racun za " + currencyCode + " nije pronadjen"));
+
+        if (bankAccount.getAvailableBalance().compareTo(request.getAmount()) < 0) {
+            throw new RuntimeException("Banka nema dovoljno sredstava za isplatu kredita");
+        }
+
+        // Deduct from bank
+        bankAccount.setBalance(bankAccount.getBalance().subtract(request.getAmount()));
+        bankAccount.setAvailableBalance(bankAccount.getAvailableBalance().subtract(request.getAmount()));
+        accountRepository.save(bankAccount);
+
+        // Credit to client
         account.setBalance(account.getBalance().add(request.getAmount()));
         account.setAvailableBalance(account.getAvailableBalance().add(request.getAmount()));
         accountRepository.save(account);
 
-        // Generate installments
+        // Generate installments with principal/interest breakdown
+        BigDecimal remainingPrincipal = request.getAmount();
         for (int i = 1; i <= n; i++) {
+            BigDecimal interestPortion = remainingPrincipal.multiply(monthlyRate).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal principalPortion = monthlyPayment.subtract(interestPortion);
+            if (i == n) {
+                principalPortion = remainingPrincipal;
+            }
+            remainingPrincipal = remainingPrincipal.subtract(principalPortion);
+
             LoanInstallment installment = LoanInstallment.builder()
                     .loan(loan)
                     .amount(monthlyPayment)
+                    .principalAmount(principalPortion)
+                    .interestAmount(interestPortion)
                     .interestRate(effectiveRate)
                     .currency(request.getCurrency())
                     .expectedDueDate(startDate.plusMonths(i))
                     .paid(false)
                     .build();
             installmentRepository.save(installment);
+        }
+
+        try {
+            mailNotificationService.sendLoanApprovedMail(
+                    request.getClient().getEmail(),
+                    loan.getLoanNumber(),
+                    loan.getAmount(),
+                    loan.getCurrency().getCode(),
+                    loan.getMonthlyPayment(),
+                    loan.getStartDate());
+        } catch (Exception e) {
+            // Email failure must not roll back the loan approval
         }
 
         return toLoanResponse(loan);
@@ -170,7 +240,19 @@ public class LoanServiceImpl implements LoanService {
         }
 
         request.setStatus(LoanStatus.REJECTED);
-        return toRequestResponse(loanRequestRepository.save(request));
+        LoanRequestResponseDto response = toRequestResponse(loanRequestRepository.save(request));
+
+        try {
+            mailNotificationService.sendLoanRejectedMail(
+                    request.getClient().getEmail(),
+                    request.getLoanType().name(),
+                    request.getAmount(),
+                    request.getCurrency().getCode());
+        } catch (Exception e) {
+            // Email failure must not roll back the loan rejection
+        }
+
+        return response;
     }
 
     @Override
@@ -227,7 +309,9 @@ public class LoanServiceImpl implements LoanService {
             return toLoanResponse(loanRepository.save(loan));
         }
 
-        Account account = loan.getAccount();
+        Account account = accountRepository.findForUpdateById(loan.getAccount().getId())
+                .orElseThrow(() -> new RuntimeException("Racun klijenta nije pronadjen"));
+
         if (!account.getCurrency().getId().equals(loan.getCurrency().getId())) {
             throw new RuntimeException("Valuta racuna i kredita se razlikuju");
         }
@@ -236,9 +320,18 @@ public class LoanServiceImpl implements LoanService {
             throw new RuntimeException("Nedovoljno sredstava na racunu");
         }
 
+        // Deduct from client
         account.setBalance(account.getBalance().subtract(payoffAmount));
         account.setAvailableBalance(account.getAvailableBalance().subtract(payoffAmount));
         accountRepository.save(account);
+
+        // Credit to bank account
+        String currencyCode = loan.getCurrency().getCode();
+        Account bankAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, currencyCode)
+                .orElseThrow(() -> new RuntimeException("Bankovski racun za " + currencyCode + " nije pronadjen"));
+        bankAccount.setBalance(bankAccount.getBalance().add(payoffAmount));
+        bankAccount.setAvailableBalance(bankAccount.getAvailableBalance().add(payoffAmount));
+        accountRepository.save(bankAccount);
 
         List<LoanInstallment> installments = installmentRepository.findByLoanIdOrderByExpectedDueDateAsc(loanId);
         LocalDate today = LocalDate.now();
@@ -332,6 +425,8 @@ public class LoanServiceImpl implements LoanService {
         return InstallmentResponseDto.builder()
                 .id(i.getId())
                 .amount(i.getAmount())
+                .principalAmount(i.getPrincipalAmount())
+                .interestAmount(i.getInterestAmount())
                 .interestRate(i.getInterestRate())
                 .currency(i.getCurrency().getCode())
                 .expectedDueDate(i.getExpectedDueDate())

@@ -11,6 +11,8 @@ import java.time.LocalDate;
 public class InstallmentResponseDto {
     Long id;
     BigDecimal amount;
+    BigDecimal principalAmount;
+    BigDecimal interestAmount;
     BigDecimal interestRate;
     String currency;
     LocalDate expectedDueDate;

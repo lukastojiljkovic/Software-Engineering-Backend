@@ -1,6 +1,6 @@
 package rs.raf.banka2_bek.payment.service.implementation;
 
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -12,9 +12,10 @@ import org.springframework.stereotype.Service;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.exchange.ExchangeService;
-import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
+import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.model.AccountStatus;
+import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.payment.dto.CreatePaymentRequestDto;
 import rs.raf.banka2_bek.payment.dto.PaymentDirection;
 import rs.raf.banka2_bek.payment.dto.PaymentListItemDto;
@@ -25,30 +26,49 @@ import rs.raf.banka2_bek.payment.repository.PaymentAccountRepository;
 import rs.raf.banka2_bek.payment.repository.PaymentRepository;
 import rs.raf.banka2_bek.payment.service.PaymentReceiptPdfGenerator;
 import rs.raf.banka2_bek.payment.service.PaymentService;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 import rs.raf.banka2_bek.transaction.dto.TransactionListItemDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionResponseDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionType;
 import rs.raf.banka2_bek.transaction.service.TransactionService;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 public class PaymentServiceImpl implements PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final PaymentAccountRepository paymentAccountRepository;
+    private final AccountRepository accountRepository;
     private final ClientRepository clientRepository;
     private final TransactionService transactionService;
     private final PaymentReceiptPdfGenerator paymentReceiptPdfGenerator;
     private final ExchangeService exchangeService;
+    private final MailNotificationService mailNotificationService;
+    private final String bankRegistrationNumber;
     private static final int ORDER_NUMBER_MAX_RETRIES = 5;
+
+    public PaymentServiceImpl(PaymentRepository paymentRepository,
+                              PaymentAccountRepository paymentAccountRepository,
+                              AccountRepository accountRepository,
+                              ClientRepository clientRepository,
+                              TransactionService transactionService,
+                              PaymentReceiptPdfGenerator paymentReceiptPdfGenerator,
+                              ExchangeService exchangeService,
+                              MailNotificationService mailNotificationService,
+                              @Value("${bank.registration-number}") String bankRegistrationNumber) {
+        this.paymentRepository = paymentRepository;
+        this.paymentAccountRepository = paymentAccountRepository;
+        this.accountRepository = accountRepository;
+        this.clientRepository = clientRepository;
+        this.transactionService = transactionService;
+        this.paymentReceiptPdfGenerator = paymentReceiptPdfGenerator;
+        this.exchangeService = exchangeService;
+        this.mailNotificationService = mailNotificationService;
+        this.bankRegistrationNumber = bankRegistrationNumber;
+    }
 
     @Override
     @Transactional
@@ -94,15 +114,41 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         BigDecimal transactionFee = BigDecimal.ZERO;
-        BigDecimal exRate = BigDecimal.ONE;
-
-        if (!fromAccount.getCurrency().getId().equals(toAccount.getCurrency().getId())) {
-            transactionFee = amount.multiply(new BigDecimal("0.005"));
-            exRate = getFxRate(fromAccount.getCurrency().getCode(), toAccount.getCurrency().getCode());
-        }
-
-        BigDecimal creditedAmount = amount.multiply(exRate);
+        BigDecimal creditedAmount = amount;
+        boolean isCrossCurrency = !fromAccount.getCurrency().getId().equals(toAccount.getCurrency().getId());
         String paymentCode = request.getPaymentCode().getCode();
+
+        if (isCrossCurrency) {
+            // Cross-currency payment: route through bank accounts
+            String fromCurrencyCode = fromAccount.getCurrency().getCode();
+            String toCurrencyCode = toAccount.getCurrency().getCode();
+
+            Account bankFromAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, fromCurrencyCode)
+                    .orElseThrow(() -> new RuntimeException("Bank account for " + fromCurrencyCode + " not found"));
+            Account bankToAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, toCurrencyCode)
+                    .orElseThrow(() -> new RuntimeException("Bank account for " + toCurrencyCode + " not found"));
+
+            CalculateExchangeResponseDto exchangeResult = exchangeService.calculateCross(
+                    amount.doubleValue(), fromCurrencyCode, toCurrencyCode);
+
+            creditedAmount = BigDecimal.valueOf(exchangeResult.getConvertedAmount());
+            transactionFee = amount.multiply(new BigDecimal("0.005"));
+
+            if (bankToAccount.getAvailableBalance().compareTo(creditedAmount) < 0) {
+                throw new RuntimeException("Bank does not have enough " + toCurrencyCode + " reserves");
+            }
+
+            // Bank receives source currency
+            bankFromAccount.setBalance(bankFromAccount.getBalance().add(amount));
+            bankFromAccount.setAvailableBalance(bankFromAccount.getAvailableBalance().add(amount));
+
+            // Bank pays target currency
+            bankToAccount.setBalance(bankToAccount.getBalance().subtract(creditedAmount));
+            bankToAccount.setAvailableBalance(bankToAccount.getAvailableBalance().subtract(creditedAmount));
+
+            accountRepository.save(bankFromAccount);
+            accountRepository.save(bankToAccount);
+        }
 
         fromAccount.setBalance(fromAccount.getBalance().subtract(amount.add(transactionFee)));
         fromAccount.setAvailableBalance(fromAccount.getAvailableBalance().subtract(amount.add(transactionFee)));
@@ -148,6 +194,20 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         transactionService.recordPaymentSettlement(savedPayment, toAccount, client, creditedAmount);
+
+        try {
+            mailNotificationService.sendPaymentConfirmationMail(
+                    client.getEmail(),
+                    savedPayment.getAmount(),
+                    savedPayment.getCurrency() != null ? savedPayment.getCurrency().getCode() : null,
+                    savedPayment.getFromAccount() != null ? savedPayment.getFromAccount().getAccountNumber() : null,
+                    savedPayment.getToAccountNumber(),
+                    savedPayment.getCreatedAt() != null ? savedPayment.getCreatedAt().toLocalDate() : java.time.LocalDate.now(),
+                    savedPayment.getStatus().name());
+        } catch (Exception e) {
+            // Email failure must not roll back the payment transaction
+        }
+
         return toResponse(savedPayment, client.getId());
     }
 
@@ -202,35 +262,7 @@ public class PaymentServiceImpl implements PaymentService {
             TransactionType type
     ) {
         return transactionService.getTransactions(pageable, fromDate, toDate, minAmount, maxAmount, type);
-               // .map(this::toPaymentHistoryItem);
     }
-
-    private BigDecimal getFxRate(String from, String to) {
-        String f = from.toUpperCase();
-        String t = to.toUpperCase();
-        if (f.equals(t)) return BigDecimal.ONE;
-
-        // Exchange service provides rates in the form: 1 RSD = rate * CURRENCY.
-        List<ExchangeRateDto> rates = exchangeService.getAllRates();
-        Map<String, BigDecimal> rsdToCurrency = new HashMap<>();
-
-        for (ExchangeRateDto rate : rates) {
-            if (rate.getCurrency() != null) {
-                rsdToCurrency.put(rate.getCurrency().toUpperCase(), BigDecimal.valueOf(rate.getRate()));
-            }
-        }
-
-        BigDecimal rsdToFrom = rsdToCurrency.get(f);
-        BigDecimal rsdToTo = rsdToCurrency.get(t);
-
-        if (rsdToFrom == null || rsdToTo == null || rsdToFrom.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Unsupported currency pair: " + from + "/" + to);
-        }
-
-        // from->to = (RSD->to) / (RSD->from)
-        return rsdToTo.divide(rsdToFrom, 10, RoundingMode.HALF_UP);
-    }
-
 
     private PaymentResponseDto toResponse(Payment payment, Long authenticatedClientId) {
         return PaymentResponseDto.builder()
@@ -310,13 +342,6 @@ public class PaymentServiceImpl implements PaymentService {
 
     private String generateOrderNumber() {
         return "PAY-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-    }
-
-    private BigDecimal resolveAmount(TransactionListItemDto transaction) {
-        BigDecimal debit = transaction.getDebit() == null ? BigDecimal.ZERO : transaction.getDebit();
-        return debit.compareTo(BigDecimal.ZERO) > 0
-                ? debit
-                : (transaction.getCredit() == null ? BigDecimal.ZERO : transaction.getCredit());
     }
 }
 

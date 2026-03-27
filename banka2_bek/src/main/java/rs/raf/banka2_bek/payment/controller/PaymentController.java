@@ -19,6 +19,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import rs.raf.banka2_bek.otp.service.OtpService;
 import rs.raf.banka2_bek.payment.dto.CreatePaymentRequestDto;
 import rs.raf.banka2_bek.payment.dto.PaymentListItemDto;
 import rs.raf.banka2_bek.payment.dto.PaymentResponseDto;
@@ -28,7 +29,6 @@ import rs.raf.banka2_bek.transaction.dto.TransactionListItemDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionType;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 
 @Tag(name = "Payments", description = "API for creating and browsing payments and payment history")
 @RestController
@@ -37,6 +37,7 @@ import java.time.LocalDateTime;
 public class PaymentController {
 
     private final PaymentService paymentService;
+    private final OtpService otpService;
 
     @Operation(summary = "Create payment", description = "Creates a new payment for the authenticated client.")
     @ApiResponses({
@@ -139,43 +140,30 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.getPaymentHistory(pageable, fromDateTime, toDateTime, minAmount, maxAmount, type));
     }
 
-    // FIXME: Ukloniti hardcoded kod 1234 kada Android app bude gotova
-    private final java.util.concurrent.ConcurrentHashMap<String, int[]> otpAttempts = new java.util.concurrent.ConcurrentHashMap<>();
+    @Operation(summary = "Request OTP code", description = "Generates and sends a verification code to the authenticated user's email.")
+    @PostMapping("/request-otp")
+    public ResponseEntity<java.util.Map<String, Object>> requestOtp(
+            org.springframework.security.core.Authentication auth) {
+        String email = auth != null ? auth.getName() : null;
+        if (email == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        otpService.generateAndSend(email);
+        return ResponseEntity.ok(java.util.Map.of(
+                "sent", true,
+                "message", "Verifikacioni kod je poslat na vas email"));
+    }
 
+    @Operation(summary = "Verify OTP code", description = "Verifies the OTP code for payment confirmation.")
     @PostMapping("/verify")
     public ResponseEntity<java.util.Map<String, Object>> verifyPayment(
             @RequestBody java.util.Map<String, Object> request,
             org.springframework.security.core.Authentication auth) {
-        String userKey = auth != null ? auth.getName() : "anonymous";
+        String email = auth != null ? auth.getName() : null;
+        if (email == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         String code = String.valueOf(request.getOrDefault("code", ""));
-
-        int[] attempts = otpAttempts.computeIfAbsent(userKey, k -> new int[]{0});
-
-        if (attempts[0] >= 3) {
-            otpAttempts.remove(userKey);
-            return ResponseEntity.ok(java.util.Map.of(
-                "verified", false,
-                "blocked", true,
-                "message", "Transakcija otkazana - previse neuspesnih pokusaja"));
-        }
-
-        if ("1234".equals(code)) {
-            otpAttempts.remove(userKey);
-            return ResponseEntity.ok(java.util.Map.of("verified", true, "message", "Transakcija uspesno verifikovana"));
-        }
-
-        attempts[0]++;
-        int remaining = 3 - attempts[0];
-        if (remaining <= 0) {
-            otpAttempts.remove(userKey);
-            return ResponseEntity.ok(java.util.Map.of(
-                "verified", false,
-                "blocked", true,
-                "message", "Transakcija otkazana - previse neuspesnih pokusaja"));
-        }
-        return ResponseEntity.ok(java.util.Map.of(
-            "verified", false,
-            "blocked", false,
-            "message", "Pogresan verifikacioni kod. Preostalo pokusaja: " + remaining));
+        return ResponseEntity.ok(otpService.verify(email, code));
     }
 }

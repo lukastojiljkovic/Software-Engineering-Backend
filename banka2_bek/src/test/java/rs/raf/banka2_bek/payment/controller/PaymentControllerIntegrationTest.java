@@ -33,7 +33,10 @@ import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
+import rs.raf.banka2_bek.company.model.Company;
+import rs.raf.banka2_bek.company.repository.CompanyRepository;
 import rs.raf.banka2_bek.exchange.ExchangeService;
+import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
 import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 import rs.raf.banka2_bek.payment.repository.PaymentAccountRepository;
 import rs.raf.banka2_bek.payment.repository.PaymentRepository;
@@ -98,6 +101,9 @@ class PaymentControllerIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private CompanyRepository companyRepository;
+
     @MockitoBean
     private ExchangeService exchangeService;
 
@@ -120,6 +126,7 @@ class PaymentControllerIntegrationTest {
         employeeRepository.deleteAll();
         userRepository.deleteAll();
         clientRepository.deleteAll();
+        companyRepository.deleteAll();
         jdbcTemplate.update("delete from currencies");
     }
 
@@ -182,6 +189,22 @@ class PaymentControllerIntegrationTest {
         Currency eur = ensureCurrency("EUR", "Euro", "E", "EU");
         Currency usd = ensureCurrency("USD", "US Dollar", "$", "US");
 
+        // Create bank company and bank accounts for EUR and USD
+        Company bankCompany = companyRepository.save(Company.builder()
+                .name("Banka 2025 Tim 2")
+                .registrationNumber("22200022")
+                .taxNumber("222000222")
+                .activityCode("64.19")
+                .address("Test Address")
+                .build());
+
+        createBankAccount("222000100000000120", bankCompany, employee, eur, new BigDecimal("5000000.00"));
+        createBankAccount("222000100000000140", bankCompany, employee, usd, new BigDecimal("5000000.00"));
+
+        // Mock cross-currency exchange: 100 EUR -> 108 USD
+        when(exchangeService.calculateCross(100.0, "EUR", "USD"))
+                .thenReturn(new CalculateExchangeResponseDto(108.0, 1.08, "EUR", "USD"));
+
         String fromNumber = "333333333333333333";
         String toNumber = "444444444444444444";
 
@@ -214,18 +237,13 @@ class PaymentControllerIntegrationTest {
         Account fromAfter = paymentAccountRepository.findByAccountNumber(fromNumber).orElseThrow();
         Account toAfter = paymentAccountRepository.findByAccountNumber(toNumber).orElseThrow();
 
-        // 0.5% fee on 100.00 => total debit 100.50000
+        // 0.5% fee on 100.00 => total debit 100.50
         assertThat(fromAfter.getBalance()).isEqualByComparingTo("899.50000");
         assertThat(fromAfter.getAvailableBalance()).isEqualByComparingTo("899.50000");
 
-        BigDecimal expectedFxRate = getFxRate("EUR", "USD");
-        BigDecimal expectedConverted = new BigDecimal("100.00")
-                .multiply(expectedFxRate)
-                .setScale(4, RoundingMode.HALF_UP);
-        BigDecimal expectedToBalance = new BigDecimal("500.00").add(expectedConverted);
-
-        assertThat(toAfter.getBalance()).isEqualByComparingTo(expectedToBalance);
-        assertThat(toAfter.getAvailableBalance()).isEqualByComparingTo(expectedToBalance);
+        // Receiver gets 108 USD (from exchange mock)
+        assertThat(toAfter.getBalance()).isEqualByComparingTo("608.00000");
+        assertThat(toAfter.getAvailableBalance()).isEqualByComparingTo("608.00000");
 
         assertThat(paymentRepository.count()).isEqualTo(1);
         assertThat(transactionRepository.count()).isEqualTo(2);
@@ -679,6 +697,24 @@ class PaymentControllerIntegrationTest {
                 .availableBalance(balance)
                 .dailyLimit(new BigDecimal("5000.00"))
                 .monthlyLimit(new BigDecimal("20000.00"))
+                .dailySpending(BigDecimal.ZERO)
+                .monthlySpending(BigDecimal.ZERO)
+                .build();
+        return paymentAccountRepository.save(account);
+    }
+
+    private Account createBankAccount(String accountNumber, Company company, Employee employee, Currency currency, BigDecimal balance) {
+        Account account = Account.builder()
+                .accountNumber(accountNumber)
+                .accountType(AccountType.BUSINESS)
+                .currency(currency)
+                .company(company)
+                .employee(employee)
+                .status(AccountStatus.ACTIVE)
+                .balance(balance)
+                .availableBalance(balance)
+                .dailyLimit(new BigDecimal("999999999.00"))
+                .monthlyLimit(new BigDecimal("999999999.00"))
                 .dailySpending(BigDecimal.ZERO)
                 .monthlySpending(BigDecimal.ZERO)
                 .build();

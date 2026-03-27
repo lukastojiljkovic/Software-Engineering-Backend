@@ -56,4 +56,6 @@ public interface AccountService {
     List<AccountResponseDto> getAccountsByClient(Long clientId);
 
     AccountResponseDto changeAccountStatus(Long accountId, String newStatus);
+
+    List<AccountResponseDto> getBankAccounts();
 }

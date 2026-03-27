@@ -5,7 +5,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -14,9 +13,11 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.model.AccountStatus;
+import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.exchange.ExchangeService;
+import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
 import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 import rs.raf.banka2_bek.payment.dto.CreatePaymentRequestDto;
 import rs.raf.banka2_bek.payment.dto.PaymentResponseDto;
@@ -25,6 +26,7 @@ import rs.raf.banka2_bek.payment.model.Payment;
 import rs.raf.banka2_bek.payment.repository.PaymentAccountRepository;
 import rs.raf.banka2_bek.payment.repository.PaymentRepository;
 import rs.raf.banka2_bek.payment.service.implementation.PaymentServiceImpl;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 import rs.raf.banka2_bek.transaction.dto.TransactionResponseDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionType;
 import rs.raf.banka2_bek.transaction.service.TransactionService;
@@ -32,8 +34,6 @@ import rs.raf.banka2_bek.client.model.Client;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -53,6 +53,8 @@ class PaymentServiceImplTest {
     @Mock
     private PaymentAccountRepository paymentAccountRepository;
     @Mock
+    private AccountRepository accountRepository;
+    @Mock
     private ClientRepository clientRepository;
     @Mock
     private TransactionService transactionService;
@@ -60,8 +62,9 @@ class PaymentServiceImplTest {
     private PaymentReceiptPdfGenerator paymentReceiptPdfGenerator;
     @Mock
     private ExchangeService exchangeService;
+    @Mock
+    private MailNotificationService mailNotificationService;
 
-    @InjectMocks
     private PaymentServiceImpl paymentService;
 
     private CreatePaymentRequestDto request;
@@ -72,6 +75,11 @@ class PaymentServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        paymentService = new PaymentServiceImpl(
+                paymentRepository, paymentAccountRepository, accountRepository,
+                clientRepository, transactionService, paymentReceiptPdfGenerator,
+                exchangeService, mailNotificationService, "22200022");
+
         request = new CreatePaymentRequestDto();
         request.setFromAccount("111111111111111111");
         request.setToAccount("222222222222222222");
@@ -152,10 +160,19 @@ class PaymentServiceImplTest {
                 .build();
         toAccount.setCurrency(usd);
 
+        Account bankEurAccount = baseAccount(100L, "BANK-EUR", null, eur, new BigDecimal("1000000"));
+        Account bankUsdAccount = baseAccount(101L, "BANK-USD", null, usd, new BigDecimal("1000000"));
+
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getFromAccount()))
                 .thenReturn(Optional.of(fromAccount));
         when(paymentAccountRepository.findForUpdateByAccountNumber(request.getToAccount()))
                 .thenReturn(Optional.of(toAccount));
+        when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "EUR"))
+                .thenReturn(Optional.of(bankEurAccount));
+        when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "USD"))
+                .thenReturn(Optional.of(bankUsdAccount));
+        when(exchangeService.calculateCross(100.0, "EUR", "USD"))
+                .thenReturn(new CalculateExchangeResponseDto(108.01843318, 1.0801843318, "EUR", "USD"));
 
         when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(inv -> {
             Payment p = inv.getArgument(0);
@@ -173,7 +190,7 @@ class PaymentServiceImplTest {
         assertThat(fromAccount.getBalance()).isEqualByComparingTo("899.50000");
         assertThat(fromAccount.getAvailableBalance()).isEqualByComparingTo("899.50000");
 
-        // EUR->USD = 117.2 / 108.5 = 1.0801843318; credited amount = 108.01843318
+        // credited amount = 108.01843318
         assertThat(toAccount.getBalance()).isEqualByComparingTo("608.01843318");
         assertThat(toAccount.getAvailableBalance()).isEqualByComparingTo("608.01843318");
 
@@ -473,24 +490,6 @@ class PaymentServiceImplTest {
 //                .hasMessageContaining("Authenticated client does not exist");
 //    }
 
-    @Test
-    void getFxRate_returnsOneForSameCurrency() throws Exception {
-        BigDecimal rate = invokeGetFxRate("EUR", "EUR");
-        assertThat(rate).isEqualByComparingTo("1");
-    }
-
-    @Test
-    void getFxRate_supportsLowerCaseInputs() throws Exception {
-        BigDecimal rate = invokeGetFxRate("usd", "rsd");
-        assertThat(rate).isEqualByComparingTo("108.5000000000");
-    }
-
-    @Test
-    void getFxRate_throwsForUnsupportedPair() {
-        assertThatThrownBy(() -> invokeGetFxRate("EUR", "BTC"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unsupported currency pair");
-    }
 
     private void authenticateAs(String email) {
         org.springframework.security.core.userdetails.User principal =
@@ -541,17 +540,4 @@ class PaymentServiceImplTest {
         );
     }
 
-    private BigDecimal invokeGetFxRate(String from, String to) throws Exception {
-        Method method = PaymentServiceImpl.class.getDeclaredMethod("getFxRate", String.class, String.class);
-        method.setAccessible(true);
-        try {
-            return (BigDecimal) method.invoke(paymentService, from, to);
-        } catch (InvocationTargetException ex) {
-            Throwable cause = ex.getCause();
-            if (cause instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw ex;
-        }
-    }
 }

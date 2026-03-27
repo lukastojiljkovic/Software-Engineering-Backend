@@ -17,6 +17,7 @@ import rs.raf.banka2_bek.card.repository.CardRepository;
 import rs.raf.banka2_bek.card.service.CardService;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -31,6 +32,7 @@ public class CardServiceImpl implements CardService {
     private final CardRepository cardRepository;
     private final AccountRepository accountRepository;
     private final ClientRepository clientRepository;
+    private final MailNotificationService mailNotificationService;
 
     @Override
     @Transactional
@@ -69,7 +71,7 @@ public class CardServiceImpl implements CardService {
         Client client = getOptionalClient();
         if (client == null) return Collections.emptyList();
         return cardRepository.findByClientId(client.getId()).stream()
-                .map(this::toResponse)
+                .map(this::toMaskedResponse)
                 .collect(Collectors.toList());
     }
 
@@ -77,7 +79,7 @@ public class CardServiceImpl implements CardService {
     @Transactional(readOnly = true)
     public List<CardResponseDto> getCardsByAccount(Long accountId) {
         return cardRepository.findByAccountId(accountId).stream()
-                .map(this::toResponse)
+                .map(this::toMaskedResponse)
                 .collect(Collectors.toList());
     }
 
@@ -91,7 +93,17 @@ public class CardServiceImpl implements CardService {
             throw new RuntimeException("Deaktivirana kartica se ne moze blokirati");
         }
         card.setStatus(CardStatus.BLOCKED);
-        return toResponse(cardRepository.save(card));
+        CardResponseDto response = toMaskedResponse(cardRepository.save(card));
+
+        try {
+            String last4 = card.getCardNumber().substring(card.getCardNumber().length() - 4);
+            mailNotificationService.sendCardBlockedMail(
+                    card.getClient().getEmail(), last4, LocalDate.now());
+        } catch (Exception e) {
+            // Email failure must not roll back the card operation
+        }
+
+        return response;
     }
 
     @Override
@@ -104,7 +116,17 @@ public class CardServiceImpl implements CardService {
             throw new RuntimeException("Samo blokirana kartica se moze deblokirati");
         }
         card.setStatus(CardStatus.ACTIVE);
-        return toResponse(cardRepository.save(card));
+        CardResponseDto response = toMaskedResponse(cardRepository.save(card));
+
+        try {
+            String last4 = card.getCardNumber().substring(card.getCardNumber().length() - 4);
+            mailNotificationService.sendCardUnblockedMail(
+                    card.getClient().getEmail(), last4);
+        } catch (Exception e) {
+            // Email failure must not roll back the card operation
+        }
+
+        return response;
     }
 
     @Override
@@ -114,7 +136,7 @@ public class CardServiceImpl implements CardService {
                 .orElseThrow(() -> new RuntimeException("Kartica nije pronadjena"));
 
         card.setStatus(CardStatus.DEACTIVATED);
-        return toResponse(cardRepository.save(card));
+        return toMaskedResponse(cardRepository.save(card));
     }
 
     @Override
@@ -127,7 +149,7 @@ public class CardServiceImpl implements CardService {
             throw new RuntimeException("Ne moze se menjati limit deaktivirane kartice");
         }
         card.setCardLimit(newLimit);
-        return toResponse(cardRepository.save(card));
+        return toMaskedResponse(cardRepository.save(card));
     }
 
     // --- helpers ---
@@ -175,6 +197,29 @@ public class CardServiceImpl implements CardService {
                 .createdAt(card.getCreatedAt())
                 .expirationDate(card.getExpirationDate())
                 .build();
+    }
+
+    private CardResponseDto toMaskedResponse(Card card) {
+        return CardResponseDto.builder()
+                .id(card.getId())
+                .cardNumber(maskCardNumber(card.getCardNumber()))
+                .cardName(card.getCardName())
+                .cvv(null)
+                .accountNumber(card.getAccount().getAccountNumber())
+                .ownerName(card.getClient().getFirstName() + " " + card.getClient().getLastName())
+                .cardLimit(card.getCardLimit())
+                .status(card.getStatus())
+                .createdAt(card.getCreatedAt())
+                .expirationDate(card.getExpirationDate())
+                .build();
+    }
+
+    private String maskCardNumber(String cardNumber) {
+        if (cardNumber == null || cardNumber.length() < 8) return cardNumber;
+        String digits = cardNumber.replaceAll("\\s+", "");
+        String first4 = digits.substring(0, 4);
+        String last4 = digits.substring(digits.length() - 4);
+        return first4 + " **** **** " + last4;
     }
 
     private Client getAuthenticatedClient() {

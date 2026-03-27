@@ -172,11 +172,6 @@ public class TransactionServiceImpl implements TransactionService {
         return value == null ? BigDecimal.ZERO : value;
     }
 
-    private BigDecimal resolveAmount(Transaction transaction) {
-        BigDecimal debit = orZero(transaction.getDebit());
-        return debit.compareTo(BigDecimal.ZERO) > 0 ? debit : orZero(transaction.getCredit());
-    }
-
     private String resolveToAccountNumber(Transaction transaction) {
         if (transaction.getPayment() != null) {
             return transaction.getPayment().getToAccountNumber();

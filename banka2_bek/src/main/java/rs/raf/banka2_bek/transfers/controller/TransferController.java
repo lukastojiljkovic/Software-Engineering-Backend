@@ -1,5 +1,6 @@
 package rs.raf.banka2_bek.transfers.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -26,7 +27,7 @@ public class TransferController {
     private final AccountRepository accountRepository;
 
     @PostMapping("/internal")
-    public ResponseEntity<TransferResponseDto> internalTransfer(@RequestBody TransferInternalRequestDto request) {
+    public ResponseEntity<TransferResponseDto> internalTransfer(@Valid @RequestBody TransferInternalRequestDto request) {
         // Auto-detect: if currencies differ, route to FX transfer
         Account from = accountRepository.findByAccountNumber(request.getFromAccountNumber()).orElse(null);
         Account to = accountRepository.findByAccountNumber(request.getToAccountNumber()).orElse(null);
@@ -43,7 +44,7 @@ public class TransferController {
     }
 
     @PostMapping("/fx")
-    public ResponseEntity<TransferResponseDto> fxTransfer(@RequestBody TransferFxRequestDto request) {
+    public ResponseEntity<TransferResponseDto> fxTransfer(@Valid @RequestBody TransferFxRequestDto request) {
         return ResponseEntity.ok(transferService.fxTransfer(request));
     }
 

@@ -36,7 +36,7 @@ public class LoanController {
 
     @GetMapping("/my")
     public ResponseEntity<Page<LoanResponseDto>> getMyLoans(
-            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+            @PageableDefault(size = 20, sort = "amount", direction = Sort.Direction.DESC) Pageable pageable) {
         return ResponseEntity.ok(loanService.getMyLoans(getEmail(), pageable));
     }
 

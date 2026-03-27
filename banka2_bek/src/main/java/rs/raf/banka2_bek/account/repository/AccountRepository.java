@@ -1,8 +1,10 @@
 package rs.raf.banka2_bek.account.repository;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import rs.raf.banka2_bek.account.model.Account;
@@ -19,6 +21,21 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
     Optional<Account> findByAccountNumber(String accountNumber);
 
     boolean existsByAccountNumber(String accountNumber);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Account a WHERE a.accountNumber = :accountNumber")
+    Optional<Account> findForUpdateByAccountNumber(@Param("accountNumber") String accountNumber);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Account a WHERE a.id = :id")
+    Optional<Account> findForUpdateById(@Param("id") Long id);
+
+    @Query("SELECT a FROM Account a WHERE a.company.registrationNumber = :regNumber AND a.currency.code = :currencyCode AND a.status = 'ACTIVE'")
+    Optional<Account> findBankAccountByCurrency(@Param("regNumber") String regNumber, @Param("currencyCode") String currencyCode);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Account a WHERE a.company.registrationNumber = :regNumber AND a.currency.code = :currencyCode AND a.status = 'ACTIVE'")
+    Optional<Account> findBankAccountForUpdateByCurrency(@Param("regNumber") String regNumber, @Param("currencyCode") String currencyCode);
 
     @Query("""
             SELECT DISTINCT a FROM Account a
@@ -37,4 +54,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
             + "LOWER(CONCAT(c.firstName, ' ', c.lastName)) LIKE LOWER(CONCAT('%', :ownerName, '%')) OR "
             + "LOWER(co.name) LIKE LOWER(CONCAT('%', :ownerName, '%')))")
     Page<Account> findAllWithOwnerFilter(@Param("ownerName") String ownerName, Pageable pageable);
+
+    @Query("SELECT a FROM Account a WHERE a.company.registrationNumber = :regNumber")
+    List<Account> findBankAccounts(@Param("regNumber") String regNumber);
 }

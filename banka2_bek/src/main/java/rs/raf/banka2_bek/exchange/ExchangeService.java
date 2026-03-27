@@ -1,7 +1,6 @@
 package rs.raf.banka2_bek.exchange;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
@@ -49,8 +48,9 @@ public class ExchangeService {
 
         Map<String, Object> body;
         try {
-            ResponseEntity<Map> response = restTemplate.getForEntity(url, Map.class);
-            body = response.getBody();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> responseBody = restTemplate.getForEntity(url, Map.class).getBody();
+            body = responseBody;
         } catch (Exception e) {
             // API nedostupan ili rate limit — koristimo fallback kurseve
             if (cachedRates != null) return cachedRates;
@@ -66,6 +66,7 @@ public class ExchangeService {
             return cachedRates;
         }
 
+        @SuppressWarnings("unchecked")
         Map<String, Object> rates = (Map<String, Object>) body.get("rates");
 
         Double eurToRsd = getDouble(rates.get("RSD"));

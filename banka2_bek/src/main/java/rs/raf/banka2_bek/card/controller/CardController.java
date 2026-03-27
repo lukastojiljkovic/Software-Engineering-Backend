@@ -169,15 +169,24 @@ public class CardController {
     }
 
     private Map<String, Object> toCardRequestMap(CardRequest req) {
-        return Map.of(
-                "id", req.getId(),
-                "accountId", req.getAccount().getId(),
-                "accountNumber", req.getAccount().getAccountNumber(),
-                "cardLimit", req.getCardLimit(),
-                "clientEmail", req.getClientEmail(),
-                "clientName", req.getClientName(),
-                "status", req.getStatus(),
-                "createdAt", req.getCreatedAt().toString()
-        );
+        Map<String, Object> map = new java.util.LinkedHashMap<>();
+        map.put("id", req.getId());
+        map.put("accountId", req.getAccount().getId());
+        map.put("accountNumber", req.getAccount().getAccountNumber());
+        map.put("cardLimit", req.getCardLimit());
+        map.put("clientEmail", req.getClientEmail());
+        map.put("clientName", req.getClientName());
+        map.put("status", req.getStatus());
+        map.put("createdAt", req.getCreatedAt().toString());
+        if (req.getProcessedAt() != null) {
+            map.put("processedAt", req.getProcessedAt().toString());
+        }
+        if (req.getProcessedBy() != null) {
+            map.put("processedBy", req.getProcessedBy());
+        }
+        if (req.getRejectionReason() != null) {
+            map.put("rejectionReason", req.getRejectionReason());
+        }
+        return map;
     }
 }

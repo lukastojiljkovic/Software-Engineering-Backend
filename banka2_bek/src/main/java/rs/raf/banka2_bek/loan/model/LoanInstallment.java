@@ -27,6 +27,12 @@ public class LoanInstallment {
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
 
+    @Column(precision = 19, scale = 4)
+    private BigDecimal principalAmount;
+
+    @Column(precision = 19, scale = 4)
+    private BigDecimal interestAmount;
+
     @Column(nullable = false, precision = 5, scale = 2)
     private BigDecimal interestRate;
 

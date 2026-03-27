@@ -1,5 +1,6 @@
 package rs.raf.banka2_bek.transfers.service;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
@@ -17,7 +18,6 @@ import rs.raf.banka2_bek.transfers.dto.TransferInternalRequestDto;
 import rs.raf.banka2_bek.transfers.dto.TransferResponseDto;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
-import rs.raf.banka2_bek.auth.repository.UserRepository;
 import rs.raf.banka2_bek.transfers.repository.TransferRepository;
 import rs.raf.banka2_bek.exchange.ExchangeService;
 import java.math.BigDecimal;
@@ -32,18 +32,18 @@ public class TransferService {
     private final AccountRepository accountRepository;
     private final ExchangeService exchangeService;
     private final ClientRepository clientRepository;
-    private final UserRepository userRepository;
+
+    @Value("${bank.registration-number}")
+    private String bankRegistrationNumber;
 
     public TransferService(TransferRepository transferRepository,
                            AccountRepository accountRepository,
                            ExchangeService exchangeService,
-                           ClientRepository clientRepository,
-                           UserRepository userRepository) {
+                           ClientRepository clientRepository) {
         this.transferRepository = transferRepository;
         this.accountRepository = accountRepository;
         this.exchangeService = exchangeService;
         this.clientRepository = clientRepository;
-        this.userRepository = userRepository;
     }
 
     private TransferResponseDto mapToDto(Transfer transfer) {
@@ -69,18 +69,17 @@ public class TransferService {
     @Transactional
     public TransferResponseDto internalTransfer(TransferInternalRequestDto request) {
 
-        Account fromAccount = accountRepository.findByAccountNumber(request.getFromAccountNumber())
+        // Pessimistic lock to prevent double-spending
+        Account fromAccount = accountRepository.findForUpdateByAccountNumber(request.getFromAccountNumber())
                 .orElseThrow(() -> new RuntimeException("From account not found"));
 
-        Account toAccount = accountRepository.findByAccountNumber(request.getToAccountNumber())
+        Account toAccount = accountRepository.findForUpdateByAccountNumber(request.getToAccountNumber())
                 .orElseThrow(() -> new RuntimeException("To account not found"));
 
-        // racuni moraju biti razliciti
         if (request.getFromAccountNumber().equals(request.getToAccountNumber())) {
             throw new RuntimeException("Accounts must be different");
         }
 
-        // oba racuna moraju biti aktivna
         if (fromAccount.getStatus() != AccountStatus.ACTIVE) {
             throw new RuntimeException("Source account is not active");
         }
@@ -88,21 +87,17 @@ public class TransferService {
             throw new RuntimeException("Destination account is not active");
         }
 
-        // isti klijent
         Client actor = getAuthenticatedClient();
         ensureAccess(actor, fromAccount);
         ensureAccess(actor, toAccount);
 
-        // ista valuta
         if (!fromAccount.getCurrency().getId().equals(toAccount.getCurrency().getId())) {
             throw new RuntimeException("Accounts must have the same currency");
         }
 
-
         if (fromAccount.getAvailableBalance().compareTo(request.getAmount()) < 0) {
             throw new RuntimeException("Insufficient funds");
         }
-
 
         fromAccount.setBalance(fromAccount.getBalance().subtract(request.getAmount()));
         fromAccount.setAvailableBalance(fromAccount.getAvailableBalance().subtract(request.getAmount()));
@@ -111,7 +106,6 @@ public class TransferService {
 
         accountRepository.save(fromAccount);
         accountRepository.save(toAccount);
-
 
         Transfer transfer = new Transfer();
         transfer.setOrderNumber(UUID.randomUUID().toString().replace("-", "").substring(0, 30));
@@ -135,18 +129,17 @@ public class TransferService {
     @Transactional
     public TransferResponseDto fxTransfer(TransferFxRequestDto request) {
 
-        Account fromAccount = accountRepository.findByAccountNumber(request.getFromAccountNumber())
+        // Pessimistic lock on client accounts
+        Account fromAccount = accountRepository.findForUpdateByAccountNumber(request.getFromAccountNumber())
                 .orElseThrow(() -> new RuntimeException("From account not found"));
 
-        Account toAccount = accountRepository.findByAccountNumber(request.getToAccountNumber())
+        Account toAccount = accountRepository.findForUpdateByAccountNumber(request.getToAccountNumber())
                 .orElseThrow(() -> new RuntimeException("To account not found"));
 
-        //  racuni moraju biti razliciti
         if (request.getFromAccountNumber().equals(request.getToAccountNumber())) {
             throw new RuntimeException("Accounts must be different");
         }
 
-        //  oba racuna moraju biti aktivna
         if (fromAccount.getStatus() != AccountStatus.ACTIVE) {
             throw new RuntimeException("Source account is not active");
         }
@@ -154,35 +147,62 @@ public class TransferService {
             throw new RuntimeException("Destination account is not active");
         }
 
-        // valute moraju biti razlicite
+        Client actor = getAuthenticatedClient();
+        ensureAccess(actor, fromAccount);
+        ensureAccess(actor, toAccount);
+
         if (fromAccount.getCurrency().getId().equals(toAccount.getCurrency().getId())) {
             throw new RuntimeException("Accounts must have different currencies");
         }
 
-        // Dohvati kurs i konvertuj
+        if (fromAccount.getAvailableBalance().compareTo(request.getAmount()) < 0) {
+            throw new RuntimeException("Insufficient funds");
+        }
+
+        // Lock bank accounts for the two currencies involved
+        String fromCurrencyCode = fromAccount.getCurrency().getCode();
+        String toCurrencyCode = toAccount.getCurrency().getCode();
+
+        Account bankFromAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, fromCurrencyCode)
+                .orElseThrow(() -> new RuntimeException("Bank account for " + fromCurrencyCode + " not found"));
+        Account bankToAccount = accountRepository.findBankAccountForUpdateByCurrency(bankRegistrationNumber, toCurrencyCode)
+                .orElseThrow(() -> new RuntimeException("Bank account for " + toCurrencyCode + " not found"));
+
+        // Calculate exchange (includes 2% markup + 0.5% commission = bank's profit)
         CalculateExchangeResponseDto exchangeResult = exchangeService.calculateCross(
                 request.getAmount().doubleValue(),
-                fromAccount.getCurrency().getCode(),
-                toAccount.getCurrency().getCode()
+                fromCurrencyCode,
+                toCurrencyCode
         );
 
         BigDecimal toAmount = BigDecimal.valueOf(exchangeResult.getConvertedAmount());
         BigDecimal exchangeRate = BigDecimal.valueOf(exchangeResult.getExchangeRate());
 
-        // Provera: dovoljno sredstava
-        if (fromAccount.getAvailableBalance().compareTo(request.getAmount()) < 0) {
-            throw new RuntimeException("Insufficient funds");
+        // Check bank has enough of the target currency
+        if (bankToAccount.getAvailableBalance().compareTo(toAmount) < 0) {
+            throw new RuntimeException("Bank does not have enough " + toCurrencyCode + " reserves");
         }
 
-
+        // 1. Client pays source currency
         fromAccount.setBalance(fromAccount.getBalance().subtract(request.getAmount()));
         fromAccount.setAvailableBalance(fromAccount.getAvailableBalance().subtract(request.getAmount()));
+
+        // 2. Bank receives source currency
+        bankFromAccount.setBalance(bankFromAccount.getBalance().add(request.getAmount()));
+        bankFromAccount.setAvailableBalance(bankFromAccount.getAvailableBalance().add(request.getAmount()));
+
+        // 3. Bank pays target currency
+        bankToAccount.setBalance(bankToAccount.getBalance().subtract(toAmount));
+        bankToAccount.setAvailableBalance(bankToAccount.getAvailableBalance().subtract(toAmount));
+
+        // 4. Client receives target currency
         toAccount.setBalance(toAccount.getBalance().add(toAmount));
         toAccount.setAvailableBalance(toAccount.getAvailableBalance().add(toAmount));
 
         accountRepository.save(fromAccount);
         accountRepository.save(toAccount);
-
+        accountRepository.save(bankFromAccount);
+        accountRepository.save(bankToAccount);
 
         Transfer transfer = new Transfer();
         transfer.setOrderNumber(UUID.randomUUID().toString().replace("-", "").substring(0, 30));
@@ -196,10 +216,6 @@ public class TransferService {
         transfer.setCommission(BigDecimal.valueOf(0.005));
         transfer.setTransferType(TransferType.EXCHANGE);
         transfer.setStatus(PaymentStatus.COMPLETED);
-        Client actor = getAuthenticatedClient();
-        ensureAccess(actor, fromAccount);
-        ensureAccess(actor, toAccount);
-
         transfer.setCreatedBy(actor);
 
         transferRepository.save(transfer);

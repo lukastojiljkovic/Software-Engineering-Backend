@@ -24,6 +24,7 @@ import rs.raf.banka2_bek.card.repository.CardRepository;
 import rs.raf.banka2_bek.card.service.implementation.CardServiceImpl;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
+import rs.raf.banka2_bek.notification.service.MailNotificationService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -40,6 +41,7 @@ class CardServiceImplTest {
     @Mock private CardRepository cardRepository;
     @Mock private AccountRepository accountRepository;
     @Mock private ClientRepository clientRepository;
+    @Mock private MailNotificationService mailNotificationService;
 
     @InjectMocks
     private CardServiceImpl cardService;
@@ -179,7 +181,8 @@ class CardServiceImplTest {
 
             List<CardResponseDto> result = cardService.getMyCards();
             assertThat(result).hasSize(1);
-            assertThat(result.get(0).getCardNumber()).isEqualTo("4222001234567890");
+            assertThat(result.get(0).getCardNumber()).isEqualTo("4222 **** **** 7890");
+            assertThat(result.get(0).getCvv()).isNull();
         }
 
         @Test

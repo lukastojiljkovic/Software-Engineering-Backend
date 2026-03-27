@@ -14,15 +14,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.web.bind.annotation.*;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.payment.dto.CreatePaymentRecipientRequestDto;
 import rs.raf.banka2_bek.payment.dto.PaymentRecipientResponseDto;
 import rs.raf.banka2_bek.payment.dto.UpdatePaymentRecipientRequestDto;
 import rs.raf.banka2_bek.payment.service.PaymentRecipientService;
-
-import java.util.Collections;
 
 @Tag(name = "Payment recipients", description = "API for payment recipients (list, add, update, delete)")
 @RestController
