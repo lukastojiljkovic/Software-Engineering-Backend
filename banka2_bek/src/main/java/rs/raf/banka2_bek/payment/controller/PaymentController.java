@@ -154,6 +154,17 @@ public class PaymentController {
                 "message", "Verifikacioni kod je poslat na vas email"));
     }
 
+    @Operation(summary = "Get active OTP", description = "Returns the active OTP code for the authenticated user (used by mobile app).")
+    @GetMapping("/my-otp")
+    public ResponseEntity<java.util.Map<String, Object>> getMyOtp(
+            org.springframework.security.core.Authentication auth) {
+        String email = auth != null ? auth.getName() : null;
+        if (email == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return ResponseEntity.ok(otpService.getActiveOtp(email));
+    }
+
     @Operation(summary = "Verify OTP code", description = "Verifies the OTP code for payment confirmation.")
     @PostMapping("/verify")
     public ResponseEntity<java.util.Map<String, Object>> verifyPayment(

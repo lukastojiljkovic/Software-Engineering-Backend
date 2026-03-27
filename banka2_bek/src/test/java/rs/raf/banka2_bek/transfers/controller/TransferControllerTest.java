@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.hamcrest.Matchers.hasSize;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -243,7 +243,7 @@ class TransferControllerTest {
         Client client = new Client();
         client.setEmail("marko@banka.rs");
         when(clientRepository.findByEmail("marko@banka.rs")).thenReturn(Optional.of(client));
-        when(transferService.getAllTransfers(client)).thenReturn(List.of(testTransfer));
+        when(transferService.getAllTransfers(eq(client), isNull(), isNull(), isNull())).thenReturn(List.of(testTransfer));
 
         mockMvc.perform(get("/transfers")
                         .contentType(MediaType.APPLICATION_JSON))

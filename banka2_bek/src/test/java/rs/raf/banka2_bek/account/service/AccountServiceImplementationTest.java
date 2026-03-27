@@ -17,13 +17,14 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.account.dto.CreateAccountDto;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -53,9 +54,18 @@ class AccountServiceImplementationTest {
     @Mock private EmployeeRepository employeeRepository;
     @Mock private UserRepository userRepository;
     @Mock private CardService cardService;
+    @Mock private ApplicationEventPublisher eventPublisher;
 
-    @InjectMocks
     private AccountServiceImplementation accountService;
+
+    @BeforeEach
+    void setUp() {
+        accountService = new AccountServiceImplementation(
+                accountRepository, clientRepository, currencyRepository,
+                companyRepository, employeeRepository, userRepository,
+                cardService, eventPublisher, "22200011"
+        );
+    }
 
     private void mockAuthenticatedUser(String email) {
         UserDetails userDetails = org.springframework.security.core.userdetails.User.builder()

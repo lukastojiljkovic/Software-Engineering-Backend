@@ -72,6 +72,7 @@ public class TransferServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_GLOBAL);
         transferService = new TransferService(
                 transferRepository, accountRepository, exchangeService,
                 clientRepository);

@@ -52,6 +52,25 @@ public class OtpService {
         mailNotificationService.sendOtpMail(email, code, expiryMinutes);
     }
 
+    @Transactional(readOnly = true)
+    public Map<String, Object> getActiveOtp(String email) {
+        OtpVerification otp = otpRepository.findTopByEmailAndUsedFalseOrderByCreatedAtDesc(email)
+                .orElse(null);
+
+        if (otp == null || otp.isExpired()) {
+            return Map.of("active", false, "message", "Nema aktivnog verifikacionog koda.");
+        }
+
+        long secondsLeft = java.time.Duration.between(LocalDateTime.now(), otp.getExpiresAt()).getSeconds();
+
+        return Map.of(
+                "active", true,
+                "code", otp.getCode(),
+                "expiresInSeconds", Math.max(secondsLeft, 0),
+                "attempts", otp.getAttempts(),
+                "maxAttempts", maxAttempts);
+    }
+
     @Transactional
     public Map<String, Object> verify(String email, String code) {
         OtpVerification otp = otpRepository.findTopByEmailAndUsedFalseOrderByCreatedAtDesc(email)

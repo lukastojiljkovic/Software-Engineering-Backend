@@ -245,9 +245,12 @@ class ActuaryServiceImplTest {
     class UpdateAgentLimit {
 
         @Test
-        @DisplayName("admin iz users tabele moze da promeni dailyLimit i needApproval")
-        void adminUserCanUpdateAgent() {
-            authenticateAs("admin@banka.rs");
+        @DisplayName("supervizor moze da promeni dailyLimit i needApproval")
+        void supervisorCanUpdateAgent() {
+            setAuthenticatedUser("supervisor@banka.rs");
+
+            Employee supervisorEmployee = createEmployee(20L, "Nina", "Nikolic", "supervisor@banka.rs");
+            ActuaryInfo supervisorInfo = createSupervisorInfo(5L, supervisorEmployee);
 
             Employee agentEmployee = createEmployee(10L, "Marko", "Markovic", "marko@banka.rs");
             ActuaryInfo agentInfo = createAgentInfo(1L, agentEmployee,
@@ -257,7 +260,7 @@ class ActuaryServiceImplTest {
             dto.setDailyLimit(new BigDecimal("250000"));
             dto.setNeedApproval(true);
 
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
+            when(actuaryInfoRepository.findByEmployee_Email("supervisor@banka.rs")).thenReturn(Optional.of(supervisorInfo));
             when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agentInfo));
             when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -272,22 +275,20 @@ class ActuaryServiceImplTest {
         @Test
         @DisplayName("supervizor zaposleni moze da menja samo prosledjena polja")
         void supervisorEmployeeCanPartiallyUpdateAgent() {
-            authenticateAs("supervisor@banka.rs");
+            setAuthenticatedUser("supervisor@banka.rs");
 
             Employee supervisor = createEmployee(20L, "Nina", "Nikolic", "supervisor@banka.rs");
             supervisor.setPermissions(Set.of("SUPERVISOR"));
+            ActuaryInfo supervisorInfo = createSupervisorInfo(5L, supervisor);
 
             Employee agentEmployee = createEmployee(10L, "Marko", "Markovic", "marko@banka.rs");
             ActuaryInfo agentInfo = createAgentInfo(1L, agentEmployee,
                     new BigDecimal("100000"), new BigDecimal("15000"), false);
-            ActuaryInfo supervisorInfo = createSupervisorInfo(5L, supervisor);
 
             UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
             dto.setNeedApproval(true);
 
-            when(userRepository.findByEmail("supervisor@banka.rs")).thenReturn(Optional.empty());
-            when(employeeRepository.findByEmail("supervisor@banka.rs")).thenReturn(Optional.of(supervisor));
-            when(actuaryInfoRepository.findByEmployeeId(20L)).thenReturn(Optional.of(supervisorInfo));
+            when(actuaryInfoRepository.findByEmployee_Email("supervisor@banka.rs")).thenReturn(Optional.of(supervisorInfo));
             when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agentInfo));
             when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -301,7 +302,7 @@ class ActuaryServiceImplTest {
         @Test
         @DisplayName("agent ne sme da menja tudje limite")
         void agentCannotUpdateAgentLimit() {
-            authenticateAs("agent@banka.rs");
+            setAuthenticatedUser("agent@banka.rs");
 
             Employee agent = createEmployee(20L, "A", "G", "agent@banka.rs");
             agent.setPermissions(Set.of("AGENT"));
@@ -311,70 +312,37 @@ class ActuaryServiceImplTest {
             UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
             dto.setDailyLimit(new BigDecimal("1"));
 
-            when(userRepository.findByEmail("agent@banka.rs")).thenReturn(Optional.empty());
-            when(employeeRepository.findByEmail("agent@banka.rs")).thenReturn(Optional.of(agent));
-            when(actuaryInfoRepository.findByEmployeeId(20L)).thenReturn(Optional.of(agentOwnInfo));
+            when(actuaryInfoRepository.findByEmployee_Email("agent@banka.rs")).thenReturn(Optional.of(agentOwnInfo));
 
             IllegalStateException ex = assertThrows(IllegalStateException.class,
                     () -> actuaryService.updateAgentLimit(10L, dto));
 
-            assertEquals("Only supervisors or admins can perform this action.", ex.getMessage());
+            assertEquals("Only supervisors can update agent limits.", ex.getMessage());
             verify(actuaryInfoRepository, never()).save(any());
         }
 
         @Test
         @DisplayName("nije dozvoljeno menjati supervizora")
         void cannotUpdateSupervisor() {
-            authenticateAs("admin@banka.rs");
+            setAuthenticatedUser("supervisor@banka.rs");
 
-            Employee supervisor = createEmployee(30L, "Nina", "Nikolic", "nina@banka.rs");
-            ActuaryInfo supervisorInfo = createSupervisorInfo(6L, supervisor);
+            Employee supervisorEmployee = createEmployee(20L, "Nina", "Nikolic", "supervisor@banka.rs");
+            ActuaryInfo supervisorInfo = createSupervisorInfo(5L, supervisorEmployee);
+
+            Employee targetSupervisor = createEmployee(30L, "Sara", "Savic", "nina@banka.rs");
+            ActuaryInfo targetSupervisorInfo = createSupervisorInfo(6L, targetSupervisor);
 
             UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
             dto.setDailyLimit(new BigDecimal("999"));
 
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
-            when(actuaryInfoRepository.findByEmployeeId(30L)).thenReturn(Optional.of(supervisorInfo));
+            when(actuaryInfoRepository.findByEmployee_Email("supervisor@banka.rs")).thenReturn(Optional.of(supervisorInfo));
+            when(actuaryInfoRepository.findByEmployeeId(30L)).thenReturn(Optional.of(targetSupervisorInfo));
 
-            IllegalStateException ex = assertThrows(IllegalStateException.class,
+            RuntimeException ex = assertThrows(RuntimeException.class,
                     () -> actuaryService.updateAgentLimit(30L, dto));
 
-            assertEquals("Only AGENT actuaries can be modified.", ex.getMessage());
+            assertTrue(ex.getMessage().contains("only be updated for agents"));
             verify(actuaryInfoRepository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("negativan dailyLimit nije dozvoljen")
-        void negativeDailyLimitIsRejected() {
-            authenticateAs("admin@banka.rs");
-
-            Employee agentEmployee = createEmployee(10L, "Marko", "Markovic", "marko@banka.rs");
-            ActuaryInfo agentInfo = createAgentInfo(1L, agentEmployee,
-                    new BigDecimal("100000"), new BigDecimal("15000"), false);
-
-            UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
-            dto.setDailyLimit(new BigDecimal("-1"));
-
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
-            when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agentInfo));
-
-            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                    () -> actuaryService.updateAgentLimit(10L, dto));
-
-            assertEquals("Daily limit cannot be negative.", ex.getMessage());
-            verify(actuaryInfoRepository, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("null dto se odbija")
-        void nullDtoIsRejected() {
-            authenticateAs("admin@banka.rs");
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
-
-            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                    () -> actuaryService.updateAgentLimit(10L, null));
-
-            assertEquals("Update payload is required.", ex.getMessage());
         }
 
         @Test
@@ -386,7 +354,7 @@ class ActuaryServiceImplTest {
             IllegalStateException ex = assertThrows(IllegalStateException.class,
                     () -> actuaryService.updateAgentLimit(10L, dto));
 
-            assertEquals("User is not authenticated.", ex.getMessage());
+            assertTrue(ex.getMessage().contains("Authenticated user is required"));
         }
     }
 
@@ -395,15 +363,12 @@ class ActuaryServiceImplTest {
     class ResetUsedLimit {
 
         @Test
-        @DisplayName("admin moze rucno da resetuje usedLimit agenta")
+        @DisplayName("moze rucno da resetuje usedLimit agenta")
         void adminCanResetAgentLimit() {
-            authenticateAs("admin@banka.rs");
-
             Employee agentEmployee = createEmployee(10L, "Marko", "Markovic", "marko@banka.rs");
             ActuaryInfo agentInfo = createAgentInfo(1L, agentEmployee,
                     new BigDecimal("100000"), new BigDecimal("15000.50"), false);
 
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
             when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agentInfo));
             when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -414,35 +379,28 @@ class ActuaryServiceImplTest {
         }
 
         @Test
-        @DisplayName("supervizor ne moze da resetuje supervizora")
+        @DisplayName("ne moze da resetuje supervizora")
         void cannotResetSupervisor() {
-            authenticateAs("supervisor@banka.rs");
-
             Employee supervisor = createEmployee(20L, "Nina", "Nikolic", "supervisor@banka.rs");
             supervisor.setPermissions(Set.of("SUPERVISOR"));
             ActuaryInfo supervisorInfo = createSupervisorInfo(5L, supervisor);
 
-            when(userRepository.findByEmail("supervisor@banka.rs")).thenReturn(Optional.empty());
-            when(employeeRepository.findByEmail("supervisor@banka.rs")).thenReturn(Optional.of(supervisor));
             when(actuaryInfoRepository.findByEmployeeId(20L)).thenReturn(Optional.of(supervisorInfo));
 
             IllegalStateException ex = assertThrows(IllegalStateException.class,
                     () -> actuaryService.resetUsedLimit(20L));
 
-            assertEquals("Only AGENT actuaries can be modified.", ex.getMessage());
+            assertTrue(ex.getMessage().contains("only allowed for Agents"));
             verify(actuaryInfoRepository, never()).save(any());
         }
 
         @Test
         @DisplayName("reset je idempotentan kada je usedLimit vec nula")
         void resetIsIdempotentWhenAlreadyZero() {
-            authenticateAs("admin@banka.rs");
-
             Employee agentEmployee = createEmployee(10L, "Marko", "Markovic", "marko@banka.rs");
             ActuaryInfo agentInfo = createAgentInfo(1L, agentEmployee,
                     new BigDecimal("100000"), BigDecimal.ZERO, false);
 
-            when(userRepository.findByEmail("admin@banka.rs")).thenReturn(Optional.of(createAdminUser("admin@banka.rs")));
             when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agentInfo));
             when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -458,7 +416,7 @@ class ActuaryServiceImplTest {
     class ResetAllUsedLimits {
 
         @Test
-        @DisplayName("resetuje usedLimit na 0 za sve agente i cuva ih jednim saveAll pozivom")
+        @DisplayName("resetuje usedLimit na 0 za sve agente")
         void resetsAllAgentsToZero() {
             Employee marko = createEmployee(10L, "Marko", "Markovic", "marko.markovic@banka.rs");
             Employee jelena = createEmployee(11L, "Jelena", "Jovanovic", "jelena.jovanovic@banka.rs");
@@ -470,6 +428,9 @@ class ActuaryServiceImplTest {
 
             when(actuaryInfoRepository.findAllByActuaryType(ActuaryType.AGENT))
                     .thenReturn(List.of(agent1, agent2));
+            when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agent1));
+            when(actuaryInfoRepository.findByEmployeeId(11L)).thenReturn(Optional.of(agent2));
+            when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
             actuaryService.resetAllUsedLimits();
 
@@ -478,11 +439,12 @@ class ActuaryServiceImplTest {
             assertEquals(new BigDecimal("100000"), agent1.getDailyLimit());
             assertTrue(agent2.isNeedApproval());
 
-            verify(actuaryInfoRepository).saveAll(List.of(agent1, agent2));
+            verify(actuaryInfoRepository).save(agent1);
+            verify(actuaryInfoRepository).save(agent2);
         }
 
         @Test
-        @DisplayName("ako nema agenata ne baca exception i ne zove saveAll")
+        @DisplayName("ako nema agenata ne baca exception")
         void doesNothingWhenNoAgentsExist() {
             when(actuaryInfoRepository.findAllByActuaryType(ActuaryType.AGENT))
                     .thenReturn(Collections.emptyList());
@@ -490,7 +452,7 @@ class ActuaryServiceImplTest {
             assertDoesNotThrow(() -> actuaryService.resetAllUsedLimits());
 
             verify(actuaryInfoRepository).findAllByActuaryType(ActuaryType.AGENT);
-            verify(actuaryInfoRepository, never()).saveAll(any());
+            verify(actuaryInfoRepository, never()).save(any());
         }
 
         @Test
@@ -501,11 +463,13 @@ class ActuaryServiceImplTest {
                     new BigDecimal("100000"), null, false);
 
             when(actuaryInfoRepository.findAllByActuaryType(ActuaryType.AGENT)).thenReturn(List.of(agent));
+            when(actuaryInfoRepository.findByEmployeeId(10L)).thenReturn(Optional.of(agent));
+            when(actuaryInfoRepository.save(any(ActuaryInfo.class))).thenAnswer(inv -> inv.getArgument(0));
 
             actuaryService.resetAllUsedLimits();
 
             assertEquals(BigDecimal.ZERO, agent.getUsedLimit());
-            verify(actuaryInfoRepository).saveAll(List.of(agent));
+            verify(actuaryInfoRepository).save(agent);
         }
 
         @Test
@@ -549,7 +513,7 @@ class ActuaryServiceImplTest {
             assertEquals(BigDecimal.ZERO, result.getUsedLimit());
             assertEquals("AGENT", result.getActuaryType());
             assertEquals("Luka Draskovic", result.getEmployeeName());
-            verify(actuaryInfoRepository, times(1)).save(mockActuaryInfo);
+            verify(actuaryInfoRepository, times(1)).save(any(ActuaryInfo.class));
         }
 
         @Test

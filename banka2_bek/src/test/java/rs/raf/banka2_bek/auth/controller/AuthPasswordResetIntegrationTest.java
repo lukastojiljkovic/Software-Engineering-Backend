@@ -47,9 +47,17 @@ class AuthPasswordResetIntegrationTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository actuaryInfoRepository;
+
+    @Autowired
+    private rs.raf.banka2_bek.employee.repository.ActivationTokenRepository activationTokenRepository;
+
     @BeforeEach
     void cleanDatabase() {
         passwordResetTokenRepository.deleteAll();
+        actuaryInfoRepository.deleteAll();
+        activationTokenRepository.deleteAll();
         employeeRepository.deleteAll();
         userRepository.deleteAll();
     }

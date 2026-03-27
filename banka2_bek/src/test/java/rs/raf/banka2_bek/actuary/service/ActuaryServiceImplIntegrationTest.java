@@ -111,8 +111,24 @@ class ActuaryServiceImplIntegrationTest {
     }
 
     private void authenticateAsAdmin() {
+        org.springframework.security.core.userdetails.UserDetails principal =
+                org.springframework.security.core.userdetails.User.withUsername("admin@banka.rs")
+                        .password("ignored")
+                        .authorities("ROLE_ADMIN")
+                        .build();
         SecurityContextHolder.getContext().setAuthentication(
-                new UsernamePasswordAuthenticationToken("admin@banka.rs", null, java.util.List.of())
+                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities())
+        );
+    }
+
+    private void authenticateAsSupervisor() {
+        org.springframework.security.core.userdetails.UserDetails principal =
+                org.springframework.security.core.userdetails.User.withUsername("nina.supervisor@banka.rs")
+                        .password("ignored")
+                        .authorities("ROLE_EMPLOYEE")
+                        .build();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities())
         );
     }
 
@@ -148,7 +164,7 @@ class ActuaryServiceImplIntegrationTest {
     @Test
     @DisplayName("updateAgentLimit menja samo trazena polja i cuva ih u bazi")
     void updateAgentLimitPersistsChanges() {
-        authenticateAsAdmin();
+        authenticateAsSupervisor();
 
         UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
         dto.setDailyLimit(new BigDecimal("250000.00"));

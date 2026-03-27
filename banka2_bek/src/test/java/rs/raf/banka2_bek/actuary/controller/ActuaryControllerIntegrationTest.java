@@ -1,4 +1,4 @@
-package rs.raf.banka2_bek.actuary.service;
+package rs.raf.banka2_bek.actuary.controller;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -6,22 +6,25 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.DefaultResponseErrorHandler;
+import org.springframework.web.client.RestTemplate;
 
 import rs.raf.banka2_bek.actuary.dto.ActuaryInfoDto;
 import rs.raf.banka2_bek.actuary.dto.UpdateActuaryLimitDto;
 import rs.raf.banka2_bek.actuary.model.ActuaryInfo;
 import rs.raf.banka2_bek.actuary.model.ActuaryType;
 import rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository;
+import rs.raf.banka2_bek.actuary.service.ActuaryService;
 import rs.raf.banka2_bek.auth.model.User;
 import rs.raf.banka2_bek.auth.repository.UserRepository;
 import rs.raf.banka2_bek.employee.model.Employee;
@@ -35,14 +38,13 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 class ActuaryControllerIntegrationTest {
 
-    @LocalServerPort
+    @Value("${local.server.port}")
     private int port;
 
     @Autowired
@@ -63,8 +65,7 @@ class ActuaryControllerIntegrationTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
-    @Autowired
-    private TestRestTemplate restTemplate;
+    private final RestTemplate restTemplate = createRestTemplate();
 
     private Employee agentMarko;
     private Employee agentJelena;
@@ -74,13 +75,21 @@ class ActuaryControllerIntegrationTest {
     private String supervisorToken;
     private String agentToken;
 
+    private static RestTemplate createRestTemplate() {
+        RestTemplate rt = new RestTemplate(new JdkClientHttpRequestFactory());
+        rt.setErrorHandler(new DefaultResponseErrorHandler() {
+            @Override
+            public boolean hasError(ClientHttpResponse response) {
+                return false;
+            }
+        });
+        return rt;
+    }
+
     @BeforeEach
     void setUp() {
         // CHANGE: ostavljen clearContext iz jedne grane da se svaki test startuje "čisto"
         SecurityContextHolder.clearContext();
-
-        // CHANGE: ostavljen JdkClientHttpRequestFactory iz druge grane zbog PATCH poziva
-        restTemplate.getRestTemplate().setRequestFactory(new JdkClientHttpRequestFactory());
 
         cleanDatabase();
         seedEmployees();
@@ -197,11 +206,29 @@ class ActuaryControllerIntegrationTest {
 
     private void authenticateAsAdmin() {
         // CHANGE: dodate authority vrednosti da security context bude realniji za service testove
+        UserDetails principal = org.springframework.security.core.userdetails.User.withUsername("admin@banka.rs")
+                .password("ignored")
+                .authorities("ROLE_ADMIN", "ADMIN")
+                .build();
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(
-                        "admin@banka.rs",
+                        principal,
                         null,
-                        AuthorityUtils.createAuthorityList("ROLE_ADMIN", "ADMIN")
+                        principal.getAuthorities()
+                )
+        );
+    }
+
+    private void authenticateAsSupervisor() {
+        UserDetails principal = org.springframework.security.core.userdetails.User.withUsername("nina.nikolic@banka.rs")
+                .password("ignored")
+                .authorities("ROLE_EMPLOYEE")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(
+                        principal,
+                        null,
+                        principal.getAuthorities()
                 )
         );
     }
@@ -297,7 +324,7 @@ class ActuaryControllerIntegrationTest {
     @Test
     @DisplayName("updateAgentLimit menja samo trazena polja i cuva ih u bazi")
     void updateAgentLimitPersistsChanges() {
-        authenticateAsAdmin();
+        authenticateAsSupervisor();
 
         UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
         dto.setDailyLimit(new BigDecimal("250000.00"));
@@ -402,12 +429,14 @@ class ActuaryControllerIntegrationTest {
     void updateAgentLimitAsAgentReturns403() {
         String payload = "{\"dailyLimit\":61000.00}";
 
-        assertThatThrownBy(() -> restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 url("/actuaries/" + agentJelena.getId() + "/limit"),
                 HttpMethod.PATCH,
                 new HttpEntity<>(payload, authHeaders(agentToken)),
                 String.class
-        )).isInstanceOf(HttpClientErrorException.Forbidden.class);
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     @Test
@@ -415,24 +444,28 @@ class ActuaryControllerIntegrationTest {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        assertThatThrownBy(() -> restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 url("/actuaries/" + agentJelena.getId() + "/limit"),
                 HttpMethod.PATCH,
                 new HttpEntity<>("{\"dailyLimit\":70000}", headers),
                 String.class
-        )).isInstanceOf(HttpClientErrorException.Forbidden.class);
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     @Test
     void updateAgentLimitReturns404WhenTargetDoesNotExist() {
         String payload = "{\"needApproval\":true}";
 
-        assertThatThrownBy(() -> restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 url("/actuaries/999999/limit"),
                 HttpMethod.PATCH,
                 new HttpEntity<>(payload, authHeaders(supervisorToken)),
                 String.class
-        )).isInstanceOf(HttpClientErrorException.NotFound.class);
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test
@@ -465,16 +498,14 @@ class ActuaryControllerIntegrationTest {
 
         String payload = "{\"dailyLimit\":80000.00}";
 
-        assertThatThrownBy(() -> restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 url("/actuaries/" + otherSupervisor.getId() + "/limit"),
                 HttpMethod.PATCH,
                 new HttpEntity<>(payload, authHeaders(supervisorToken)),
                 String.class
-        ))
-                .isInstanceOf(HttpClientErrorException.class)
-                .satisfies(ex -> {
-                    HttpStatusCode status = ((HttpClientErrorException) ex).getStatusCode();
-                    assertThat(status == HttpStatus.BAD_REQUEST || status == HttpStatus.CONFLICT).isTrue();
-                });
+        );
+
+        assertThat(response.getStatusCode() == HttpStatus.BAD_REQUEST
+                || response.getStatusCode() == HttpStatus.CONFLICT).isTrue();
     }
 }

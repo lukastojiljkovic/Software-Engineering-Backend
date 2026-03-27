@@ -53,6 +53,7 @@ class OrderControllerIntegrationTest {
     @Autowired private ActuaryInfoRepository actuaryInfoRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private JwtService jwtService;
+    @Autowired private rs.raf.banka2_bek.employee.repository.ActivationTokenRepository activationTokenRepository;
 
     private static RestTemplate createRestTemplate() {
         RestTemplate rt = new RestTemplate();
@@ -70,6 +71,7 @@ class OrderControllerIntegrationTest {
         actuaryInfoRepository.deleteAll();
         orderRepository.deleteAll();
         listingRepository.deleteAll();
+        activationTokenRepository.deleteAll();
         employeeRepository.deleteAll();
         clientRepository.deleteAll();
         userRepository.deleteAll();
