@@ -284,11 +284,20 @@ public class MarginAccountService {
      * @param marginAccountId ID margin racuna
      * @return lista transakcija sortirana od najnovije
      */
-    public List<MarginTransactionDto> getTransactions(Long marginAccountId) {
-        // TODO: Validate account access before returning transactions
-        if (!marginAccountRepository.existsById(marginAccountId)) {
-            throw new EntityNotFoundException("Margin account with id: " + marginAccountId + " does not exist.");
-        }
+    public List<MarginTransactionDto> getTransactions(Long marginAccountId, Authentication authentication) {
+
+        if (notClient(authentication)) throw new IllegalStateException("Access denied.");
+
+        User user = userRepository.findByEmail(authentication.getName()).orElseThrow(
+                () -> new IllegalStateException("Access denied.")
+        );
+
+        MarginAccount marginAccount = marginAccountRepository.findById(marginAccountId).orElseThrow(
+                () -> new EntityNotFoundException("Margin account with id: " + marginAccountId + " does not exist.")
+        );
+
+        // CHECK ACCOUNT OWNERSHIP
+        if(!marginAccount.getUserId().equals(user.getId())) throw  new IllegalStateException("Access denied.");
 
         return marginTransactionRepository.findByMarginAccountIdOrderByCreatedAtDesc(marginAccountId)
                 .stream()

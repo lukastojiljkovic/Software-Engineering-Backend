@@ -148,6 +148,6 @@ public class MarginAccountController {
     public ResponseEntity<List<MarginTransactionDto>> getTransactions(
             @PathVariable Long id,
             Authentication authentication) {
-        return ResponseEntity.ok(marginAccountService.getTransactions(id));
+        return ResponseEntity.ok(marginAccountService.getTransactions(id, authentication));
     }
 }
