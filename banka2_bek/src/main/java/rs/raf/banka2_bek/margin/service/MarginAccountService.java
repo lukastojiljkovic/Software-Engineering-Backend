@@ -149,13 +149,9 @@ public class MarginAccountService {
         marginAccount.setMaintenanceMargin(marginAccount.getInitialMargin().multiply(MAINTENANCE_FACTOR));
 
 
-        // initialMargin >= maintenanceMargin?
-        boolean overMaintenanceMargin = marginAccount.getInitialMargin().compareTo(marginAccount.getMaintenanceMargin()) >= 0;
-        // account.status == BLOCKED ?
-        boolean isBlocked = marginAccount.getStatus().equals(MarginAccountStatus.BLOCKED);
-
         // 4. if account could be unblocked -> activate it
-        if (isBlocked && overMaintenanceMargin) marginAccount.setStatus(MarginAccountStatus.ACTIVE);
+        boolean isBlocked = marginAccount.getStatus().equals(MarginAccountStatus.BLOCKED);
+        if (isBlocked) marginAccount.setStatus(MarginAccountStatus.ACTIVE);
 
         // 5. save marginAccount
         marginAccountRepository.save(marginAccount);
@@ -284,6 +280,7 @@ public class MarginAccountService {
 
     /**
      * Vraca istoriju transakcija za dati margin racun.
+     *
      * @param marginAccountId ID margin racuna
      * @return lista transakcija sortirana od najnovije
      */
