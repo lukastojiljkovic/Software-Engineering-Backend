@@ -174,7 +174,7 @@ public class MarginAccountService {
             throw new IllegalStateException("Not authenticated.");
 
         if (amount == null || amount.compareTo(BigDecimal.ZERO) < 1)
-            throw new IllegalArgumentException("Amount must be positive number.");
+            throw new IllegalArgumentException("Amount must be a positive number.");
 
         Long clientId = clientRepository.findByEmail(authentication.getName()).orElseThrow(
                 () -> new EntityNotFoundException("Only clients can deposit on margin accounts.")
@@ -182,11 +182,14 @@ public class MarginAccountService {
 
         // 1. find MarginAccount by id
         MarginAccount account = marginAccountRepository.findById(marginAccountId)
-                .orElseThrow(() -> new EntityNotFoundException("Account not found with id: " + marginAccountId));
+                .orElseThrow(
+                        () -> new EntityNotFoundException("Account with id: " + marginAccountId + " not found.")
+                );
 
         // OWNERSHIP CHECK
         if (!clientId.equals(account.getUserId()))
-            throw new IllegalStateException("You don't have access to this margin account.");
+            throw new IllegalStateException("Only the owner of margin account with id = " + marginAccountId + " can deposit funds.");
+
 
         // 2. increase initialMargin for the amount
         account.setInitialMargin(account.getInitialMargin().add(amount));
@@ -230,7 +233,7 @@ public class MarginAccountService {
             throw new IllegalStateException("Not authenticated.");
 
         if (amount == null || amount.compareTo(BigDecimal.ZERO) < 1)
-            throw new IllegalArgumentException("Amount must be positive number.");
+            throw new IllegalArgumentException("Amount must be a positive number.");
 
 
         Long clientId = clientRepository.findByEmail(authentication.getName()).orElseThrow(
@@ -239,12 +242,12 @@ public class MarginAccountService {
 
         // 1. find MarginAccount by marginAccountId, if it doesn't exist exception is thrown
         MarginAccount account = marginAccountRepository.findById(marginAccountId).orElseThrow(
-                () -> new EntityNotFoundException("Account with id: " + marginAccountId)
+                () -> new EntityNotFoundException("Account with id: " + marginAccountId + " not found.")
         );
 
         // CHECK ACCOUNT OWNERSHIP
         if (!clientId.equals(account.getUserId()))
-            throw new IllegalStateException("You don't have access to this margin account.");
+            throw new IllegalStateException("Only the owner of margin account with id = " + marginAccountId + " can withdraw funds.");
 
         // 2. not active accounts can't do withdraw
         if (!account.getStatus().equals(MarginAccountStatus.ACTIVE))
@@ -346,7 +349,8 @@ public class MarginAccountService {
         );
 
         // CHECK ACCOUNT OWNERSHIP
-        if (!marginAccount.getUserId().equals(clientId)) throw new IllegalStateException("Access denied.");
+        if (!marginAccount.getUserId().equals(clientId))
+            throw new IllegalStateException("Only the owner of the margin account with id = " + marginAccountId + " can access margin account transactions.");
 
         return marginTransactionRepository.findByMarginAccountIdOrderByCreatedAtDesc(marginAccountId)
                 .stream()
