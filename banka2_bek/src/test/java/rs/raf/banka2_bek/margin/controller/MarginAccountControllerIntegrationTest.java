@@ -30,6 +30,7 @@ import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.currency.repository.CurrencyRepository;
 import rs.raf.banka2_bek.employee.model.Employee;
+import rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.margin.repository.MarginAccountRepository;
@@ -39,9 +40,15 @@ import rs.raf.banka2_bek.margin.model.MarginAccount;
 import rs.raf.banka2_bek.margin.model.MarginAccountStatus;
 import rs.raf.banka2_bek.margin.model.MarginTransactionType;
 
+import javax.sql.DataSource;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,6 +93,9 @@ class MarginAccountControllerIntegrationTest {
     private ActivationTokenRepository activationTokenRepository;
 
     @Autowired
+    private ActuaryInfoRepository actuaryInfoRepository;
+
+    @Autowired
     private EmployeeRepository employeeRepository;
 
     @Autowired
@@ -94,8 +104,11 @@ class MarginAccountControllerIntegrationTest {
     @Autowired
     private ClientRepository clientRepository;
 
+    @Autowired
+    private DataSource dataSource;
+
     @BeforeEach
-    void cleanDatabase() {
+    void cleanDatabase() throws Exception {
         restTemplate.setErrorHandler(new DefaultResponseErrorHandler() {
             @Override
             public boolean hasError(ClientHttpResponse response) throws IOException {
@@ -103,15 +116,22 @@ class MarginAccountControllerIntegrationTest {
             }
         });
 
-        marginTransactionRepository.deleteAll();
-        marginAccountRepository.deleteAll();
-        accountRepository.deleteAll();
-        passwordResetTokenRepository.deleteAll();
-        activationTokenRepository.deleteAll();
-        employeeRepository.deleteAll();
-        userRepository.deleteAll();
-        clientRepository.deleteAll();
-        currencyRepository.deleteAll();
+        try (Connection conn = dataSource.getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("SET REFERENTIAL_INTEGRITY FALSE");
+
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='PUBLIC'");
+            List<String> tables = new ArrayList<>();
+            while (rs.next()) {
+                tables.add(rs.getString(1));
+            }
+            for (String table : tables) {
+                stmt.execute("TRUNCATE TABLE " + table);
+            }
+
+            stmt.execute("SET REFERENTIAL_INTEGRITY TRUE");
+        }
     }
 
     @Test
@@ -431,7 +451,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody()).contains("You don't have access to this margin account.");
+        assertThat(response.getBody()).contains("can deposit funds");
     }
 
     @Test
@@ -452,7 +472,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("Amount must be positive number.");
+        assertThat(response.getBody()).contains("Amount must be a positive number.");
     }
 
     @Test
@@ -473,7 +493,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("Amount must be positive number.");
+        assertThat(response.getBody()).contains("Amount must be a positive number.");
     }
 
     private String url(String path) {
@@ -635,7 +655,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody()).contains("You don't have access to this margin account.");
+        assertThat(response.getBody()).contains("can withdraw funds");
     }
 
     @Test
@@ -656,7 +676,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("Amount must be positive number.");
+        assertThat(response.getBody()).contains("Amount must be a positive number.");
     }
 
     @Test
@@ -677,7 +697,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("Amount must be positive number.");
+        assertThat(response.getBody()).contains("Amount must be a positive number.");
     }
 
     @Test
@@ -905,7 +925,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody()).contains("Access denied.");
+        assertThat(response.getBody()).contains("can access margin account transactions");
     }
 
     private rs.raf.banka2_bek.margin.model.MarginTransaction createMarginTransaction(
