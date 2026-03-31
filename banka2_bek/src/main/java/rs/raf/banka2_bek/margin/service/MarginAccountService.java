@@ -189,8 +189,7 @@ public class MarginAccountService {
             throw new IllegalStateException("You don't have access to this margin account.");
 
         // 2. increase initialMargin for the amount
-        BigDecimal updatedInitialMargin = account.getInitialMargin().add(amount);
-        account.setInitialMargin(updatedInitialMargin);
+        account.setInitialMargin(account.getInitialMargin().add(amount));
 
         // 3. set new maintenanceMargin = initialMargin * MAINTENANCE_FACTOR
         account.setMaintenanceMargin(account.getInitialMargin().multiply(MAINTENANCE_FACTOR));
@@ -203,7 +202,7 @@ public class MarginAccountService {
         marginAccountRepository.save(account);
 
         String transactionDescription =
-                "Executed transaction. Amount deposited: " + amount + ". Current balance: " + updatedInitialMargin + ".";
+                "Executed transaction. Amount deposited: " + amount + ". Current balance: " + account.getInitialMargin() + ".";
 
         // 6. create Transaction (type = DEPOSIT)
         MarginTransaction transaction = MarginTransaction.builder()
