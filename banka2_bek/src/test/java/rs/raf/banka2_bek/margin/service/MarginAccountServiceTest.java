@@ -498,7 +498,7 @@ class MarginAccountServiceTest {
 
         marginAccountService.checkMaintenanceMargin();
 
-        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("BLOCKED");
+        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("ACTIVE", "BLOCKED");
         verify(eventPublisher, never()).publishEvent(any());
     }
 
@@ -511,7 +511,7 @@ class MarginAccountServiceTest {
 
         marginAccountService.checkMaintenanceMargin();
 
-        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("BLOCKED");
+        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("ACTIVE", "BLOCKED");
 
         ArgumentCaptor<MarginAccountBlockedEvent> eventCaptor =
                 ArgumentCaptor.forClass(MarginAccountBlockedEvent.class);
