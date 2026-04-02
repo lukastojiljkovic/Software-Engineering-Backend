@@ -20,28 +20,6 @@ import java.util.List;
  * i postavlja ih na DECLINED sa razlogom "Settlement date expired".
  *
  * Specifikacija: Celina 3 - Orderi
- *
- * TODO: Implementirati logiku:
- *   1. Logirati pocetak: "Pokrecem ciscenje isteklih ordera..."
- *   2. Pronaci sve ordere gde:
- *      - status = APPROVED
- *      - isDone = false
- *      - lastModification < today (settlement datum je prosao)
- *      Koristiti: orderRepository.findByStatusAndIsDoneFalse(OrderStatus.APPROVED)
- *      pa filtrirati po datumu u kodu, ILI dodati custom @Query:
- *        @Query("SELECT o FROM Order o WHERE o.status = 'APPROVED' AND o.isDone = false " +
- *               "AND o.lastModification < :cutoff")
- *        List<Order> findExpiredApprovedOrders(@Param("cutoff") LocalDateTime cutoff);
- *   3. Za svaki pronadjeni order:
- *      - Postaviti status na DECLINED
- *      - Postaviti approvedBy na "SYSTEM - Settlement date expired"
- *      - Postaviti lastModification na now()
- *      - Sacuvati order
- *      - Logirati: "Order {} (user={}, listing={}) declined - settlement date expired"
- *   4. Logirati zavrsetak: "Ciscenje isteklih ordera zavrseno. Ukupno odbijeno: {}"
- *
- * NAPOMENA: Razmotriti dodavanje custom @Query metode u OrderRepository
- *           za efikasniji upit umesto filtriranja u memoriji.
  */
 @Component
 @RequiredArgsConstructor

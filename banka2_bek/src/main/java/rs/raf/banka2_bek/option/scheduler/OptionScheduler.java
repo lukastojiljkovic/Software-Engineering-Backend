@@ -62,19 +62,7 @@ public class OptionScheduler {
     private final OptionGeneratorService optionGeneratorService;
     private final BlackScholesService blackScholesService;
 
-    /**
-     * TODO: Glavni scheduled metod — pokrece se svakodnevno u 03:00.
-     *
-     * Implementacija:
-     *   1. log.info("Pocetak dnevnog odrzavanja opcija...")
-     *   2. Pozvati cleanupExpiredOptions()
-     *   3. Pozvati generateNewOptions()
-     *   4. Pozvati recalculatePrices()
-     *   5. log.info("Dnevno odrzavanje opcija zavrseno.")
-     *
-     * VAZNO: Svaki korak treba biti u svom try-catch bloku
-     * da greska u jednom koraku ne spreci izvrsavanje ostalih.
-     */
+    /** Glavni scheduled metod -- pokrece se svakodnevno u 03:00. */
     @Scheduled(cron = "0 0 3 * * *")
     public void dailyOptionMaintenance() {
         log.info("Pocetak dnevnog odrzavanja opcija...");
@@ -100,18 +88,7 @@ public class OptionScheduler {
         log.info("Dnevno odrzavanje opcija zavrseno.");
     }
 
-    /**
-     * TODO: Brise sve opcije kojima je istekao settlement datum.
-     *
-     * Implementacija:
-     *   1. Prebrojati istekle opcije pre brisanja (za log):
-     *      optionRepository.findBySettlementDateBefore(LocalDate.now()).size()
-     *   2. Obrisati:
-     *      optionRepository.deleteBySettlementDateBefore(LocalDate.now())
-     *   3. log.info("Obrisano {} isteklih opcija", count)
-     *
-     * NAPOMENA: deleteBySettlementDateBefore zahteva @Transactional
-     */
+    /** Brise sve opcije kojima je istekao settlement datum. */
     @Transactional
     protected void cleanupExpiredOptions() {
         List<Option> expired = optionRepository.findBySettlementDateBefore(LocalDate.now());
@@ -124,40 +101,13 @@ public class OptionScheduler {
         }
     }
 
-    /**
-     * TODO: Generise nove opcije za settlement datume koji jos ne postoje.
-     *
-     * Delegira na OptionGeneratorService koji ima svu logiku generisanja.
-     * Novi datumi se automatski dodaju jer se settlement datumi racunaju
-     * od danas (today + offset), pa ce svaki dan doneti nove datume.
-     */
+    /** Generise nove opcije za settlement datume koji jos ne postoje. */
     protected void generateNewOptions() {
         log.info("Generisanje novih opcija...");
         optionGeneratorService.generateAllOptions();
     }
 
-    /**
-     * TODO: Rekalkulise cene svih postojecih opcija koristeci Black-Scholes.
-     *
-     * Implementacija:
-     *   1. Ucitati sve opcije: optionRepository.findAll()
-     *   2. Za svaku opciju:
-     *      a. Uzeti trenutnu cenu akcije: option.getStockListing().getPrice()
-     *         - Ako je null, preskociti
-     *      b. Izracunati T = ChronoUnit.DAYS.between(today, settlementDate) / 365.0
-     *         - Ako je T <= 0, preskociti (istekla, bice obrisana)
-     *      c. Uzeti sigma = option.getImpliedVolatility()
-     *      d. Izracunati novu cenu:
-     *         - CALL: blackScholesService.calculateCallPrice(S, K, T, sigma)
-     *         - PUT:  blackScholesService.calculatePutPrice(S, K, T, sigma)
-     *      e. Azurirati option.setPrice(newPrice)
-     *      f. Azurirati ask = newPrice * 1.05, bid = newPrice * 0.95
-     *   3. Sacuvati sve: optionRepository.saveAll(options)
-     *   4. log.info("Rekalkulisane cene za {} opcija", count)
-     *
-     * PERFORMANSE: Za veliki broj opcija razmotriti batch processing
-     * (npr. po 1000 opcija u jednom batch-u) da se ne preoptereti memorija.
-     */
+    /** Rekalkulise cene svih postojecih opcija koristeci Black-Scholes. */
     @Transactional
     protected void recalculatePrices() {
         List<Option> allOptions = optionRepository.findAll();

@@ -31,9 +31,6 @@ public class ExchangeManagementController {
      * GET /exchanges
      * Vraca listu svih aktivnih berzi sa computed statusom (isOpen, currentLocalTime, nextOpenTime).
      *
-     * TODO: Implementirati:
-     *   1. Pozvati exchangeManagementService.getAllExchanges()
-     *   2. Vratiti ResponseEntity.ok(lista)
      */
     @GetMapping
     public ResponseEntity<List<ExchangeDto>> getAllExchanges() {

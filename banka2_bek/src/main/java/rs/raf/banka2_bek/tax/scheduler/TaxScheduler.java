@@ -15,14 +15,7 @@ import rs.raf.banka2_bek.tax.service.TaxService;
  * <p>
  * Specifikacija: Celina 3 - Porez na kapitalnu dobit (15%)
  * <p>
- * TODO: Implementirati logiku:
- *   1. Logirati pocetak obracuna: "Pokrecem mesecni obracun poreza..."
- *   2. Pozvati taxService.calculateTaxForAllUsers()
- *   3. Logirati zavrsetak: "Mesecni obracun poreza zavrsen uspesno."
- *   4. Hendlati exception:
- *      - Uhvatiti Exception
- *      - Logirati gresku: "Greska pri obracunu poreza: {}", e.getMessage()
- *   5. TODO (buducnost): Poslati email notifikacije korisnicima sa novim poreskim obavezama
+ * TODO (buducnost): Poslati email notifikacije korisnicima sa novim poreskim obavezama
  *      - Za svakog korisnika ciji se taxOwed promenio, poslati email
  *      - Email template: "Postovani, obracunat vam je porez od X RSD za mesec Y"
  */

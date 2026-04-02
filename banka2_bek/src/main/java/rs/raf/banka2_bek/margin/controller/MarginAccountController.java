@@ -75,14 +75,9 @@ public class MarginAccountController {
     /**
      * GET /margin-accounts/{id}
      * Vraca detalje jednog margin racuna.
-     * TODO: Implementirati:
-     *   1. Proveriti da korisnik ima pristup ovom margin racunu
-     *   2. Dohvatiti margin racun po ID-ju
-     *   3. Vratiti ResponseEntity.ok(dto) ili 404 ako ne postoji
      */
     @GetMapping("/{id}")
     public ResponseEntity<MarginAccountDto> getById(@PathVariable Long id, Authentication authentication) {
-        // TODO: Verify user has access to this margin account
         String email = authentication.getName();
         List<MarginAccountDto> accounts = marginAccountService.getMyMarginAccounts(email);
         return accounts.stream()
@@ -96,11 +91,6 @@ public class MarginAccountController {
      * POST /margin-accounts/{id}/deposit
      * Uplata sredstava na margin racun.
      * Request body: { "amount": 5000.00 }
-     * TODO: Implementirati:
-     *   1. Proveriti da korisnik ima pristup ovom margin racunu
-     *   2. Izvuci amount iz request body-ja
-     *   3. Pozvati marginAccountService.deposit(id, amount)
-     *   4. Vratiti ResponseEntity.ok() sa porukom potvrde
      */
     @Operation(summary = "Deposit funds", description = "Deposits funds into a margin account. Unblocks the account if it was blocked. Only the account owner can deposit.")
     @ApiResponses({
@@ -123,12 +113,6 @@ public class MarginAccountController {
      * POST /margin-accounts/{id}/withdraw
      * Isplata sredstava sa margin racuna.
      * Request body: { "amount": 2000.00 }
-     * TODO: Implementirati:
-     *   1. Proveriti da korisnik ima pristup ovom margin racunu
-     *   2. Izvuci amount iz request body-ja
-     *   3. Pozvati marginAccountService.withdraw(id, amount)
-     *   4. Vratiti ResponseEntity.ok() sa porukom potvrde
-     *   5. Hendlati exception ako withdraw nije dozvoljen (maintenance margin)
      */
     @Operation(summary = "Withdraw funds", description = "Withdraws funds from a margin account. The account must be active and the remaining balance must not fall below the maintenance margin. Only the account owner can withdraw.")
     @ApiResponses({
@@ -151,10 +135,6 @@ public class MarginAccountController {
     /**
      * GET /margin-accounts/{id}/transactions
      * Vraca istoriju transakcija za dati margin racun.
-     * TODO: Implementirati:
-     *   1. Proveriti da korisnik ima pristup ovom margin racunu
-     *   2. Pozvati marginAccountService.getTransactions(id)
-     *   3. Vratiti ResponseEntity.ok(lista)
      */
     @Operation(summary = "Get transaction history", description = "Returns the transaction history for a margin account, sorted newest first. Only the account owner can view transactions.")
     @ApiResponses({

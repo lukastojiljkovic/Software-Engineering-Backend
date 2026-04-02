@@ -25,15 +25,11 @@ public class CreateOrderDto {
     @NotNull(message = "Smer je obavezan (BUY, SELL)")
     private String direction;
 
-    // TODO: Opciona polja za razlicite tipove ordera
     private BigDecimal limitValue;  // za LIMIT i STOP_LIMIT
     private BigDecimal stopValue;   // za STOP i STOP_LIMIT
     private boolean allOrNone;      // AON flag
     private boolean margin;         // Margin flag
 
-    // TODO: ID racuna sa kog se skida novac (obavezno za BUY)
-    // - Klijent: ID njegovog racuna
-    // - Zaposleni: ID bankinog racuna u valuti berze
     @NotNull(message = "ID racuna je obavezan")
     private Long accountId;
 }

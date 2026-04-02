@@ -13,10 +13,7 @@ import java.time.LocalDateTime;
  * Koristi se kao odgovor na GET /options/{id} i kao element unutar OptionChainDto lista.
  * Mapira se iz Option entiteta putem OptionMapper-a.
  *
- * TODO: Sva polja se popunjavaju u OptionMapper#toDto(Option).
- * Neka polja su izvedena:
- *   - stockTicker i stockName se izvlace iz Option.stockListing relacije
- *   - inTheMoney se racuna: CALL -> stockPrice > strikePrice, PUT -> stockPrice < strikePrice
+ * Mapira se iz Option entiteta putem OptionMapper#toDto(Option).
  */
 @Data
 public class OptionDto {

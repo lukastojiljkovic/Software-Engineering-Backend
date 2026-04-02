@@ -84,24 +84,7 @@ public class OptionGeneratorService {
     private static final DateTimeFormatter TICKER_DATE_FORMAT = DateTimeFormatter.ofPattern("yyMMdd");
 
     /**
-     * TODO: Generise opcije za jednu akciju.
-     *
-     * Implementacija:
-     *   1. Proveriti da listing nije null i da je tip STOCK
-     *   2. Uzeti trenutnu cenu: listing.getPrice()
-     *      - Ako je price null ili <= 0, loguj warning i vrati se
-     *   3. Generisati listu strike cena: generateStrikePrices(currentPrice)
-     *   4. Generisati listu settlement datuma: generateSettlementDates()
-     *   5. Za svaki (strike, date) par:
-     *      a. Proveriti da li vec postoji: optionRepository.existsByStockListingIdAndSettlementDate()
-     *      b. Izracunati T = daysUntil(date) / 365.0
-     *      c. Generisati random implied volatility (0.15 - 0.60)
-     *      d. Izracunati CALL cenu: blackScholesService.calculateCallPrice(S, K, T, sigma)
-     *      e. Kreirati CALL Option entitet sa svim poljima
-     *      f. Izracunati PUT cenu: blackScholesService.calculatePutPrice(S, K, T, sigma)
-     *      g. Kreirati PUT Option entitet sa svim poljima
-     *   6. Sacuvati sve opcije batch-om: optionRepository.saveAll()
-     *   7. Loguj koliko opcija je generisano
+     * Generise opcije za jednu akciju.
      *
      * @param stock Listing entitet za koji se generisu opcije (mora biti STOCK tip)
      */
@@ -167,16 +150,7 @@ public class OptionGeneratorService {
         return option;
     }
 
-    /**
-     * TODO: Generise opcije za SVE akcije u sistemu.
-     *
-     * Implementacija:
-     *   1. Ucitati sve listinge sa tipom STOCK:
-     *      listingRepository.findAll() pa filtrirati, ili dodati custom query
-     *   2. Za svaki listing pozvati generateOptionsForListing()
-     *   3. Loguj ukupan broj obradjenih listinga
-     *   4. Hvatati izuzetke po listingu (ne prekidati ceo batch ako jedan listing failuje)
-     */
+    /** Generise opcije za SVE akcije u sistemu. */
     @Transactional
     public void generateAllOptions() {
         List<Listing> stocks = listingRepository.findAll().stream()
@@ -197,19 +171,7 @@ public class OptionGeneratorService {
     }
 
     /**
-     * TODO: Generise listu strike cena na osnovu trenutne cene akcije.
-     *
-     * Implementacija:
-     *   1. Kreirati praznu listu BigDecimal
-     *   2. Za i = 1..STRIKES_PER_SIDE:
-     *      - Dodati currentPrice * (1 + i * STRIKE_STEP_PERCENT)  // iznad
-     *      - Dodati currentPrice * (1 - i * STRIKE_STEP_PERCENT)  // ispod
-     *   3. Sortirati ascending
-     *   4. Zaokruziti svaki na 2 decimale
-     *
-     * Primer za AAPL @ $185.00:
-     *   Ispod: $175.75, $166.25, $157.25, $148.00, $138.75
-     *   Iznad: $194.25, $203.50, $212.75, $222.00, $231.25
+     * Generise listu strike cena na osnovu trenutne cene akcije.
      *
      * @param currentPrice trenutna cena akcije
      * @return sortirana lista od 10 strike cena
@@ -227,15 +189,7 @@ public class OptionGeneratorService {
     }
 
     /**
-     * TODO: Generise listu settlement datuma od danas.
-     *
-     * Implementacija:
-     *   1. Kreirati praznu listu LocalDate
-     *   2. Dodati 6 datuma sa razmakom od 6 dana:
-     *      today+6, today+12, today+18, today+24, today+30, today+36
-     *   3. Dodati 3 datuma sa razmakom od 30 dana posle poslednjeg:
-     *      today+66, today+96, today+126
-     *   4. Vratiti listu (vec je sortirana)
+     * Generise listu settlement datuma od danas.
      *
      * @return lista od 9 settlement datuma
      */
@@ -254,24 +208,12 @@ public class OptionGeneratorService {
     }
 
     /**
-     * TODO: Generise ticker string za opciju.
+     * Generise ticker string za opciju.
      *
-     * Format: {STOCK_TICKER}{YYMMDD}{C/P}{STRIKE*1000 zero-padded na 8 cifara}
-     *
-     * Implementacija:
-     *   1. stockTicker = listing.getTicker() (npr. "AAPL")
-     *   2. dateStr = settlementDate.format(TICKER_DATE_FORMAT) (npr. "260402")
-     *   3. typeChar = optionType == CALL ? "C" : "P"
-     *   4. strikeInt = strikePrice.multiply(1000).longValue() (npr. 185000 za $185.00)
-     *   5. strikeStr = String.format("%08d", strikeInt) (npr. "00185000")
-     *   6. Vratiti: stockTicker + dateStr + typeChar + strikeStr
-     *
-     * Primer: "AAPL" + "260402" + "C" + "00185000" = "AAPL260402C00185000"
-     *
-     * @param stockTicker  ticker osnovne akcije
+     * @param stockTicker    ticker osnovne akcije
      * @param settlementDate datum isteka opcije
-     * @param optionType   CALL ili PUT
-     * @param strikePrice  strike cena
+     * @param optionType     CALL ili PUT
+     * @param strikePrice    strike cena
      * @return generisani ticker string
      */
     protected String generateTicker(String stockTicker, LocalDate settlementDate,

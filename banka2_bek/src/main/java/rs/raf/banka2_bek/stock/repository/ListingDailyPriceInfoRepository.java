@@ -10,7 +10,6 @@ import java.util.List;
 @Repository
 public interface ListingDailyPriceInfoRepository extends JpaRepository<ListingDailyPriceInfo, Long> {
 
-    // TODO: Za grafik promene cene
     List<ListingDailyPriceInfo> findByListingIdAndDateBetweenOrderByDateAsc(
             Long listingId, LocalDate from, LocalDate to);
 

@@ -54,22 +54,11 @@ import java.math.BigDecimal;
 @Service
 public class BlackScholesService {
 
-    /**
-     * TODO: Inject iz application.properties sa default vrednoscu 0.05
-     * @Value("${option.risk-free-rate:0.05}")
-     */
+    /** Default risk-free kamatna stopa (5% godisnje). */
     private static final double DEFAULT_RISK_FREE_RATE = 0.05;
 
     /**
-     * TODO: Izracunava cenu CALL opcije koristeci Black-Scholes formulu.
-     *
-     * Implementacija:
-     *   1. Proveriti da su S > 0, K > 0, sigma > 0
-     *   2. Ako je T <= 0, vratiti intrinsic value: max(0, S - K)
-     *   3. Izracunati d1 = [ln(S/K) + (r + sigma^2/2) * T] / (sigma * sqrt(T))
-     *   4. Izracunati d2 = d1 - sigma * sqrt(T)
-     *   5. Vratiti: S * N(d1) - K * e^(-r*T) * N(d2)
-     *   6. Zaokruziti na 4 decimale
+     * Izracunava cenu CALL opcije koristeci Black-Scholes formulu.
      *
      * @param spotPrice         S - trenutna cena akcije
      * @param strikePrice       K - strike cena opcije
@@ -99,18 +88,7 @@ public class BlackScholesService {
     }
 
     /**
-     * TODO: Izracunava cenu PUT opcije koristeci Black-Scholes formulu.
-     *
-     * Implementacija:
-     *   1. Proveriti da su S > 0, K > 0, sigma > 0
-     *   2. Ako je T <= 0, vratiti intrinsic value: max(0, K - S)
-     *   3. Izracunati d1 i d2 (isto kao za CALL)
-     *   4. Vratiti: K * e^(-r*T) * N(-d2) - S * N(-d1)
-     *   5. Zaokruziti na 4 decimale
-     *
-     * ALTERNATIVA: Moze se koristiti put-call parity:
-     *   P = C - S + K * e^(-r*T)
-     *   gde je C vec izracunata call cena.
+     * Izracunava cenu PUT opcije koristeci Black-Scholes formulu.
      *
      * @param spotPrice         S - trenutna cena akcije
      * @param strikePrice       K - strike cena opcije
@@ -139,20 +117,14 @@ public class BlackScholesService {
         return BigDecimal.valueOf(putPrice).setScale(4, java.math.RoundingMode.HALF_UP);
     }
 
-    /**
-     * TODO: Convenience metoda sa default risk-free rate-om.
-     * Poziva calculateCallPrice sa DEFAULT_RISK_FREE_RATE.
-     */
+    /** Convenience metoda sa default risk-free rate-om. */
     public BigDecimal calculateCallPrice(double spotPrice, double strikePrice,
                                          double timeToExpiryYears, double volatility) {
         return calculateCallPrice(spotPrice, strikePrice, timeToExpiryYears,
                 DEFAULT_RISK_FREE_RATE, volatility);
     }
 
-    /**
-     * TODO: Convenience metoda sa default risk-free rate-om.
-     * Poziva calculatePutPrice sa DEFAULT_RISK_FREE_RATE.
-     */
+    /** Convenience metoda sa default risk-free rate-om. */
     public BigDecimal calculatePutPrice(double spotPrice, double strikePrice,
                                         double timeToExpiryYears, double volatility) {
         return calculatePutPrice(spotPrice, strikePrice, timeToExpiryYears,
@@ -160,33 +132,8 @@ public class BlackScholesService {
     }
 
     /**
-     * TODO: Kumulativna funkcija normalne distribucije (CDF) - N(x).
-     *
-     * Vraca verovatnocu da standardna normalna slucajna promenljiva
-     * uzme vrednost manju ili jednaku x.
-     *
-     * OPCIJA 1 (preporuceno): Koristiti Apache Commons Math
-     *   - Dodati dependency: org.apache.commons:commons-math3:3.6.1
-     *   - new NormalDistribution().cumulativeProbability(x)
-     *
-     * OPCIJA 2: Horner-ova aproksimacija (bez eksternih biblioteka)
-     *   Abramowitz & Stegun aproksimacija (greska < 1.5e-7):
-     *
-     *   if (x < 0) return 1 - normalCDF(-x);
-     *
-     *   double t = 1.0 / (1.0 + 0.2316419 * x);
-     *   double d = 0.3989422804014327;  // 1/sqrt(2*PI)
-     *   double probability = d * Math.exp(-x * x / 2.0)
-     *       * t * (0.3193815
-     *       + t * (-0.3565638
-     *       + t * (1.7814779
-     *       + t * (-1.8212560
-     *       + t * 1.3302744))));
-     *   return 1.0 - probability;
-     *
-     * OPCIJA 3: Java built-in (Java 17+)
-     *   Nema direktnu CDF, ali moze se koristiti:
-     *   0.5 * (1 + org.apache.commons.math3.special.Erf.erf(x / Math.sqrt(2)))
+     * Kumulativna funkcija normalne distribucije (CDF) - N(x).
+     * Koristi Abramowitz & Stegun aproksimaciju (greska < 1.5e-7).
      *
      * @param x vrednost za koju se racuna CDF
      * @return N(x) - verovatnoca P(Z <= x) za standardnu normalnu distribuciju

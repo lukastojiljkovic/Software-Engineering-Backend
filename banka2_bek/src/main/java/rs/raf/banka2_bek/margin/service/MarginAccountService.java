@@ -292,8 +292,6 @@ public class MarginAccountService {
      * Dnevna provera maintenance margine za sve aktivne margin racune.
      * Pokrece se automatski svaki dan u ponoc.
      * <p>
-     * TODO: Implementirati logiku
-     *   5. TODO (buducnost): Poslati email notifikaciju korisniku o margin call-u
      */
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
@@ -361,7 +359,7 @@ public class MarginAccountService {
     // ── Helper metode ───────────────────────────────────────────────────────────
 
     /**
-     * TODO: Mapira MarginAccount entitet u MarginAccountDto.
+     * Mapira MarginAccount entitet u MarginAccountDto.
      */
     private MarginAccountDto toDto(MarginAccount marginAccount) {
         return MarginAccountDto.builder()

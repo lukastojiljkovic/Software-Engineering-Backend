@@ -123,17 +123,6 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public OrderDto approveOrder(Long orderId) {
-        // TODO: Implementirati odobravanje ordera
-        // 1. Naci order po ID-ju, proveriti da je PENDING
-        // 2. Proveriti da settlement date nije prosao (za futures/opcije)
-        //    - Ako jeste, automatski DECLINE
-        // 3. Postaviti status = APPROVED
-        // 4. Postaviti approvedBy = ime ulogovanog supervizora
-        // 5. Postaviti lastModification = now()
-        // 6. Sacuvati
-        // 7. Pokrenuti izvrsavanje (asinhrono) - buduci sprint
-
-
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new EntityNotFoundException("Order not found"+ orderId));
 

@@ -14,8 +14,6 @@ import java.util.List;
  * Controller za upravljanje aktuarima.
  * Pristup: samo supervizori (i admini koji su automatski supervizori).
  *
- * TODO: Dodati u GlobalSecurityConfig:
- *   .requestMatchers("/actuaries/**").hasAnyRole("ADMIN", "SUPERVISOR")
  */
 @RestController
 @RequestMapping("/actuaries")

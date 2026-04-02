@@ -11,18 +11,8 @@ import java.math.BigDecimal;
  *
  * Koristi static metode (isti pattern kao ListingMapper u stock paketu).
  *
- * TODO: Izvedena polja koja se racunaju pri mapiranju:
- *   - stockTicker:       option.getStockListing().getTicker()
- *   - stockName:         option.getStockListing().getName()
- *   - stockListingId:    option.getStockListing().getId()
- *   - currentStockPrice: prosledjuje se kao parametar (ne iz entiteta)
- *   - inTheMoney:        CALL -> currentPrice > strikePrice
- *                         PUT  -> currentPrice < strikePrice
- *
  * NAPOMENA: stockListing je LAZY loaded, pa ce pristup stock poljima
  * izazvati dodatni SQL upit ako se pozove van transakcije.
- * Preporuka: pozivati toDto() unutar @Transactional metode ili
- * koristiti JOIN FETCH u repository upitu.
  */
 public final class OptionMapper {
 
@@ -31,24 +21,7 @@ public final class OptionMapper {
     }
 
     /**
-     * TODO: Mapira Option entitet u OptionDto.
-     *
-     * Implementacija:
-     *   1. Kreirati novi OptionDto
-     *   2. Postaviti direktna polja:
-     *      - id, ticker, strikePrice, price, ask, bid
-     *      - impliedVolatility, openInterest, volume
-     *      - settlementDate, contractSize, createdAt
-     *   3. Postaviti optionType kao string: option.getOptionType().name()
-     *   4. Postaviti polja iz stockListing relacije:
-     *      - stockTicker = option.getStockListing().getTicker()
-     *      - stockName = option.getStockListing().getName()
-     *      - stockListingId = option.getStockListing().getId()
-     *   5. Postaviti currentStockPrice iz parametra
-     *   6. Izracunati inTheMoney:
-     *      - CALL: currentStockPrice.compareTo(strikePrice) > 0
-     *      - PUT:  currentStockPrice.compareTo(strikePrice) < 0
-     *   7. Vratiti popunjen DTO
+     * Mapira Option entitet u OptionDto.
      *
      * @param option       Option entitet za mapiranje
      * @param currentPrice trenutna cena osnovne akcije (za inTheMoney kalkulaciju)

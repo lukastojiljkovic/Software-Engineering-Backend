@@ -13,13 +13,6 @@ import java.util.List;
  * Option chain je standardni prikaz opcija na berzama gde se za svaki settlement datum
  * prikazuju CALL opcije levo i PUT opcije desno, grupisane po strike ceni.
  *
- * TODO: Popunjava se u OptionService#getOptionsForStock():
- *   1. Ucitati sve opcije za datu akciju iz OptionRepository
- *   2. Grupisati po settlementDate (Collectors.groupingBy)
- *   3. Za svaku grupu razdvojiti na calls i puts (filter po optionType)
- *   4. Sortirati calls i puts po strikePrice ascending
- *   5. Postaviti currentStockPrice iz Listing.price
- *
  * Frontend koristi ovaj DTO za prikaz tabele sa tabovima po datumima.
  */
 @Data
