@@ -302,9 +302,13 @@ public class MarginAccountService {
         log.info("Running daily maintenance margin check...");
 
         // get all about to be blocked accounts
-        List<MarginAccountCheckDto> accountsForBlocking = marginAccountRepository.findAccountsForMarginCheck(MarginAccountStatus.ACTIVE.toString());
+        List<MarginAccountCheckDto> accountsForBlocking =
+                marginAccountRepository.findAccountsForMarginCheck(MarginAccountStatus.ACTIVE.toString());
 
-        marginAccountRepository.blockAccountsWhereMaintenanceExceedsInitial(MarginAccountStatus.BLOCKED.toString());
+        marginAccountRepository.blockAccountsWhereMaintenanceExceedsInitial(
+                MarginAccountStatus.ACTIVE.toString(),
+                MarginAccountStatus.BLOCKED.toString()
+        );
 
         for (MarginAccountCheckDto account : accountsForBlocking) {
 

@@ -51,6 +51,9 @@ public interface MarginAccountRepository extends JpaRepository<MarginAccount, Lo
      * Postavlja status racuna koji treba da se blokiraju u "BLOCKED"
      */
     @Modifying
-    @Query(value = "UPDATE margin_accounts SET status = :blocked WHERE maintenance_margin > initial_margin", nativeQuery = true)
-    void blockAccountsWhereMaintenanceExceedsInitial(@Param("blocked") String blocked);
+    @Query(
+            value = "UPDATE margin_accounts SET status = :blocked WHERE maintenance_margin > initial_margin AND status = :active",
+            nativeQuery = true
+    )
+    void blockAccountsWhereMaintenanceExceedsInitial(@Param("active") String active, @Param("blocked") String blocked);
 }
