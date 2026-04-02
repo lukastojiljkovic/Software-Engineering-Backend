@@ -8,6 +8,7 @@ import rs.raf.banka2_bek.berza.dto.ExchangeDto;
 import rs.raf.banka2_bek.berza.model.Exchange;
 import rs.raf.banka2_bek.berza.repository.ExchangeRepository;
 
+import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -27,7 +28,7 @@ public class ExchangeManagementService {
 
     /**
      * Proverava da li je berza trenutno otvorena.
-     * TODO: Dodati holiday calendar proveru u buducnosti.
+     * Praznici se trenutno ne uzimaju u obzir (samo radni dan + lokalno vreme u open/close intervalu).
      */
     public boolean isExchangeOpen(String acronym) {
         Exchange exchange = exchangeRepository.findByAcronym(acronym)
@@ -35,8 +36,29 @@ public class ExchangeManagementService {
         if (exchange.isTestMode()) {
             return true;
         }
-        // TODO: Implement full weekday + holiday check
-        return true;
+        ZonedDateTime nowZ = nowInExchangeZone(exchange);
+        DayOfWeek dow = nowZ.getDayOfWeek();
+        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) {
+            return false;
+        }
+        LocalTime now = nowZ.toLocalTime();
+        LocalTime open = exchange.getOpenTime();
+        LocalTime close = exchange.getCloseTime();
+        return isWithinTradingHours(now, open, close);
+    }
+
+    /**
+     * Izdvojeno radi unit testova (mock trenutnog vremena u zoni berze).
+     */
+    ZonedDateTime nowInExchangeZone(Exchange exchange) {
+        return ZonedDateTime.now(ZoneId.of(exchange.getTimeZone()));
+    }
+
+    private static boolean isWithinTradingHours(LocalTime now, LocalTime open, LocalTime close) {
+        if (!open.isAfter(close)) {
+            return !now.isBefore(open) && !now.isAfter(close);
+        }
+        return !now.isBefore(open) || !now.isAfter(close);
     }
 
     /**
@@ -70,12 +92,28 @@ public class ExchangeManagementService {
     }
 
     /**
-     * Proverava da li je berza u after-hours periodu.
-     * TODO: Implement full after-hours logic.
+     * Proverava da li je berza u after-hours periodu (posle regularnog closeTime, do postMarketCloseTime).
+     * Bez postMarketCloseTime nema after-hours prozora. Vikend: uvek false.
+     * Test mode ne menja after-hours proveru (može biti i true i false po satu).
      */
     public boolean isAfterHours(String acronym) {
-        // TODO: Implement after-hours check using postMarketCloseTime
-        return false;
+        Exchange exchange = exchangeRepository.findByAcronym(acronym)
+                .orElseThrow(() -> new RuntimeException("Exchange not found: " + acronym));
+        LocalTime postEnd = exchange.getPostMarketCloseTime();
+        if (postEnd == null) {
+            return false;
+        }
+        ZonedDateTime nowZ = nowInExchangeZone(exchange);
+        DayOfWeek dow = nowZ.getDayOfWeek();
+        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) {
+            return false;
+        }
+        LocalTime now = nowZ.toLocalTime();
+        LocalTime close = exchange.getCloseTime();
+        if (close == null || !postEnd.isAfter(close)) {
+            return false;
+        }
+        return now.isAfter(close) && now.isBefore(postEnd);
     }
 
     // ── Helper metode ───────────────────────────────────────────────────────────
