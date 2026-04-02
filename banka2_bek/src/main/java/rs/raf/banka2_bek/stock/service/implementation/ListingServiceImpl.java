@@ -3,12 +3,16 @@ package rs.raf.banka2_bek.stock.service.implementation;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import rs.raf.banka2_bek.exchange.ExchangeService;
+import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 import rs.raf.banka2_bek.stock.dto.ListingDailyPriceDto;
 import rs.raf.banka2_bek.stock.dto.ListingDto;
 import rs.raf.banka2_bek.stock.mapper.ListingMapper;
@@ -30,6 +34,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 
@@ -41,6 +46,14 @@ public class ListingServiceImpl implements ListingService {
     private final ListingRepository listingRepository;
     private final Random random = new Random();
     private final ListingDailyPriceInfoRepository dailyPriceRepository;
+    private final RestTemplate restTemplate;
+    private final ExchangeService exchangeService;
+
+    @Value("${stock.api.key:demo}")
+    private String stockApiKey;
+
+    @Value("${stock.api.url:https://www.alphavantage.co/query}")
+    private String stockApiUrl;
 
     @Override
     public Page<ListingDto> getListings(String type, String search, int page, int size) {
@@ -130,66 +143,203 @@ public class ListingServiceImpl implements ListingService {
     @Override
     @Transactional
     public void refreshPrices() {
-        // 1. Proći kroz listinge
         List<Listing> listings = listingRepository.findAll();
 
         for (Listing listing : listings) {
             BigDecimal currentPrice = listing.getPrice();
             if (currentPrice == null) continue;
 
-            // 2. Ažurirati price-related podatke (Dummy logika +/- 2%)
-            double changePercent = 0.98 + (0.04 * random.nextDouble());
-            BigDecimal newPrice = currentPrice.multiply(BigDecimal.valueOf(changePercent))
-                    .setScale(4, RoundingMode.HALF_UP);
+            BigDecimal newPrice;
+            BigDecimal newAsk;
+            BigDecimal newBid;
+            BigDecimal priceChange;
+            long newVolume;
 
-            // Ask/Bid (Ask uvek malo veći, Bid malo manji)
-            BigDecimal newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
-            BigDecimal newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+            if (listing.getListingType() == ListingType.STOCK) {
+                // Try Alpha Vantage for stocks
+                BigDecimal[] alphaResult = fetchAlphaVantagePrice(listing.getTicker());
+                if (alphaResult != null) {
+                    newPrice = alphaResult[0];
+                    newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
+                    newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+                    priceChange = alphaResult[1]; // change from previous close
+                    newVolume = alphaResult[2].longValue();
+                    // Use real high/low if available
+                    if (alphaResult[3] != null) newAsk = alphaResult[3]; // daily high
+                    if (alphaResult[4] != null) newBid = alphaResult[4]; // daily low
+                    log.info("Refreshed {} from Alpha Vantage: price={}", listing.getTicker(), newPrice);
+                } else {
+                    log.warn("Alpha Vantage unavailable for {}, using random simulation", listing.getTicker());
+                    double changePercent = 0.98 + (0.04 * random.nextDouble());
+                    newPrice = currentPrice.multiply(BigDecimal.valueOf(changePercent))
+                            .setScale(4, RoundingMode.HALF_UP);
+                    newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
+                    newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+                    priceChange = newPrice.subtract(currentPrice);
+                    newVolume = listing.getVolume() != null
+                            ? (long) (listing.getVolume() * (0.9 + (0.2 * random.nextDouble())))
+                            : 100000L;
+                }
+            } else if (listing.getListingType() == ListingType.FOREX) {
+                // Use ExchangeService (fixer.io) for forex pairs
+                BigDecimal forexPrice = fetchForexPrice(listing.getBaseCurrency(), listing.getQuoteCurrency());
+                if (forexPrice != null) {
+                    newPrice = forexPrice;
+                    newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
+                    newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+                    priceChange = newPrice.subtract(currentPrice);
+                    newVolume = listing.getVolume() != null
+                            ? (long) (listing.getVolume() * (0.9 + (0.2 * random.nextDouble())))
+                            : 100000L;
+                    log.info("Refreshed {} from fixer.io: price={}", listing.getTicker(), newPrice);
+                } else {
+                    log.warn("Fixer.io unavailable for {}, using random simulation", listing.getTicker());
+                    double changePercent = 0.98 + (0.04 * random.nextDouble());
+                    newPrice = currentPrice.multiply(BigDecimal.valueOf(changePercent))
+                            .setScale(4, RoundingMode.HALF_UP);
+                    newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
+                    newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+                    priceChange = newPrice.subtract(currentPrice);
+                    newVolume = listing.getVolume() != null
+                            ? (long) (listing.getVolume() * (0.9 + (0.2 * random.nextDouble())))
+                            : 100000L;
+                }
+            } else {
+                // FUTURES — keep random simulation (no free API)
+                double changePercent = 0.98 + (0.04 * random.nextDouble());
+                newPrice = currentPrice.multiply(BigDecimal.valueOf(changePercent))
+                        .setScale(4, RoundingMode.HALF_UP);
+                newAsk = newPrice.multiply(BigDecimal.valueOf(1.002)).setScale(4, RoundingMode.HALF_UP);
+                newBid = newPrice.multiply(BigDecimal.valueOf(0.998)).setScale(4, RoundingMode.HALF_UP);
+                priceChange = newPrice.subtract(currentPrice);
+                newVolume = listing.getVolume() != null
+                        ? (long) (listing.getVolume() * (0.9 + (0.2 * random.nextDouble())))
+                        : 100000L;
+            }
 
-            // Promena u odnosu na staru cenu
-            BigDecimal priceChange = newPrice.subtract(currentPrice);
-
-            // 3. Postaviti lastRefresh = now()
             listing.setPrice(newPrice);
             listing.setAsk(newAsk);
             listing.setBid(newBid);
             listing.setPriceChange(priceChange);
             listing.setLastRefresh(LocalDateTime.now());
-
-            // Ažuriramo i volume (nasumično)
-            long newVolume = listing.getVolume() != null
-                    ? (long) (listing.getVolume() * (0.9 + (0.2 * random.nextDouble())))
-                    : 100000L;
             listing.setVolume(newVolume);
 
             // Save daily price snapshot for history chart
-            LocalDate today = LocalDate.now();
-            List<ListingDailyPriceInfo> existingToday = dailyPriceRepository
-                    .findByListingIdAndDate(listing.getId(), today);
-            if (existingToday.isEmpty()) {
-                ListingDailyPriceInfo dailyPrice = new ListingDailyPriceInfo();
-                dailyPrice.setListing(listing);
-                dailyPrice.setDate(today);
-                dailyPrice.setPrice(newPrice);
-                dailyPrice.setHigh(newAsk);
-                dailyPrice.setLow(newBid);
-                dailyPrice.setChange(priceChange);
-                dailyPrice.setVolume(newVolume);
-                dailyPriceRepository.save(dailyPrice);
-            } else {
-                // Update existing daily record with latest high/low
-                ListingDailyPriceInfo existing = existingToday.get(0);
-                existing.setPrice(newPrice);
-                if (newAsk.compareTo(existing.getHigh()) > 0) existing.setHigh(newAsk);
-                if (newBid.compareTo(existing.getLow()) < 0) existing.setLow(newBid);
-                existing.setChange(priceChange);
-                existing.setVolume(newVolume);
-                dailyPriceRepository.save(existing);
-            }
+            saveDailyPriceSnapshot(listing, newPrice, newAsk, newBid, priceChange, newVolume);
         }
 
-        // 4. Poziv endpoint-a ažurira listinge u bazi
         listingRepository.saveAll(listings);
+    }
+
+    /**
+     * Fetches real stock price from Alpha Vantage GLOBAL_QUOTE endpoint.
+     * Returns [price, change, volume, high, low] or null on failure.
+     * Includes 12-second delay for rate limiting (free tier: 5 calls/min, 25/day).
+     */
+    private BigDecimal[] fetchAlphaVantagePrice(String ticker) {
+        try {
+            String url = stockApiUrl + "?function=GLOBAL_QUOTE&symbol=" + ticker + "&apikey=" + stockApiKey;
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restTemplate.getForObject(url, Map.class);
+
+            if (response == null || !response.containsKey("Global Quote")) {
+                return null;
+            }
+
+            @SuppressWarnings("unchecked")
+            Map<String, String> quote = (Map<String, String>) response.get("Global Quote");
+
+            if (quote == null || quote.isEmpty() || quote.get("05. price") == null) {
+                return null;
+            }
+
+            BigDecimal price = new BigDecimal(quote.get("05. price")).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal previousClose = quote.get("08. previous close") != null
+                    ? new BigDecimal(quote.get("08. previous close"))
+                    : BigDecimal.ZERO;
+            BigDecimal change = price.subtract(previousClose).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal volume = quote.get("06. volume") != null
+                    ? new BigDecimal(quote.get("06. volume"))
+                    : BigDecimal.valueOf(100000);
+            BigDecimal high = quote.get("03. high") != null
+                    ? new BigDecimal(quote.get("03. high")).setScale(4, RoundingMode.HALF_UP)
+                    : null;
+            BigDecimal low = quote.get("04. low") != null
+                    ? new BigDecimal(quote.get("04. low")).setScale(4, RoundingMode.HALF_UP)
+                    : null;
+
+            // Rate limiting: 12-second delay between API calls (5 calls/min max)
+            Thread.sleep(12000);
+
+            return new BigDecimal[]{price, change, volume, high, low};
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            log.warn("Alpha Vantage API error for {}: {}", ticker, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Fetches forex rate using ExchangeService (fixer.io).
+     * Calculates cross rate for the given currency pair.
+     */
+    private BigDecimal fetchForexPrice(String baseCurrency, String quoteCurrency) {
+        try {
+            if (baseCurrency == null || quoteCurrency == null) return null;
+
+            List<ExchangeRateDto> rates = exchangeService.getAllRates();
+
+            // Rates are in format: how much foreign currency per 1 RSD
+            Double baseRate = null;
+            Double quoteRate = null;
+
+            for (ExchangeRateDto rate : rates) {
+                if (rate.getCurrency().equalsIgnoreCase(baseCurrency)) baseRate = rate.getRate();
+                if (rate.getCurrency().equalsIgnoreCase(quoteCurrency)) quoteRate = rate.getRate();
+            }
+
+            if (baseRate == null || quoteRate == null || baseRate == 0.0) return null;
+
+            // Cross rate: quoteCurrency/baseCurrency
+            double crossRate = quoteRate / baseRate;
+            return BigDecimal.valueOf(crossRate).setScale(4, RoundingMode.HALF_UP);
+        } catch (Exception e) {
+            log.warn("Fixer.io error for {}/{}: {}", baseCurrency, quoteCurrency, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Saves or updates the daily price snapshot for the listing history chart.
+     */
+    private void saveDailyPriceSnapshot(Listing listing, BigDecimal newPrice,
+                                        BigDecimal high, BigDecimal low,
+                                        BigDecimal priceChange, long volume) {
+        LocalDate today = LocalDate.now();
+        List<ListingDailyPriceInfo> existingToday = dailyPriceRepository
+                .findByListingIdAndDate(listing.getId(), today);
+        if (existingToday.isEmpty()) {
+            ListingDailyPriceInfo dailyPrice = new ListingDailyPriceInfo();
+            dailyPrice.setListing(listing);
+            dailyPrice.setDate(today);
+            dailyPrice.setPrice(newPrice);
+            dailyPrice.setHigh(high);
+            dailyPrice.setLow(low);
+            dailyPrice.setChange(priceChange);
+            dailyPrice.setVolume(volume);
+            dailyPriceRepository.save(dailyPrice);
+        } else {
+            ListingDailyPriceInfo existing = existingToday.get(0);
+            existing.setPrice(newPrice);
+            if (high.compareTo(existing.getHigh()) > 0) existing.setHigh(high);
+            if (low.compareTo(existing.getLow()) < 0) existing.setLow(low);
+            existing.setChange(priceChange);
+            existing.setVolume(volume);
+            dailyPriceRepository.save(existing);
+        }
     }
     @Scheduled(fixedRate = 900000)
     public void scheduledRefresh() {
