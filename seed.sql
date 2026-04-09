@@ -1921,5 +1921,91 @@ WHERE ticker IN (
                  'AAPL_TEST_CALL_ZERO_OI',
                  'MSFT_TEST_PUT_ITM',
                  'MSFT_TEST_PUT_OTM'
-    )
-ORDER BY id;
+    );
+
+-- ============================================================
+-- CELINA 3: Dodatni podaci - Aktuari, Orderi, Margin, Porez
+-- ============================================================
+
+-- Dodaj vise agenata (Djordje=agent, Maja=agent)
+-- employee_id 3 = Djordje, employee_id 4 = Maja
+INSERT IGNORE INTO actuary_info (actuary_type, daily_limit, need_approval, used_limit, employee_id)
+VALUES
+    ('AGENT', 150000.00, 0, 25000.00, 3),
+    ('AGENT', 200000.00, 1, 180000.00, 4);
+
+-- ============================================================
+-- ORDERS (sample nalozi za prikaz)
+-- ============================================================
+-- user_id 3 = Stefan (CLIENT), user_id 1 = Marko (ADMIN)
+-- listing_id 1 = AAPL, 2 = MSFT, 9 = CLM26
+
+INSERT IGNORE INTO orders (account_id, after_hours, all_or_none, approved_by, approximate_price,
+                           contract_size, created_at, direction, is_done, last_modification,
+                           limit_value, is_margin, order_type, price_per_unit, quantity,
+                           remaining_portions, status, stop_value, user_id, user_role, listing_id)
+VALUES
+    -- Stefan kupio 50 AAPL - DONE
+    (1, 0, 0, 'No need for approval', 9250.0000, 1, DATE_SUB(NOW(), INTERVAL 5 DAY),
+     'BUY', 1, DATE_SUB(NOW(), INTERVAL 5 DAY), NULL, 0, 'MARKET', 185.0000,
+     50, 0, 'DONE', NULL, 3, 'CLIENT', 1),
+    -- Stefan kupio 30 MSFT - DONE
+    (1, 0, 0, 'No need for approval', 11415.0000, 1, DATE_SUB(NOW(), INTERVAL 4 DAY),
+     'BUY', 1, DATE_SUB(NOW(), INTERVAL 4 DAY), NULL, 0, 'MARKET', 380.5000,
+     30, 0, 'DONE', NULL, 3, 'CLIENT', 2),
+    -- Stefan - LIMIT BUY GOOG - APPROVED, u toku
+    (1, 0, 0, 'No need for approval', 5200.0000, 1, DATE_SUB(NOW(), INTERVAL 1 DAY),
+     'BUY', 0, NOW(), 170.0000, 0, 'LIMIT', 173.0000,
+     30, 15, 'APPROVED', NULL, 3, 'CLIENT', 3),
+    -- Stefan - SELL AAPL - PENDING (AON)
+    (1, 0, 1, NULL, 4750.0000, 1, NOW(),
+     'SELL', 0, NOW(), NULL, 0, 'MARKET', 190.0000,
+     25, 25, 'PENDING', NULL, 3, 'CLIENT', 1),
+    -- Tamara (agent, employee 2) - BUY TSLA - PENDING (needs supervisor approval)
+    (NULL, 0, 0, NULL, 12500.0000, 1, NOW(),
+     'BUY', 0, NOW(), NULL, 0, 'MARKET', 250.0000,
+     50, 50, 'PENDING', NULL, 2, 'EMPLOYEE', 4),
+    -- Tamara - STOP-LIMIT SELL MSFT - APPROVED
+    (NULL, 1, 0, 'Nikola Milenkovic', 6000.0000, 1, DATE_SUB(NOW(), INTERVAL 2 DAY),
+     'SELL', 0, NOW(), 400.0000, 0, 'STOP_LIMIT', 410.0000,
+     15, 10, 'APPROVED', 395.0000, 2, 'EMPLOYEE', 2),
+    -- Djordje (agent, employee 3) - BUY futures CLM26 - DONE
+    (NULL, 0, 0, 'Nikola Milenkovic', 325000.0000, 1000, DATE_SUB(NOW(), INTERVAL 7 DAY),
+     'BUY', 1, DATE_SUB(NOW(), INTERVAL 6 DAY), NULL, 0, 'MARKET', 65.0000,
+     5, 0, 'DONE', NULL, 3, 'EMPLOYEE', 9),
+    -- Milica - BUY GOOG - DONE
+    (4, 0, 0, 'No need for approval', 15500.0000, 1, DATE_SUB(NOW(), INTERVAL 3 DAY),
+     'BUY', 1, DATE_SUB(NOW(), INTERVAL 3 DAY), NULL, 0, 'MARKET', 155.0000,
+     100, 0, 'DONE', NULL, 4, 'CLIENT', 3);
+
+-- ============================================================
+-- MARGIN ACCOUNTS
+-- ============================================================
+-- user_id 3 = Stefan, account_id 1 = his RSD checking
+
+INSERT IGNORE INTO margin_accounts (bank_participation, created_at, initial_margin, loan_value,
+                                    maintenance_margin, status, user_id, account_id)
+VALUES
+    (0.4000, NOW(), 50000.0000, 80000.0000, 30000.0000, 'ACTIVE', 3, 1),
+    (0.5000, NOW(), 25000.0000, 40000.0000, 15000.0000, 'BLOCKED', 4, 4);
+
+-- Margin transactions for Stefan's margin account
+INSERT IGNORE INTO margin_transactions (amount, created_at, description, type, margin_account_id)
+SELECT 50000.00, DATE_SUB(NOW(), INTERVAL 3 DAY), 'Inicijalna uplata', 'DEPOSIT', id
+FROM margin_accounts WHERE user_id = 3 LIMIT 1;
+
+INSERT IGNORE INTO margin_transactions (amount, created_at, description, type, margin_account_id)
+SELECT 20000.00, DATE_SUB(NOW(), INTERVAL 1 DAY), 'Isplata', 'WITHDRAWAL', id
+FROM margin_accounts WHERE user_id = 3 LIMIT 1;
+
+-- ============================================================
+-- TAX RECORDS
+-- ============================================================
+
+INSERT IGNORE INTO tax_records (calculated_at, currency, tax_owed, tax_paid, total_profit,
+                                user_id, user_name, user_type)
+VALUES
+    (NOW(), 'RSD', 1500.0000, 750.0000, 10000.0000, 3, 'Stefan Jovanovic', 'CLIENT'),
+    (NOW(), 'RSD', 2250.0000, 2250.0000, 15000.0000, 4, 'Milica Nikolic', 'CLIENT'),
+    (NOW(), 'RSD', 450.0000, 0.0000, 3000.0000, 2, 'Tamara Pavlovic', 'EMPLOYEE'),
+    (NOW(), 'RSD', 1050.0000, 1050.0000, 7000.0000, 3, 'Djordje Jankovic', 'EMPLOYEE');
