@@ -1,6 +1,7 @@
 package rs.raf.banka2_bek.stock.service;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,12 @@ class ListingServiceRefreshPricesTest {
 
     @InjectMocks
     private ListingServiceImpl listingService;
+
+    @BeforeEach
+    void setUpApiKeys() {
+        org.springframework.test.util.ReflectionTestUtils.setField(listingService, "stockApiKeys", "test-key-1,test-key-2");
+        org.springframework.test.util.ReflectionTestUtils.setField(listingService, "stockApiUrl", "https://www.alphavantage.co/query");
+    }
 
     @AfterEach
     void clearSecurityContext() {

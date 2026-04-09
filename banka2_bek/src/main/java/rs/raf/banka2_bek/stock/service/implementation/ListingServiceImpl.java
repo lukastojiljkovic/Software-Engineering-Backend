@@ -36,6 +36,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 @Service
@@ -49,8 +50,19 @@ public class ListingServiceImpl implements ListingService {
     private final RestTemplate restTemplate;
     private final ExchangeService exchangeService;
 
-    @Value("${stock.api.key:demo}")
-    private String stockApiKey;
+    @Value("${stock.api.keys:demo}")
+    private String stockApiKeys;
+
+    private final AtomicInteger keyIndex = new AtomicInteger(0);
+
+    /**
+     * Round-robin API key selection across configured keys.
+     */
+    private String getNextApiKey() {
+        String[] keys = stockApiKeys.split(",");
+        int idx = keyIndex.getAndIncrement() % keys.length;
+        return keys[idx].trim();
+    }
 
     @Value("${stock.api.url:https://www.alphavantage.co/query}")
     private String stockApiUrl;
@@ -238,7 +250,8 @@ public class ListingServiceImpl implements ListingService {
      */
     private BigDecimal[] fetchAlphaVantagePrice(String ticker) {
         try {
-            String url = stockApiUrl + "?function=GLOBAL_QUOTE&symbol=" + ticker + "&apikey=" + stockApiKey;
+            String apiKey = getNextApiKey();
+            String url = stockApiUrl + "?function=GLOBAL_QUOTE&symbol=" + ticker + "&apikey=" + apiKey;
 
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.getForObject(url, Map.class);
