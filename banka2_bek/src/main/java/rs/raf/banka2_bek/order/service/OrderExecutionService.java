@@ -141,6 +141,17 @@ public class OrderExecutionService {
         }
     }
     void executeSingleOrder(Order order) {
+        // 0. Legacy guard: APPROVED orderi iz starog seed-a nemaju reservedAccountId
+        // ni accountId — ne mogu se izvrsiti. Markiraj ih kao DECLINED da scheduler
+        // prekine retry loop.
+        if (order.getReservedAccountId() == null && order.getAccountId() == null) {
+            log.warn("Order #{} nema ni reservedAccountId ni accountId — oznacavam kao DECLINED (legacy seed)", order.getId());
+            order.setStatus(OrderStatus.DECLINED);
+            order.setLastModification(LocalDateTime.now());
+            orderRepository.save(order);
+            return;
+        }
+
         // 1. Dohvatiti ažuriranu cenu listinga
         Listing listing = listingRepository.findById(order.getListing().getId())
                 .orElseThrow(() -> new RuntimeException("Listing not found for order #" + order.getId()));
