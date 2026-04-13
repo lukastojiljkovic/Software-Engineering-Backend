@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -16,6 +17,9 @@ import org.springframework.data.domain.Sort;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import rs.raf.banka2_bek.account.model.Account;
+import rs.raf.banka2_bek.account.model.AccountCategory;
+import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.actuary.model.ActuaryInfo;
 import rs.raf.banka2_bek.actuary.model.ActuaryType;
 import rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository;
@@ -30,6 +34,7 @@ import rs.raf.banka2_bek.order.model.OrderDirection;
 import rs.raf.banka2_bek.order.model.OrderStatus;
 import rs.raf.banka2_bek.order.model.OrderType;
 import rs.raf.banka2_bek.order.repository.OrderRepository;
+import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.order.service.implementation.OrderServiceImpl;
 import rs.raf.banka2_bek.berza.service.ExchangeManagementService;
 import rs.raf.banka2_bek.stock.model.Listing;
@@ -42,6 +47,9 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -59,6 +67,10 @@ class OrderServiceImplTest {
     @Mock private FundsVerificationService fundsVerificationService;
     @Mock private OrderStatusService orderStatusService;
     @Mock private ExchangeManagementService exchangeManagementService;
+    @Mock private AccountRepository accountRepository;
+    @Mock private FundReservationService fundReservationService;
+    @Mock private BankTradingAccountResolver bankTradingAccountResolver;
+    @Mock private CurrencyConversionService currencyConversionService;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -66,6 +78,20 @@ class OrderServiceImplTest {
     private Listing testListing;
     private Client testClient;
     private Employee testEmployee;
+    private Account testClientAccount;
+    private Account testBankUsdAccount;
+
+    private Currency usd() {
+        Currency c = new Currency();
+        c.setCode("USD");
+        return c;
+    }
+
+    private Currency rsd() {
+        Currency c = new Currency();
+        c.setCode("RSD");
+        return c;
+    }
 
     @BeforeEach
     void setUp() {
@@ -86,6 +112,38 @@ class OrderServiceImplTest {
         testEmployee = new Employee();
         testEmployee.setId(99L);
         testEmployee.setEmail("agent@test.com");
+
+        testClientAccount = Account.builder()
+                .id(100L)
+                .accountNumber("111000000000000100")
+                .currency(usd())
+                .balance(new BigDecimal("10000.0000"))
+                .availableBalance(new BigDecimal("10000.0000"))
+                .reservedAmount(BigDecimal.ZERO)
+                .accountCategory(AccountCategory.CLIENT)
+                .build();
+
+        testBankUsdAccount = Account.builder()
+                .id(900L)
+                .accountNumber("999000000000000002")
+                .currency(usd())
+                .balance(new BigDecimal("5000000.0000"))
+                .availableBalance(new BigDecimal("5000000.0000"))
+                .reservedAmount(BigDecimal.ZERO)
+                .accountCategory(AccountCategory.BANK_TRADING)
+                .build();
+
+        // Default stubovi za Phase 3 servise — strictness=LENIENT pa ne smetaju
+        // testovima koji ne idu kroz createOrder.
+        lenient().when(accountRepository.findForUpdateById(100L)).thenReturn(Optional.of(testClientAccount));
+        lenient().when(bankTradingAccountResolver.resolve(anyString())).thenReturn(testBankUsdAccount);
+        lenient().when(currencyConversionService.getRate(anyString(), anyString())).thenReturn(BigDecimal.ONE);
+        lenient().when(currencyConversionService.convert(any(BigDecimal.class), anyString(), anyString()))
+                .thenAnswer(inv -> inv.getArgument(0));
+        // Validation service mora vratiti non-null enum vrednosti inace direction/orderType
+        // branching u createOrder preskace BUY/SELL granu i reservedAccountId ostaje null.
+        lenient().when(orderValidationService.parseOrderType(anyString())).thenReturn(OrderType.MARKET);
+        lenient().when(orderValidationService.parseDirection(anyString())).thenReturn(OrderDirection.BUY);
     }
 
     private void mockSecurityContext(String email) {
@@ -281,21 +339,23 @@ class OrderServiceImplTest {
         }
 
         @Test
-        @DisplayName("FundsVerification baca grešku → order se ne čuva")
-        void fundsVerificationFailurePropagates() {
+        @DisplayName("availableBalance nedovoljan → InsufficientFundsException, order se ne čuva")
+        void insufficientAvailableBalancePropagates() {
             CreateOrderDto dto = validMarketBuyDto();
             mockSecurityContext("client@test.com");
+
+            // postavi racun sa premalo raspolozivih sredstava
+            testClientAccount.setAvailableBalance(new BigDecimal("100.0000"));
 
             when(clientRepository.findByEmail("client@test.com")).thenReturn(Optional.of(testClient));
             when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
             when(listingPriceService.getPricePerUnit(any(), any(), any(), any())).thenReturn(new BigDecimal("151"));
             when(listingPriceService.calculateApproximatePrice(anyInt(), any(), anyInt())).thenReturn(new BigDecimal("755.0000"));
-            doThrow(new IllegalArgumentException("Insufficient funds"))
-                    .when(fundsVerificationService).verify(any(), any(), any(), any(), any(), any());
 
-            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            rs.raf.banka2_bek.order.exception.InsufficientFundsException ex = assertThrows(
+                    rs.raf.banka2_bek.order.exception.InsufficientFundsException.class,
                     () -> orderService.createOrder(dto));
-            assertEquals("Insufficient funds", ex.getMessage());
+            assertTrue(ex.getMessage().contains("Nedovoljno"));
             verify(orderRepository, never()).save(any());
         }
     }
@@ -358,6 +418,154 @@ class OrderServiceImplTest {
 
 
 
+    }
+
+    @Nested
+    @DisplayName("Phase 3 — reservation + bank trading account + currency conversion")
+    class Phase3ReservationFlow {
+
+        @Test
+        @DisplayName("CLIENT BUY — rezervise sredstva, APPROVED, userRole=CLIENT")
+        void createOrder_clientBuy_reservesFunds_statusApproved_userRoleClient() {
+            CreateOrderDto dto = validMarketBuyDto();
+            mockSecurityContext("client@test.com");
+
+            when(clientRepository.findByEmail("client@test.com")).thenReturn(Optional.of(testClient));
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            when(listingPriceService.getPricePerUnit(any(), any(), any(), any())).thenReturn(new BigDecimal("151"));
+            when(listingPriceService.calculateApproximatePrice(anyInt(), any(), anyInt())).thenReturn(new BigDecimal("755.0000"));
+            when(orderStatusService.determineStatus(eq("CLIENT"), eq(42L), any())).thenReturn(OrderStatus.APPROVED);
+            when(orderRepository.save(any())).thenAnswer(inv -> {
+                Order o = inv.getArgument(0);
+                o.setId(777L);
+                return o;
+            });
+
+            orderService.createOrder(dto);
+
+            ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+            verify(orderRepository).save(captor.capture());
+            Order saved = captor.getValue();
+            assertEquals(OrderStatus.APPROVED, saved.getStatus());
+            assertEquals("CLIENT", saved.getUserRole());
+            assertEquals(testClientAccount.getId(), saved.getReservedAccountId());
+            assertNotNull(saved.getReservedAmount());
+            assertTrue(saved.getReservedAmount().compareTo(BigDecimal.ZERO) > 0);
+            assertNotNull(saved.getApprovedAt());
+
+            // Rezervacija mora biti pozvana
+            verify(fundReservationService).reserveForBuy(any(Order.class), eq(testClientAccount));
+        }
+
+        @Test
+        @DisplayName("AGENT BUY — koristi bankin trading racun, provizija=0, userRole=EMPLOYEE")
+        void createOrder_agentBuy_usesBankTradingAccount_commissionZero() {
+            CreateOrderDto dto = validMarketBuyDto();
+            mockSecurityContext("agent@test.com");
+
+            ActuaryInfo agentInfo = new ActuaryInfo();
+            agentInfo.setActuaryType(ActuaryType.AGENT);
+            agentInfo.setUsedLimit(BigDecimal.ZERO);
+            agentInfo.setDailyLimit(new BigDecimal("100000"));
+            agentInfo.setNeedApproval(false);
+
+            when(clientRepository.findByEmail("agent@test.com")).thenReturn(Optional.empty());
+            when(employeeRepository.findByEmail("agent@test.com")).thenReturn(Optional.of(testEmployee));
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            when(listingPriceService.getPricePerUnit(any(), any(), any(), any())).thenReturn(new BigDecimal("151"));
+            when(listingPriceService.calculateApproximatePrice(anyInt(), any(), anyInt())).thenReturn(new BigDecimal("755.0000"));
+            when(orderStatusService.determineStatus(eq("EMPLOYEE"), eq(99L), any())).thenReturn(OrderStatus.APPROVED);
+            when(orderStatusService.getAgentInfo(99L)).thenReturn(Optional.of(agentInfo));
+            when(orderRepository.save(any())).thenAnswer(inv -> {
+                Order o = inv.getArgument(0);
+                o.setId(888L);
+                return o;
+            });
+
+            orderService.createOrder(dto);
+
+            // Resolver je pozvan sa USD (NASDAQ exchange)
+            verify(bankTradingAccountResolver).resolve("USD");
+
+            ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+            verify(orderRepository).save(captor.capture());
+            Order saved = captor.getValue();
+            assertEquals("EMPLOYEE", saved.getUserRole());
+            assertEquals(testBankUsdAccount.getId(), saved.getReservedAccountId());
+            // Provizija = 0 za employee: reservedAmount == approximatePrice (bez commission-a)
+            assertEquals(0, new BigDecimal("755.0000").compareTo(saved.getReservedAmount()));
+
+            // Klijentski racunovi ne smeju biti dodirnuti
+            verify(accountRepository, never()).findForUpdateById(any());
+        }
+
+        @Test
+        @DisplayName("CLIENT BUY — konverzija USD → RSD, order.exchangeRate se cuva")
+        void createOrder_clientBuy_convertsCurrency_fromUsdToRsd() {
+            CreateOrderDto dto = validMarketBuyDto();
+            mockSecurityContext("client@test.com");
+
+            // Klijent ima RSD racun sa dovoljno sredstava
+            Account rsdAccount = Account.builder()
+                    .id(101L)
+                    .accountNumber("111000000000000101")
+                    .currency(rsd())
+                    .balance(new BigDecimal("10000000.0000"))
+                    .availableBalance(new BigDecimal("10000000.0000"))
+                    .reservedAmount(BigDecimal.ZERO)
+                    .accountCategory(AccountCategory.CLIENT)
+                    .build();
+            dto.setAccountId(101L);
+
+            when(accountRepository.findForUpdateById(101L)).thenReturn(Optional.of(rsdAccount));
+            when(clientRepository.findByEmail("client@test.com")).thenReturn(Optional.of(testClient));
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            when(listingPriceService.getPricePerUnit(any(), any(), any(), any())).thenReturn(new BigDecimal("151"));
+            when(listingPriceService.calculateApproximatePrice(anyInt(), any(), anyInt())).thenReturn(new BigDecimal("755.0000"));
+            when(currencyConversionService.getRate("USD", "RSD")).thenReturn(new BigDecimal("109.20"));
+            when(currencyConversionService.convert(eq(new BigDecimal("755.0000")), eq("USD"), eq("RSD")))
+                    .thenReturn(new BigDecimal("82446.0000"));
+            when(currencyConversionService.convert(any(BigDecimal.class), eq("USD"), eq("RSD")))
+                    .thenAnswer(inv -> {
+                        BigDecimal amt = inv.getArgument(0);
+                        return amt.multiply(new BigDecimal("109.20")).setScale(4, java.math.RoundingMode.HALF_UP);
+                    });
+            when(orderStatusService.determineStatus(any(), any(), any())).thenReturn(OrderStatus.APPROVED);
+            when(orderRepository.save(any())).thenAnswer(inv -> {
+                Order o = inv.getArgument(0);
+                o.setId(555L);
+                return o;
+            });
+
+            orderService.createOrder(dto);
+
+            ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+            verify(orderRepository).save(captor.capture());
+            Order saved = captor.getValue();
+            assertEquals(0, new BigDecimal("109.20").compareTo(saved.getExchangeRate()));
+            // reservedAmount je u RSD (mnogo vece od 755 USD)
+            assertTrue(saved.getReservedAmount().compareTo(new BigDecimal("80000")) > 0);
+        }
+
+        @Test
+        @DisplayName("CLIENT BUY — premalo availableBalance → InsufficientFundsException")
+        void createOrder_clientBuy_throwsInsufficientFunds_whenAvailableBalanceTooLow() {
+            CreateOrderDto dto = validMarketBuyDto();
+            mockSecurityContext("client@test.com");
+
+            testClientAccount.setAvailableBalance(new BigDecimal("50.0000"));
+
+            when(clientRepository.findByEmail("client@test.com")).thenReturn(Optional.of(testClient));
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            when(listingPriceService.getPricePerUnit(any(), any(), any(), any())).thenReturn(new BigDecimal("151"));
+            when(listingPriceService.calculateApproximatePrice(anyInt(), any(), anyInt())).thenReturn(new BigDecimal("755.0000"));
+
+            assertThrows(rs.raf.banka2_bek.order.exception.InsufficientFundsException.class,
+                    () -> orderService.createOrder(dto));
+
+            verify(orderRepository, never()).save(any());
+            verify(fundReservationService, never()).reserveForBuy(any(), any());
+        }
     }
 
     @Nested

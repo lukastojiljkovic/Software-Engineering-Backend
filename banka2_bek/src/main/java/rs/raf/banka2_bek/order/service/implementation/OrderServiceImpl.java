@@ -8,6 +8,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import rs.raf.banka2_bek.account.model.Account;
+import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.actuary.model.ActuaryInfo;
 import rs.raf.banka2_bek.actuary.model.ActuaryType;
 import rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository;
@@ -17,12 +19,16 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.order.dto.CreateOrderDto;
 import rs.raf.banka2_bek.order.dto.OrderDto;
+import rs.raf.banka2_bek.order.exception.InsufficientFundsException;
 import rs.raf.banka2_bek.order.mapper.OrderMapper;
 import rs.raf.banka2_bek.order.model.Order;
 import rs.raf.banka2_bek.order.model.OrderDirection;
 import rs.raf.banka2_bek.order.model.OrderStatus;
 import rs.raf.banka2_bek.order.model.OrderType;
 import rs.raf.banka2_bek.order.repository.OrderRepository;
+import rs.raf.banka2_bek.order.service.BankTradingAccountResolver;
+import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.order.service.FundReservationService;
 import rs.raf.banka2_bek.order.service.FundsVerificationService;
 import rs.raf.banka2_bek.order.service.ListingPriceService;
 import rs.raf.banka2_bek.order.service.OrderService;
@@ -30,9 +36,11 @@ import rs.raf.banka2_bek.order.service.OrderStatusService;
 import rs.raf.banka2_bek.order.service.OrderValidationService;
 import rs.raf.banka2_bek.berza.service.ExchangeManagementService;
 import rs.raf.banka2_bek.stock.model.Listing;
+import rs.raf.banka2_bek.stock.model.ListingType;
 import rs.raf.banka2_bek.stock.repository.ListingRepository;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -50,6 +58,10 @@ public class OrderServiceImpl implements OrderService {
     private final FundsVerificationService fundsVerificationService;
     private final OrderStatusService orderStatusService;
     private final ExchangeManagementService exchangeManagementService;
+    private final AccountRepository accountRepository;
+    private final FundReservationService fundReservationService;
+    private final BankTradingAccountResolver bankTradingAccountResolver;
+    private final CurrencyConversionService currencyConversionService;
 
     @Override
     @Transactional
@@ -71,20 +83,68 @@ public class OrderServiceImpl implements OrderService {
 
         // Step 4: Resolve current user
         UserContext userContext = resolveCurrentUser();
+        boolean isEmployee = "EMPLOYEE".equals(userContext.userRole);
 
-        // Step 5: Verify funds / securities
-        fundsVerificationService.verify(dto, userContext.userId, approximatePrice, listing, orderType, direction);
+        // Step 5: Resolve account (bankin za zaposlene, licni za klijente)
+        //         i izracunaj rezervacioni iznos u valuti tog racuna
+        String listingCurrencyCode = resolveListingCurrency(listing);
+        Account account;
+        if (direction == OrderDirection.BUY) {
+            if (isEmployee) {
+                account = bankTradingAccountResolver.resolve(listingCurrencyCode);
+            } else {
+                account = accountRepository.findForUpdateById(dto.getAccountId())
+                        .orElseThrow(() -> new EntityNotFoundException("Racun ne postoji: " + dto.getAccountId()));
+            }
+        } else {
+            // SELL — TODO Phase 4: reservation za portfolio
+            account = null;
+        }
 
-        // Step 6: Determine status
+        BigDecimal exchangeRate = null;
+        BigDecimal totalReservation = null;
+        if (direction == OrderDirection.BUY && account != null) {
+            String accountCurrencyCode = account.getCurrency().getCode();
+            exchangeRate = currencyConversionService.getRate(listingCurrencyCode, accountCurrencyCode);
+            BigDecimal approxInAccountCurrency = currencyConversionService.convert(
+                    approximatePrice, listingCurrencyCode, accountCurrencyCode);
+            // Provizija se obracunava u listing (USD-denominovanoj) valuti, zatim se konvertuje
+            // u valutu racuna — tako cap od $7/$12 ostaje ispravan za sve kombinacije valuta.
+            BigDecimal commissionInAccountCurrency;
+            if (isEmployee) {
+                commissionInAccountCurrency = BigDecimal.ZERO;
+            } else {
+                BigDecimal commissionInListingCurrency = calculateCommissionInListingCurrency(approximatePrice, orderType);
+                commissionInAccountCurrency = currencyConversionService.convert(
+                        commissionInListingCurrency, listingCurrencyCode, accountCurrencyCode);
+            }
+            totalReservation = approxInAccountCurrency.add(commissionInAccountCurrency)
+                    .setScale(4, RoundingMode.HALF_UP);
+        }
+
+        // Step 6: Verify funds / securities
+        //   BUY (klijent + agent): koristimo availableBalance proveru na resolvovanom racunu
+        //   SELL: postojeca logika (portfolio check) — TODO Phase 4 zameniti sa reservedQuantity
+        if (direction == OrderDirection.BUY && account != null && totalReservation != null) {
+            if (account.getAvailableBalance().compareTo(totalReservation) < 0) {
+                throw new InsufficientFundsException(
+                        "Nedovoljno raspolozivih sredstava na racunu " + account.getAccountNumber());
+            }
+        } else if (direction == OrderDirection.SELL) {
+            fundsVerificationService.verify(dto, userContext.userId, approximatePrice, listing, orderType, direction);
+        }
+
+        // Step 7: Determine status
         OrderStatus status = orderStatusService.determineStatus(userContext.userRole, userContext.userId, approximatePrice);
         String approvedBy = (status == OrderStatus.APPROVED) ? "No need for approval" : null;
 
-        // Step 7: Compute afterHours
+        // Step 8: Compute afterHours
         boolean afterHours = computeAfterHours(listing);
 
-        // Step 8: Build and save order
+        // Step 9: Build and save order
         Order order = OrderMapper.fromCreateDto(dto, listing);
         order.setUserId(userContext.userId);
+        // S44 fix: eksplicitno setujemo userRole sa resolved userContext-a
         order.setUserRole(userContext.userRole);
         order.setPricePerUnit(pricePerUnit);
         order.setApproximatePrice(approximatePrice);
@@ -92,23 +152,84 @@ public class OrderServiceImpl implements OrderService {
         order.setApprovedBy(approvedBy);
         order.setAfterHours(afterHours);
 
+        if (direction == OrderDirection.BUY && account != null) {
+            order.setReservedAccountId(account.getId());
+            order.setReservedAmount(totalReservation);
+            order.setExchangeRate(exchangeRate);
+            // Za agente pisemo bankin racun i na accountId da fill ima referencu
+            if (isEmployee) {
+                order.setAccountId(account.getId());
+            }
+        }
+
+        if (status == OrderStatus.APPROVED) {
+            order.setApprovedAt(LocalDateTime.now());
+        }
+
         Order savedOrder = orderRepository.save(order);
 
-        // Step 9: Update agent usedLimit if APPROVED
-        if (status == OrderStatus.APPROVED && "EMPLOYEE".equals(userContext.userRole)) {
+        // Step 10: Rezervacija sredstava za BUY ordere koji su odmah APPROVED
+        if (direction == OrderDirection.BUY && status == OrderStatus.APPROVED && account != null) {
+            fundReservationService.reserveForBuy(savedOrder, account);
+        }
+        // TODO Phase 4: reserveForSell za SELL ordere
+
+        // Step 11: Update agent usedLimit if APPROVED
+        if (status == OrderStatus.APPROVED && isEmployee) {
+            final BigDecimal limitDelta = totalReservation != null ? totalReservation : approximatePrice;
             Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(userContext.userId);
             actuaryOpt.ifPresent(actuary -> {
                 if (actuary.getActuaryType() == ActuaryType.AGENT) {
                     BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
-                    actuary.setUsedLimit(current.add(approximatePrice));
+                    actuary.setUsedLimit(current.add(limitDelta));
                     actuaryInfoRepository.save(actuary);
                 }
             });
         }
 
-        // Step 10: Execution handled by OrderScheduler cron job
+        // Step 12: Execution handled by OrderScheduler cron job
 
         return toDtoWithUserName(savedOrder);
+    }
+
+    /**
+     * Resolve-uje ISO kod valute za dati listing.
+     * Za FOREX koristi baseCurrency, inace mapira iz exchange acronym-a.
+     * Fallback je USD.
+     */
+    private String resolveListingCurrency(Listing listing) {
+        if (listing.getListingType() == ListingType.FOREX && listing.getBaseCurrency() != null) {
+            return listing.getBaseCurrency();
+        }
+        String exchange = listing.getExchangeAcronym();
+        if (exchange == null) {
+            return "USD";
+        }
+        return switch (exchange.toUpperCase()) {
+            case "NYSE", "NASDAQ", "CME" -> "USD";
+            case "LSE" -> "GBP";
+            case "XETRA" -> "EUR";
+            case "BELEX" -> "RSD";
+            default -> "USD";
+        };
+    }
+
+    /**
+     * Racuna proviziju u valuti listinga (gde USD cap ima smisla).
+     * Spec: Market min(14% * cena, $7), Limit min(24% * cena, $12).
+     * Za non-USD listinge, cap od $7/$12 se tretira kao literal iznos
+     * u listing valuti — pragmaticna aproksimacija jer se vecina listinga
+     * denominuje u USD.
+     */
+    private BigDecimal calculateCommissionInListingCurrency(BigDecimal approxInListingCurrency, OrderType orderType) {
+        return switch (orderType) {
+            case MARKET, STOP -> approxInListingCurrency.multiply(new BigDecimal("0.14"))
+                    .min(new BigDecimal("7"))
+                    .setScale(4, RoundingMode.HALF_UP);
+            case LIMIT, STOP_LIMIT -> approxInListingCurrency.multiply(new BigDecimal("0.24"))
+                    .min(new BigDecimal("12"))
+                    .setScale(4, RoundingMode.HALF_UP);
+        };
     }
 
     @Override
