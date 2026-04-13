@@ -4,11 +4,18 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import rs.raf.banka2_bek.order.dto.CreateOrderDto;
 import rs.raf.banka2_bek.order.dto.OrderDto;
 import rs.raf.banka2_bek.order.service.OrderService;
+import rs.raf.banka2_bek.otp.service.OtpService;
+
+import java.util.Map;
 
 /**
  * Controller za kreiranje i upravljanje orderima.
@@ -21,14 +28,33 @@ import rs.raf.banka2_bek.order.service.OrderService;
 public class OrderController {
 
     private final OrderService orderService;
+    private final OtpService otpService;
 
     /**
      * POST /orders - Kreiranje novog ordera (BUY ili SELL)
      * Pristup: aktuari i klijenti sa permisijom za trgovinu.
+     *
+     * OTP se verifikuje u istoj transakciji kao i kreiranje ordera.
+     * Ako kreiranje ordera pukne, rollback ponistava i OTP used=true marking
+     * (OtpService.verify koristi default Propagation.REQUIRED).
      */
     @PostMapping
-    public ResponseEntity<OrderDto> createOrder(@Valid @RequestBody CreateOrderDto dto) {
-        return ResponseEntity.ok(orderService.createOrder(dto));
+    @Transactional
+    public ResponseEntity<?> createOrder(@Valid @RequestBody CreateOrderDto dto) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String email = auth != null ? auth.getName() : null;
+        if (email == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Neautorizovan pristup"));
+        }
+
+        Map<String, Object> otpResult = otpService.verify(email, dto.getOtpCode());
+        if (!Boolean.TRUE.equals(otpResult.get("verified"))) {
+            String message = (String) otpResult.getOrDefault("message", "Verifikacija neuspesna");
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", message));
+        }
+
+        OrderDto response = orderService.createOrder(dto);
+        return ResponseEntity.ok(response);
     }
 
     /**

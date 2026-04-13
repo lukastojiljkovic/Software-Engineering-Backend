@@ -1,6 +1,7 @@
 package rs.raf.banka2_bek.order.dto;
 
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -32,4 +33,7 @@ public class CreateOrderDto {
 
     @NotNull(message = "ID racuna je obavezan")
     private Long accountId;
+
+    @NotBlank(message = "Verifikacioni kod je obavezan")
+    private String otpCode;
 }
