@@ -27,6 +27,7 @@ public final class OtcMapper {
         dto.setQuantity(offer.getQuantity());
         dto.setPricePerStock(offer.getPricePerStock());
         dto.setPremium(offer.getPremium());
+        dto.setCurrentPrice(listing != null ? listing.getPrice() : null);
         dto.setSettlementDate(offer.getSettlementDate());
         dto.setLastModifiedById(offer.getLastModifiedById());
         dto.setLastModifiedByName(offer.getLastModifiedByName());

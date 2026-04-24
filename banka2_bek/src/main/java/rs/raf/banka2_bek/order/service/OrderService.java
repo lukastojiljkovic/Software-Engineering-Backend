@@ -36,6 +36,18 @@ public interface OrderService {
     OrderDto declineOrder(Long orderId);
 
     /**
+     * Parcijalno otkazivanje ordera koji nije u potpunosti ispunjen.
+     * Specifikacija: "Treba omogućiti otkazivanje celog ili dela Order-a
+     * koji još uvek nije ispunjen" (Celina 3, deo Portal Pregled ordera).
+     * <p>
+     * Ako je {@code quantityToCancel} null, >= remainingPortions ili <= 0,
+     * ponasa se kao {@link #declineOrder}. Inace skracuje remainingPortions,
+     * oslobadja pro-ratu rezervacije (BUY) ili akcija (SELL) i eventualni
+     * deo agentovog usedLimit — status naloga ostaje APPROVED.
+     */
+    OrderDto cancelOrder(Long orderId, Integer quantityToCancel);
+
+    /**
      * Pregled svih ordera (za supervizora).
      * Filtriranje po statusu: ALL, PENDING, APPROVED, DECLINED, DONE
      */

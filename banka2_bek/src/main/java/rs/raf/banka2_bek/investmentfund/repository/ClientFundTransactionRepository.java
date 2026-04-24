@@ -1,0 +1,27 @@
+package rs.raf.banka2_bek.investmentfund.repository;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import rs.raf.banka2_bek.investmentfund.model.ClientFundTransaction;
+import rs.raf.banka2_bek.investmentfund.model.ClientFundTransactionStatus;
+
+import java.util.List;
+
+/*
+================================================================================
+ TODO — REPOSITORY ZA CLIENTFUNDTRANSACTION (audit istorije uplata/povlacenja)
+ Zaduzen: BE tim
+--------------------------------------------------------------------------------
+  - List<ClientFundTransaction> findByFundIdOrderByCreatedAtDesc(Long fundId)
+  - List<ClientFundTransaction> findByUserIdAndUserRoleOrderByCreatedAtDesc(Long, String)
+  - List<ClientFundTransaction> findByStatus(ClientFundTransactionStatus status)
+    — koristi FundLiquidationService za PENDING red
+================================================================================
+*/
+public interface ClientFundTransactionRepository extends JpaRepository<ClientFundTransaction, Long> {
+
+    List<ClientFundTransaction> findByFundIdOrderByCreatedAtDesc(Long fundId);
+
+    List<ClientFundTransaction> findByUserIdAndUserRoleOrderByCreatedAtDesc(Long userId, String userRole);
+
+    List<ClientFundTransaction> findByStatus(ClientFundTransactionStatus status);
+}

@@ -122,6 +122,7 @@ public class OtcService {
         if (listing.getListingType() != ListingType.STOCK) {
             throw new IllegalArgumentException("OTC je dozvoljen samo za akcije.");
         }
+        ensureSettlementInFuture(dto.getSettlementDate());
 
         String sellerRole = resolveUserRole(dto.getSellerId());
         if (me.userId().equals(dto.getSellerId()) && me.userRole().equals(sellerRole)) {
@@ -186,6 +187,7 @@ public class OtcService {
             }
         }
 
+        ensureSettlementInFuture(dto.getSettlementDate());
         offer.setQuantity(dto.getQuantity());
         offer.setPricePerStock(dto.getPricePerStock());
         offer.setPremium(dto.getPremium());
@@ -388,6 +390,16 @@ public class OtcService {
     }
 
     // ────────────────────────── Helpers ──────────────────────────
+
+    private void ensureSettlementInFuture(LocalDate settlementDate) {
+        if (settlementDate == null) {
+            throw new IllegalArgumentException("Settlement datum je obavezan.");
+        }
+        if (!settlementDate.isAfter(LocalDate.now())) {
+            throw new IllegalArgumentException(
+                    "Settlement datum mora biti u buducnosti (zadato: " + settlementDate + ").");
+        }
+    }
 
     private int availablePublicQty(Portfolio portfolio) {
         Integer publicQtyRaw = portfolio.getPublicQuantity();

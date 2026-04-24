@@ -26,6 +26,8 @@ public class OtcOfferDto {
     private Integer quantity;
     private BigDecimal pricePerStock;
     private BigDecimal premium;
+    /** Trenutna trzisna cena hartije — koristi je FE za bojenje odstupanja (±5 / ±20%). */
+    private BigDecimal currentPrice;
     private LocalDate settlementDate;
 
     private Long lastModifiedById;

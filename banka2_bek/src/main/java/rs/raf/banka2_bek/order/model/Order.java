@@ -117,4 +117,15 @@ public class Order {
      */
     @Column(name = "fx_commission", precision = 19, scale = 4)
     private BigDecimal fxCommission;
+
+    /**
+     * Kada je najranije dozvoljen sledeci fill pokusaj. Postavlja se posle
+     * svakog uspesnog fill-a po spec-formuli:
+     *   Random(0, 24 * 60 / (volume / remaining)) sekundi
+     * plus 30 minuta ako je nalog kreiran u after-hours periodu.
+     * Null znaci da jos nije bilo fill-a — prvi fill prolazi kroz
+     * standardni initialDelay guard baziran na approvedAt/createdAt.
+     */
+    @Column(name = "next_fill_at")
+    private LocalDateTime nextFillAt;
 }

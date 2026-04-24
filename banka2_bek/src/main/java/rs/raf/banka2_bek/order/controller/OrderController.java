@@ -99,9 +99,19 @@ public class OrderController {
 
     /**
      * PATCH /orders/{id}/decline - Supervizor odbija order
+     * <p>
+     * Ako je prosledjen {@code ?quantity=X} i X < remainingPortions, order
+     * ostaje APPROVED ali sa skracenim remainingPortions (parcijalni cancel,
+     * spec: "otkazivanje celog ili dela Order-a koji još uvek nije ispunjen").
+     * Inace se odbija ceo order kao i ranije.
      */
     @PatchMapping("/{id}/decline")
-    public ResponseEntity<OrderDto> declineOrder(@PathVariable Long id) {
-        return ResponseEntity.ok(orderService.declineOrder(id));
+    public ResponseEntity<OrderDto> declineOrder(
+            @PathVariable Long id,
+            @RequestParam(required = false) Integer quantity) {
+        if (quantity == null) {
+            return ResponseEntity.ok(orderService.declineOrder(id));
+        }
+        return ResponseEntity.ok(orderService.cancelOrder(id, quantity));
     }
 }

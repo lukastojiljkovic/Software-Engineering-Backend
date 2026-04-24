@@ -67,9 +67,20 @@ public class OrderExecutionService {
     @Value("${orders.execution.initial-delay-seconds:60}")
     private long initialDelaySeconds;
 
-    /** Dodatan delay za after-hours naloge (u sekundama). */
-    @Value("${orders.afterhours.delay-seconds:60}")
+    /**
+     * Dodatan delay za after-hours naloge (u sekundama). Spec trazi 30 min
+     * po svakom fill-u; za demo se moze skratiti (npr. 60s u dev-u).
+     */
+    @Value("${orders.afterhours.delay-seconds:1800}")
     private long afterHoursDelaySeconds;
+
+    /**
+     * Safety cap za spec-izracunati interval izmedju fill-ova kod niskog
+     * volumena — da order sa volume=0 ili tankim volumenom ne zamrzne
+     * izvrsavanje na nepredvidivo dugo.
+     */
+    @Value("${orders.execution.max-fill-interval-seconds:600}")
+    private long maxFillIntervalSeconds;
 
     /** Provizija za MARKET naloge: min(14% * price, $7) — spec: "koji iznos je manji" */
     private static final BigDecimal MARKET_COMMISSION_RATE = new BigDecimal("0.14");
@@ -115,21 +126,31 @@ public class OrderExecutionService {
                     continue;
                 }
 
-                // 3b. Phase 6: Initial delay guard.
-                // Svaki APPROVED order mora da saceka `initialDelaySeconds` od approvedAt
-                // (ili createdAt ako approvedAt nije setovan) pre prvog fill pokusaja.
-                // After-hours nalozi dobijaju dodatni `afterHoursDelaySeconds`.
-                LocalDateTime referenceTime = order.getApprovedAt() != null
-                        ? order.getApprovedAt()
-                        : order.getCreatedAt();
-                if (referenceTime != null) {
-                    long requiredDelay = order.isAfterHours()
-                            ? initialDelaySeconds + afterHoursDelaySeconds
-                            : initialDelaySeconds;
-                    if (Duration.between(referenceTime, now).getSeconds() < requiredDelay) {
-                        log.debug("Order #{} not yet eligible for execution (needs {}s delay)",
-                                order.getId(), requiredDelay);
+                // 3b. Fill eligibility guard.
+                // Ako nalog ima setovan nextFillAt (posle prvog uspesnog fill-a),
+                // koristi ga direktno — spec zahteva random interval izmedju
+                // fill-ova + 30 min bonus za after-hours naloge PO SVAKOM fill-u.
+                // Ako jos nije bilo fill-a, primeni standardni initialDelay
+                // guard koristeci approvedAt/createdAt.
+                if (order.getNextFillAt() != null) {
+                    if (now.isBefore(order.getNextFillAt())) {
+                        log.debug("Order #{} not yet eligible — next fill at {}",
+                                order.getId(), order.getNextFillAt());
                         continue;
+                    }
+                } else {
+                    LocalDateTime referenceTime = order.getApprovedAt() != null
+                            ? order.getApprovedAt()
+                            : order.getCreatedAt();
+                    if (referenceTime != null) {
+                        long requiredDelay = order.isAfterHours()
+                                ? initialDelaySeconds + afterHoursDelaySeconds
+                                : initialDelaySeconds;
+                        if (Duration.between(referenceTime, now).getSeconds() < requiredDelay) {
+                            log.debug("Order #{} not yet eligible for execution (needs {}s delay)",
+                                    order.getId(), requiredDelay);
+                            continue;
+                        }
                     }
                 }
 
@@ -271,15 +292,43 @@ public class OrderExecutionService {
         if (order.getRemainingPortions() <= 0) {
             order.setDone(true);
             order.setStatus(OrderStatus.DONE);
+            order.setNextFillAt(null);
             // Ako je ostao visak rezervacije (npr. fill po nizoj ceni od approxPrice)
             // vrati ga na availableBalance / availableQuantity.
             releaseReservationSafe(order);
+        } else {
+            // Spec: vremenski interval izmedju fill-ova =
+            //   Random(0, 24 * 60 / (volume / remaining)) sekundi
+            // + 30 min bonus za after-hours naloge (po svakom fill-u).
+            order.setNextFillAt(LocalDateTime.now().plusSeconds(computeNextFillDelay(order, listing)));
         }
         orderRepository.save(order);
 
         log.info("Order #{} filled {} of {} @ {} (remaining: {}, orderComm: {}, listingCcy)",
                 order.getId(), fillQuantity, order.getQuantity(),
                 executionPrice, order.getRemainingPortions(), commissionInListing);
+    }
+
+    /**
+     * Izracunava koliko sekundi ceka do sledeceg fill pokusaja po specifikaciji:
+     *   Random(0, 24 * 60 / (volume / remaining)) sekundi + 30 min ako je after-hours.
+     * Ako je volume nula ili nema remainingPortions, fallback je {@code maxFillIntervalSeconds}.
+     * Kompletan rezultat je ogranicen na {@code maxFillIntervalSeconds} + after-hours bonus.
+     */
+    long computeNextFillDelay(Order order, Listing listing) {
+        long afterHoursBonus = order.isAfterHours() ? afterHoursDelaySeconds : 0L;
+        Long volume = listing != null ? listing.getVolume() : null;
+        int remaining = order.getRemainingPortions() != null ? order.getRemainingPortions() : 0;
+        if (volume == null || volume <= 0L || remaining <= 0) {
+            return maxFillIntervalSeconds + afterHoursBonus;
+        }
+        // 24 * 60 minuta trgovackog dana = 1440. Kad je volume ogroman
+        // (npr. MSFT 50M/day) a remaining 10, formula daje milisekundni delay;
+        // zato cap na maxFillIntervalSeconds (default 10 min).
+        double maxSeconds = 1440.0 / ((double) volume / remaining);
+        long capped = Math.max(0L, Math.min((long) Math.ceil(maxSeconds), maxFillIntervalSeconds));
+        long randomDelay = capped > 0 ? ThreadLocalRandom.current().nextLong(0L, capped + 1L) : 0L;
+        return randomDelay + afterHoursBonus;
     }
 
     /**

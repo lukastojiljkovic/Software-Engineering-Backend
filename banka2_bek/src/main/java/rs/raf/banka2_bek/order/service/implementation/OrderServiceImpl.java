@@ -437,6 +437,93 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
+    @Transactional
+    public OrderDto cancelOrder(Long orderId, Integer quantityToCancel) {
+        Order order = orderRepository.findByIdForUpdate(orderId)
+                .orElseThrow(() -> new EntityNotFoundException("Order not found " + orderId));
+
+        int remaining = order.getRemainingPortions() != null
+                ? order.getRemainingPortions()
+                : (order.getQuantity() != null ? order.getQuantity() : 0);
+
+        // Full cancel delegates to declineOrder which handles both PENDING
+        // and APPROVED states (releases reservation + rollbackuje usedLimit).
+        boolean fullCancel = quantityToCancel == null
+                || quantityToCancel <= 0
+                || quantityToCancel >= remaining
+                || order.getStatus() == OrderStatus.PENDING
+                || order.isDone();
+        if (fullCancel) {
+            return declineOrder(orderId);
+        }
+
+        if (order.getStatus() != OrderStatus.APPROVED) {
+            throw new IllegalStateException(
+                    "Parcijalni cancel je dozvoljen samo za APPROVED ordere.");
+        }
+
+        int cancelQty = quantityToCancel;
+        int newRemaining = remaining - cancelQty;
+        Integer originalQty = order.getQuantity();
+
+        // Oslobodi pro-ratu rezervisanog sredstva / hartija
+        if (order.getDirection() == OrderDirection.BUY
+                && order.getReservedAccountId() != null
+                && order.getReservedAmount() != null
+                && originalQty != null && originalQty > 0) {
+            Account reservedAcc = accountRepository.findForUpdateById(order.getReservedAccountId())
+                    .orElseThrow(() -> new EntityNotFoundException(
+                            "Racun ne postoji: " + order.getReservedAccountId()));
+            BigDecimal fraction = new BigDecimal(cancelQty)
+                    .divide(new BigDecimal(originalQty), 10, RoundingMode.HALF_UP);
+            BigDecimal releaseAmount = order.getReservedAmount().multiply(fraction)
+                    .setScale(4, RoundingMode.HALF_UP);
+            BigDecimal currentReserved = reservedAcc.getReservedAmount();
+            if (releaseAmount.compareTo(currentReserved) > 0) {
+                releaseAmount = currentReserved;
+            }
+            reservedAcc.setAvailableBalance(reservedAcc.getAvailableBalance().add(releaseAmount));
+            reservedAcc.setReservedAmount(currentReserved.subtract(releaseAmount));
+            accountRepository.save(reservedAcc);
+        } else if (order.getDirection() == OrderDirection.SELL) {
+            Portfolio portfolio = portfolioRepository
+                    .findByUserIdAndUserRoleAndListingIdForUpdate(order.getUserId(), order.getUserRole(), order.getListing().getId())
+                    .orElseThrow(() -> new EntityNotFoundException(
+                            "Portfolio ne postoji za order " + order.getId()));
+            int releaseQty = Math.min(cancelQty, portfolio.getReservedQuantity());
+            portfolio.setReservedQuantity(portfolio.getReservedQuantity() - releaseQty);
+            portfolioRepository.save(portfolio);
+        }
+
+        // Rollback proporcionalnog usedLimit-a za AGENT-a
+        if (order.getDirection() == OrderDirection.BUY
+                && UserRole.isEmployee(order.getUserRole())
+                && order.getReservedAmount() != null
+                && originalQty != null && originalQty > 0) {
+            Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(order.getUserId());
+            int cancelQtyFinal = cancelQty;
+            actuaryOpt.ifPresent(actuary -> {
+                if (actuary.getActuaryType() == ActuaryType.AGENT) {
+                    BigDecimal fraction = new BigDecimal(cancelQtyFinal)
+                            .divide(new BigDecimal(originalQty), 10, RoundingMode.HALF_UP);
+                    BigDecimal rollback = order.getReservedAmount().multiply(fraction)
+                            .setScale(4, RoundingMode.HALF_UP);
+                    BigDecimal current = actuary.getUsedLimit() != null
+                            ? actuary.getUsedLimit() : BigDecimal.ZERO;
+                    actuary.setUsedLimit(current.subtract(rollback).max(BigDecimal.ZERO));
+                    actuaryInfoRepository.save(actuary);
+                }
+            });
+        }
+
+        order.setRemainingPortions(newRemaining);
+        order.setLastModification(LocalDateTime.now());
+        order.setApprovedBy(getSupervisorName()); // audit trail ko je skratio order
+        Order saved = orderRepository.save(order);
+        return toDtoWithUserName(saved);
+    }
+
+    @Override
     public Page<OrderDto> getAllOrders(String status, int page, int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
 
