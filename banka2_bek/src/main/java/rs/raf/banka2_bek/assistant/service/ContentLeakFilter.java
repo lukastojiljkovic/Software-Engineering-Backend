@@ -148,7 +148,10 @@ public final class ContentLeakFilter {
         // u "hartijama"/"na"/"berzi" i FE bi koncatenirao kao "hartijamananaberzi".
         // Trim radimo samo za pun (final) odgovor preko filterFinal().
         String trimmedForDetection = text.stripLeading();
-        if (trimmedForDetection.isEmpty()) return text;
+        // Whitespace-only input → vrati "" (a NE original sa space-ovima),
+        // jer prazan input nije validan token za FE prikaz. Test ContentLeakFilterTest
+        // .handlesEmptyInput proverava ovaj kontrakt — filter("   ") mora biti "".
+        if (trimmedForDetection.isEmpty()) return "";
         String lower = trimmedForDetection.toLowerCase();
         boolean startsWithMeta = startsWithAnyKeyword(lower);
         if (!startsWithMeta) {
