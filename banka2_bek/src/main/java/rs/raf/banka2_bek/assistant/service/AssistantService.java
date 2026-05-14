@@ -1300,6 +1300,83 @@ public class AssistantService {
         });
     }
 
+    /* ============================== TTS Translation ============================== */
+
+    /**
+     * Phase 6 — interno prevodi srpski tekst u prirodan engleski pre TTS sinteze.
+     *
+     * <p>Razlog: Kokoro-82M TTS podrzava samo en-us/en-gb/es/fr/hi/it/ja/pt-br/zh.
+     * Srpski (latinski ili cirilica) NIJE podrzan — phonemizer fallback-uje na
+     * en-us i pokusava da izgovori srpske foneme kao engleske, sto rezultuje
+     * razumevljivom ali grbastom audijo.</p>
+     *
+     * <p>Resenje: pre TTS poziva, Gemma 4 E2B interno prevodi srpski → engleski
+     * (manje 1s na GPU). Kokoro tada izgovori cist engleski. Korisnik vidi
+     * srpski tekst u chat balonu, cuje engleski TTS — isto sto profesori
+     * rade na konferencijama sa simultanim prevodjenjem.</p>
+     *
+     * <p>Heuristika: ako tekst NEMA srpskih dijakritika (cscz dj) niti cirilickih
+     * char-ova, vraca original (verovatno je vec engleski). Stedi LLM poziv.</p>
+     *
+     * @param text srpski (ili engleski) tekst za TTS sintezu
+     * @return engleski tekst, ili original ako je vec engleski / translate failed
+     */
+    public String translateForTts(String text) {
+        if (text == null || text.isBlank()) return text;
+        // Heuristika: latin srpska dijakritika ili Cirilica → treba prevod
+        boolean hasSerbianMarkers = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == 'č' || c == 'ć' || c == 'š' || c == 'ž' || c == 'đ'
+                    || c == 'Č' || c == 'Ć' || c == 'Š' || c == 'Ž' || c == 'Đ'
+                    || (c >= 'Ѐ' && c <= 'ӿ')) {  // Cirilica range
+                hasSerbianMarkers = true;
+                break;
+            }
+        }
+        if (!hasSerbianMarkers) {
+            // Mozda jeste srpski bez dijakritika (npr. "Berza je mesto"), ali u
+            // tom slucaju TTS je svejedno losije nego cist engleski prevod.
+            // Heuristika #2: kratki tekst pre 6 reci sa ASCII-only → pass-through
+            // (verovatno engleski). Inace prevedemo.
+            int wordCount = text.trim().split("\\s+").length;
+            if (wordCount < 6) return text;
+        }
+
+        // Strip markdown sintakse iz teksta — Gemma prevod ne treba **bold** ni
+        // [link](url) sintakse koje Kokoro ionako ne razume.
+        String plain = text
+                .replaceAll("\\[([^\\]]+)\\]\\([^)]+\\)", "$1")  // [text](url) → text
+                .replaceAll("\\*\\*([^*]+)\\*\\*", "$1")  // **bold** → bold
+                .replaceAll("\\*([^*]+)\\*", "$1")  // *italic* → italic
+                .replaceAll("`([^`]+)`", "$1")  // `code` → code
+                .replaceAll("#action:goto:/[a-z0-9/\\-]+", "")  // action linkovi
+                .trim();
+
+        try {
+            List<OpenAiMessage> msgs = new ArrayList<>();
+            msgs.add(OpenAiMessage.system(
+                    "You are a translator. Translate the user message from Serbian to natural English. "
+                            + "Reply with ONLY the English translation, no preamble, no quotation marks, "
+                            + "no commentary. Preserve numbers and proper names (AAPL, EUR, Banka 2, BELIBOR)."));
+            msgs.add(OpenAiMessage.user(plain));
+
+            OpenAiChatResponse resp = llmHttpClient.chatNonStream(buildRequest(msgs, null, false));
+            if (resp == null || resp.choices() == null || resp.choices().isEmpty()) {
+                return text;
+            }
+            OpenAiMessage replyMsg = resp.choices().get(0).message();
+            if (replyMsg == null || replyMsg.content() == null) return text;
+            String translated = contentLeakFilter.filterFinal(replyMsg.content());
+            if (translated == null || translated.isBlank()) return text;
+            log.info("[TTS-Translate] srpski → engleski ({} → {} chars)", plain.length(), translated.length());
+            return translated;
+        } catch (Exception e) {
+            log.warn("[TTS-Translate] fallback na original — translate failed: {}", e.getMessage());
+            return text;
+        }
+    }
+
     /* ============================== UNUSED IMPORTS GUARD ============================== */
     // (Drzi LinkedHashMap import in scope za ako kasnije zatreba u tool spec building-u.)
     @SuppressWarnings("unused")

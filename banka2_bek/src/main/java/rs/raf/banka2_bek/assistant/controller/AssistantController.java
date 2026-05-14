@@ -191,9 +191,40 @@ public class AssistantController {
         if (audioPart != null && !audioPart.isEmpty()) {
             try {
                 byte[] audioBytes = audioPart.getBytes();
-                WhisperTranscription t = whisperSttClient.transcribe(audioBytes,
-                        audioPart.getOriginalFilename(),
-                        (language == null || language.isBlank()) ? null : language);
+                // 2-pass smart language detection:
+                //   1. Ako FE eksplicitno posalje language u form polju → respect it.
+                //   2. Inace: pusti Whisper autodetect (language=null).
+                //   3. Ako autodetect vrati ocekivan jezik (sr/en/hr/bs) sa
+                //      probability >= 0.5 → koristi taj transcript.
+                //   4. Ako autodetect vrati neocekivan jezik (npr. hu/bg/mk/pl
+                //      cesto LID greska za srpski na kratkom audio-u) — re-run
+                //      sa language=sr (najverovatniji za Banka 2 korisnike).
+                //
+                // Time i srpski I engleski rade pravilno, dok LID greske gase.
+                WhisperTranscription t;
+                if (language != null && !language.isBlank()) {
+                    // FE eksplicitno trazi konkretan jezik — koristi ga.
+                    t = whisperSttClient.transcribe(audioBytes,
+                            audioPart.getOriginalFilename(), language);
+                } else {
+                    // Pass 1: autodetect
+                    t = whisperSttClient.transcribe(audioBytes,
+                            audioPart.getOriginalFilename(), null);
+                    String detectedLang = t.language();
+                    Double prob = t.languageProbability();
+                    boolean expectedLang = detectedLang != null && switch (detectedLang.toLowerCase()) {
+                        case "sr", "en", "hr", "bs", "sl", "mk" -> true;
+                        default -> false;
+                    };
+                    boolean confident = prob != null && prob >= 0.5;
+                    if (!expectedLang || !confident) {
+                        // Pass 2: forsiraj sr (LID je 99% pogresno klasifikovao)
+                        log.info("[Whisper] LID retry: detected={} prob={} → re-running sa language=sr",
+                                detectedLang, prob);
+                        t = whisperSttClient.transcribe(audioBytes,
+                                audioPart.getOriginalFilename(), "sr");
+                    }
+                }
                 transcript = t.text() != null ? t.text().trim() : "";
                 log.info("[Whisper] Transcribed: \"{}\" (lang={}, audio_dur={}s, speech_dur={}s)",
                         transcript.length() > 120 ? transcript.substring(0, 120) + "..." : transcript,
@@ -311,7 +342,13 @@ public class AssistantController {
     @PostMapping(value = "/tts", produces = "audio/wav")
     public ResponseEntity<byte[]> tts(@Valid @RequestBody TtsRequestBody body) {
         double speed = body.getSpeed() == null ? 1.0 : body.getSpeed();
-        byte[] wav = kokoroTtsClient.synthesize(body.getText(), body.getVoice(), body.getLang(), speed);
+        // Phase 6: Kokoro nema srpski voice, pa Gemma prevodi srpski → engleski
+        // pre nego sto tekst ide na sintezu. Heuristika u translateForTts()
+        // pass-through-uje ako tekst nema srpskih markera (vec engleski).
+        String textForTts = assistantService.translateForTts(body.getText());
+        // Lang takodje gurnemo na en-us (Kokoro voice af_bella je engleski).
+        String lang = (body.getLang() == null || body.getLang().isBlank()) ? "en-us" : body.getLang();
+        byte[] wav = kokoroTtsClient.synthesize(textForTts, body.getVoice(), lang, speed);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("audio/wav"))
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")

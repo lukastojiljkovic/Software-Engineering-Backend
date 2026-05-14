@@ -53,6 +53,16 @@ public class GlobalSecurityConfig  {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
+                        // SSE async-dispatch fix: kad SSE emitter za Arbitro chat zavrsi
+                        // streamovanje, Spring vrati request kroz filter chain na ASYNC
+                        // dispatch type. SecurityContextHolder ThreadLocal je u tom
+                        // trenutku prazan (clean async thread), pa AuthorizationFilter
+                        // baca AccessDenied posle response-a koji je vec committed.
+                        // Browser to vidi kao ERR_INCOMPLETE_CHUNKED_ENCODING.
+                        // Standardni Spring obrazac je permitAll() na ASYNC dispatch —
+                        // originalna REQUEST dispatch je vec autorizovana, ASYNC je
+                        // samo nastavak iste request-response transakcije.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC, jakarta.servlet.DispatcherType.ERROR).permitAll()
                         .requestMatchers(
                                 "/error",
                                 "/auth/register",

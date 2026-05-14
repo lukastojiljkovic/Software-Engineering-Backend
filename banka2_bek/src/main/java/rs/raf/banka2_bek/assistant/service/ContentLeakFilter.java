@@ -140,17 +140,27 @@ public final class ContentLeakFilter {
 
     private String stripMetaPreamble(String text) {
         if (text == null || text.isEmpty()) return text;
-        String trimmed = text.stripLeading();
-        if (trimmed.isEmpty()) return trimmed;
-        String lower = trimmed.toLowerCase();
+        // KRITICNO: za detekciju preamble-a koristimo stripLeading() kopiju —
+        // ALI vracamo ORIGINALNI text ako nema preamble, bez trimovanja.
+        // Razlog: ovaj filter se zove per-chunk u streaming-u (vidi line 50-u
+        // AssistantService); chunk-ovi iz Ollama-e cesto imaju vodeci space
+        // (" hartijama", " na", " berzi"). Strip leading bi pretvorio chunk
+        // u "hartijama"/"na"/"berzi" i FE bi koncatenirao kao "hartijamananaberzi".
+        // Trim radimo samo za pun (final) odgovor preko filterFinal().
+        String trimmedForDetection = text.stripLeading();
+        if (trimmedForDetection.isEmpty()) return text;
+        String lower = trimmedForDetection.toLowerCase();
         boolean startsWithMeta = startsWithAnyKeyword(lower);
         if (!startsWithMeta) {
             // Mozda nije bas na pocetku, ali u prvih ~200 chars-a — provera za
             // poklapanje sa nekoliko keywords (multiplicity signals leak vs.
             // legitno spominjanje rec "step" u odgovoru).
             int hits = countKeywordHits(lower, 300);
-            if (hits < 2) return trimmed;  // pass-through, nije leak
+            if (hits < 2) return text;  // pass-through, NE strip-ujemo space
         }
+        // Preamble je detektovan — radimo strip + preamble removal. Strip
+        // gubitak space-a je OK ovde jer ce ostatak teksta ipak ostati ciji.
+        String trimmed = trimmedForDetection;
         // Ima preamble — pronadji prvi paragraph break (dvostruki newline)
         // posle kog nema meta keyword-ova.
         String[] paragraphs = trimmed.split("\\n\\s*\\n");
