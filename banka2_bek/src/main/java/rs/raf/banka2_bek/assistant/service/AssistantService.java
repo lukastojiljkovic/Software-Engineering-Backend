@@ -583,8 +583,9 @@ public class AssistantService {
                 if (batchCount[0] == 0 && streamBatch.length() == 0 && totalTokens.get() == 0) {
                     fallbackBatchEmit(finalContent, emitter, totalTokens);
                 } else if (cumulative.length() > 0) {
-                    // Override finalContent sa stream-ovanom filtriranom verzijom radi persist-a
-                    String streamedClean = contentLeakFilter.filter(cumulative.toString());
+                    // Override finalContent sa stream-ovanom filtriranom verzijom radi persist-a.
+                    // Koristimo filterFinal (sa trim) jer ide u DB — ne treba leading/trailing space.
+                    String streamedClean = contentLeakFilter.filterFinal(cumulative.toString());
                     if (!streamedClean.isEmpty()) {
                         finalContent = streamedClean;
                     }

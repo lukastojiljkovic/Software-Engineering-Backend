@@ -119,9 +119,23 @@ public final class ContentLeakFilter {
         // Phase 2: preamble stripping — ako tekst pocinje sa meta keyword-om,
         // pronadji prvi paragraph break i odbaci sve pre toga.
         out = stripMetaPreamble(out);
-        // Cleanup: visestruki blank lines → max 2 newline
-        out = out.replaceAll("\\n{3,}", "\n\n").trim();
+        // Cleanup: visestruki blank lines → max 2 newline.
+        // VAZNO: ne radimo .trim() — ovaj filter se zove per-chunk u streaming
+        // mode-u, a chunk-ovi iz Ollama-e cesto imaju vodecu space (" Prema",
+        // " Wikipediji"). trim() bi strip-ovao space → FE bi konkatenirala
+        // chunk-ove bez razmaka ("PremaWikipediji"). Konzument koji zeli
+        // trim na finalnom rezultatu radi to eksplicitno (vidi filterFinal()).
+        out = out.replaceAll("\\n{3,}", "\n\n");
         return out;
+    }
+
+    /**
+     * Varijanta za jednokratnu obradu kompletnog odgovora (npr. persist u DB,
+     * audit log). Radi sve sto i {@link #filter}, plus trim leading/trailing
+     * whitespace. Ne koristiti u streaming-u jer strip-uje space iz chunk-ova.
+     */
+    public String filterFinal(String input) {
+        return filter(input).trim();
     }
 
     private String stripMetaPreamble(String text) {

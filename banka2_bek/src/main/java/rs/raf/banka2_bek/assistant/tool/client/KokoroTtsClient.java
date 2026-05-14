@@ -50,13 +50,33 @@ public class KokoroTtsClient {
     }
 
     /**
+     * Lista jezika koje Kokoro sidecar trenutno podrzava (proverava se preko
+     * /lang endpoint-a kod inicijalizacije sidecar-a). Srpski (sr) i hrvatski
+     * NISU podrzani — fallback na en-us radi prepoznavanja zvuka iako akcenat
+     * nije srpski. Bolje nego HTTP 400.
+     */
+    private static final java.util.Set<String> KOKORO_SUPPORTED_LANGS = java.util.Set.of(
+            "en-us", "en-gb", "es", "fr", "hi", "it", "ja", "pt-br", "zh"
+    );
+
+    /**
      * Sinhrono generise audio iz teksta. Vraca raw WAV bytes (24kHz mono PCM 16-bit).
+     *
+     * <p>Ako prosledjen lang nije podrzan od Kokoro-a (npr. "sr", "hr"), fallback-uje
+     * na "en-us" — bolje nego HTTP 400 fail. Akcenat je engleski ali bar se cuje.</p>
      */
     public byte[] synthesize(String text, String voice, String lang, double speed) {
+        String defaultLang = properties.getTools().getTts().getDefaultLang();
+        String effectiveLang = lang == null ? defaultLang : lang.toLowerCase();
+        if (!KOKORO_SUPPORTED_LANGS.contains(effectiveLang)) {
+            log.debug("Kokoro TTS: lang '{}' nije podrzan, fallback na en-us", effectiveLang);
+            effectiveLang = "en-us";
+        }
+
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("text", text);
         body.put("voice", voice == null ? properties.getTools().getTts().getDefaultVoice() : voice);
-        body.put("lang", lang == null ? properties.getTools().getTts().getDefaultLang() : lang);
+        body.put("lang", effectiveLang);
         body.put("speed", speed);
 
         String json;

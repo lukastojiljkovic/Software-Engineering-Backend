@@ -60,7 +60,11 @@ public class SmartOutputFilter {
             "I will state my limitation",
             "I will address the question based on",
             "I will stick to what I know",
-            "I will answer based on the instruction"
+            "I will answer based on the instruction",
+            "Wait for the actual tool",
+            "Wait for the actual tool response",
+            "formulate the final answer",
+            "to formulate the final answer"
     );
 
     /**
