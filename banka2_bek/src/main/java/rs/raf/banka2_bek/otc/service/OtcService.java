@@ -279,6 +279,36 @@ public class OtcService {
         transferPremium(buyerAccount, sellerAccount, offer.getPremium(), listingCurrency,
                 UserRole.isClient(offer.getBuyerRole()));
 
+        // Rezervacija sredstava kupcu (strike × qty u njegovoj valuti) + akcija prodavcu
+        // — spec: pri sklapanju kupac je solventan, prodavac ne moze prodati istu hartiju
+        // nekom drugom dok ugovor traje. Pri abandon-u se oslobadja, pri exercise-u trosi.
+        BigDecimal strikeCostInListingCcy = offer.getPricePerStock()
+                .multiply(BigDecimal.valueOf(offer.getQuantity()));
+        String buyerCcy = buyerAccount.getCurrency().getCode();
+        BigDecimal reservedInBuyerCcy;
+        if (buyerCcy.equals(listingCurrency)) {
+            reservedInBuyerCcy = strikeCostInListingCcy;
+        } else {
+            // Konverzija na buyer-ovu valutu po srednjem kursu (bez FX komisije —
+            // komisija ce se naplatiti tek pri exercise-u, ne pri rezervaciji).
+            reservedInBuyerCcy = currencyConversionService.convert(
+                    strikeCostInListingCcy, listingCurrency, buyerCcy);
+        }
+        if (buyerAccount.getAvailableBalance().compareTo(reservedInBuyerCcy) < 0) {
+            String ownerName = resolveAccountOwnerName(buyerAccount);
+            throw new InsufficientFundsException(
+                    "Nedovoljno raspolozivih sredstava za rezervaciju na racunu "
+                            + buyerAccount.getAccountNumber() + " (" + ownerName + "): potrebno "
+                            + reservedInBuyerCcy + " " + buyerCcy);
+        }
+        buyerAccount.setAvailableBalance(buyerAccount.getAvailableBalance().subtract(reservedInBuyerCcy));
+        buyerAccount.setReservedAmount(buyerAccount.getReservedAmount().add(reservedInBuyerCcy));
+        accountRepository.save(buyerAccount);
+
+        // Rezervacija akcija prodavcu — povecava Portfolio.reservedQuantity
+        sp.setReservedQuantity(sp.getReservedQuantity() + offer.getQuantity());
+        portfolioRepository.save(sp);
+
         // Kreiraj ugovor
         OtcContract contract = new OtcContract();
         contract.setSourceOfferId(offer.getId());
@@ -292,6 +322,8 @@ public class OtcService {
         contract.setPremium(offer.getPremium());
         contract.setSettlementDate(offer.getSettlementDate());
         contract.setStatus(OtcContractStatus.ACTIVE);
+        contract.setBuyerReservedAccountId(buyerAccount.getId());
+        contract.setBuyerReservedAmount(reservedInBuyerCcy);
         contractRepository.save(contract);
 
         offer.setStatus(OtcOfferStatus.ACCEPTED);
@@ -352,11 +384,11 @@ public class OtcService {
         Account buyerAccount = resolveBuyerAccount(contract.getBuyerId(), contract.getBuyerRole(), buyerAccountId, listingCurrency);
         Account sellerAccount = resolveSellerAccount(contract.getSellerId(), contract.getSellerRole(), listingCurrency);
 
-        // 1. Transfer cene akcija buyer -> seller
-        transferPremium(buyerAccount, sellerAccount, totalCost, listingCurrency,
-                UserRole.isClient(contract.getBuyerRole()));
+        // 1. Iskoristi rezervisana sredstva kupca (postavljena pri accept-u) — strike × qty
+        //    se skida sa balance + reservedAmount, prebacuje se u seller balance (sa FX).
+        consumeBuyerReservation(contract, buyerAccount, sellerAccount, totalCost, listingCurrency);
 
-        // 2. Prebaci akcije: umanji seller portfolio, uvecaj buyer portfolio
+        // 2. Prebaci akcije: umanji seller portfolio (i njegovu rezervaciju), uvecaj buyer
         Portfolio sellerPortfolio = portfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate(
                         contract.getSellerId(), contract.getSellerRole(), contract.getListing().getId())
                 .orElseThrow(() -> new IllegalStateException("Prodavac vise nema ovu hartiju u portfoliju."));
@@ -364,6 +396,9 @@ public class OtcService {
             throw new IllegalStateException("Prodavac nema dovoljno akcija za izvrsavanje ugovora.");
         }
         sellerPortfolio.setQuantity(sellerPortfolio.getQuantity() - contract.getQuantity());
+        // Oslobodi rezervisanu kolicinu prodavca (vec je consumed kroz quantity smanjenje)
+        int newReserved = Math.max(0, sellerPortfolio.getReservedQuantity() - contract.getQuantity());
+        sellerPortfolio.setReservedQuantity(newReserved);
         Integer currentPublic = sellerPortfolio.getPublicQuantity();
         int newPublic = Math.max(0, (currentPublic != null ? currentPublic : 0) - contract.getQuantity());
         sellerPortfolio.setPublicQuantity(newPublic);
@@ -420,6 +455,10 @@ public class OtcService {
     public int expireSettledContracts() {
         List<OtcContract> expired = contractRepository.findExpiredActive(LocalDate.now());
         for (OtcContract c : expired) {
+            // Pre marking-a kao EXPIRED oslobodi rezervisana sredstva i akcije
+            // (po spec-u: premija ostaje kod prodavca, ostalo se vraca)
+            releaseBuyerReservation(c);
+            releaseSellerReservation(c);
             c.setStatus(OtcContractStatus.EXPIRED);
             contractRepository.save(c);
         }
@@ -449,12 +488,87 @@ public class OtcService {
         if (contract.getStatus() != OtcContractStatus.ACTIVE) {
             throw new IllegalStateException("Ugovor nije aktivan (status=" + contract.getStatus() + ").");
         }
+
+        // Oslobodi rezervisana sredstva kupcu (vraca u available)
+        releaseBuyerReservation(contract);
+        // Oslobodi rezervisane akcije prodavcu
+        releaseSellerReservation(contract);
+
         contract.setStatus(OtcContractStatus.EXPIRED);
         contractRepository.save(contract);
-        log.info("OTC contract #{} abandoned by buyer {} — premium {} {} NIJE vracena.",
+        log.info("OTC contract #{} abandoned by buyer {} — premium {} {} NIJE vracena, rezervisana sredstva i akcije oslobodjeni.",
                 contract.getId(), contract.getBuyerId(),
                 contract.getPremium(), resolveListingCurrency(contract.getListing()));
         return toContractDto(contract);
+    }
+
+    /**
+     * Trosenje rezervisanih sredstava kupca pri exercise-u — smanjuje
+     * buyer.balance + buyer.reservedAmount za buyerReservedAmount, dodaje
+     * seller-u u listing valuti (FX po srednjem kursu). Ako iz nekog razloga
+     * nema rezervacije (legacy ugovor pre vece-5 runde), pada nazad na
+     * klasicni transfer iz available balance-a.
+     */
+    private void consumeBuyerReservation(OtcContract contract, Account buyerAccount, Account sellerAccount,
+                                          BigDecimal totalCostInListingCcy, String listingCurrency) {
+        BigDecimal reserved = contract.getBuyerReservedAmount();
+        Long reservedAccountId = contract.getBuyerReservedAccountId();
+        // Legacy ugovor bez rezervacije — fallback na klasicni transfer
+        if (reserved == null || reserved.signum() <= 0 || reservedAccountId == null) {
+            transferPremium(buyerAccount, sellerAccount, totalCostInListingCcy, listingCurrency,
+                    UserRole.isClient(contract.getBuyerRole()));
+            return;
+        }
+        // Cap-uj na current reservedAmount (defense)
+        BigDecimal currentReserved = buyerAccount.getReservedAmount();
+        BigDecimal toConsume = reserved.compareTo(currentReserved) > 0 ? currentReserved : reserved;
+        buyerAccount.setReservedAmount(currentReserved.subtract(toConsume));
+        buyerAccount.setBalance(buyerAccount.getBalance().subtract(toConsume));
+        accountRepository.save(buyerAccount);
+
+        // Konvertuj toConsume iz buyer-ove valute u listing -> seller valutu
+        String buyerCcy = buyerAccount.getCurrency().getCode();
+        BigDecimal amountInListingCcy = buyerCcy.equals(listingCurrency)
+                ? toConsume
+                : currencyConversionService.convert(toConsume, buyerCcy, listingCurrency);
+        BigDecimal toSeller = listingCurrency.equals(sellerAccount.getCurrency().getCode())
+                ? amountInListingCcy
+                : currencyConversionService.convert(amountInListingCcy, listingCurrency,
+                        sellerAccount.getCurrency().getCode());
+        sellerAccount.setBalance(sellerAccount.getBalance().add(toSeller));
+        sellerAccount.setAvailableBalance(sellerAccount.getAvailableBalance().add(toSeller));
+        accountRepository.save(sellerAccount);
+    }
+
+    /** Vraca buyer.reservedAmount → buyer.availableBalance. Idempotentno. */
+    private void releaseBuyerReservation(OtcContract contract) {
+        if (contract.getBuyerReservedAccountId() == null
+                || contract.getBuyerReservedAmount() == null
+                || contract.getBuyerReservedAmount().signum() <= 0) {
+            return;
+        }
+        Account buyer = accountRepository.findForUpdateById(contract.getBuyerReservedAccountId())
+                .orElse(null);
+        if (buyer == null) return;
+        BigDecimal amount = contract.getBuyerReservedAmount();
+        // Cap-uj na trenutni reservedAmount (defense against double-release)
+        BigDecimal currentReserved = buyer.getReservedAmount();
+        BigDecimal toRelease = amount.compareTo(currentReserved) > 0 ? currentReserved : amount;
+        buyer.setReservedAmount(currentReserved.subtract(toRelease));
+        buyer.setAvailableBalance(buyer.getAvailableBalance().add(toRelease));
+        accountRepository.save(buyer);
+    }
+
+    /** Smanjuje seller portfolio.reservedQuantity za qty. Idempotentno. */
+    private void releaseSellerReservation(OtcContract contract) {
+        Portfolio sp = portfolioRepository
+                .findByUserIdAndUserRoleAndListingIdForUpdate(
+                        contract.getSellerId(), contract.getSellerRole(), contract.getListing().getId())
+                .orElse(null);
+        if (sp == null) return;
+        int toRelease = Math.min(sp.getReservedQuantity(), contract.getQuantity());
+        sp.setReservedQuantity(sp.getReservedQuantity() - toRelease);
+        portfolioRepository.save(sp);
     }
 
     // ────────────────────────── Helpers ──────────────────────────

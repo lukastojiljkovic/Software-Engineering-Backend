@@ -73,6 +73,19 @@ public class OtcContract {
     @Column(name = "exercised_at")
     private LocalDateTime exercisedAt;
 
+    /**
+     * Buyer-ov racun na kome je rezervisan strike × qty iznos pri sklapanju
+     * ugovora. Pri exercise-u trosimo sa istog racuna; pri abandon-u oslobadja.
+     * (Spec Celina 4 vece-5: rezervacija sredstava kupcu + akcija prodavcu.)
+     */
+    @Column(name = "buyer_reserved_account_id")
+    private Long buyerReservedAccountId;
+
+    /** Iznos rezervisan u valuti buyer-ovog racuna (NE listing currency). */
+    @Column(name = "buyer_reserved_amount", precision = 19, scale = 4)
+    @org.hibernate.annotations.ColumnDefault("0")
+    private BigDecimal buyerReservedAmount;
+
     @PrePersist
     void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
