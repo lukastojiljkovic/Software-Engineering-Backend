@@ -74,6 +74,41 @@ public class GlobalExceptionHandler {
                 .body(new MessageResponseDto(ex.getMessage()));
     }
 
+    /**
+     * Spring AOP wrap-uje sve nehvtacene RuntimeException-e unutar @Transactional
+     * metoda u TransactionSystemException sa generic porukom "Could not commit JPA
+     * transaction". Pravu poruku korisnika dobijemo unwrap-ovanjem cause lanca.
+     *
+     * Bez ovog handler-a, korisnik vidi cryptic "Could not commit JPA transaction"
+     * umesto stvarne poruke (npr. "Racun ne pripada klijentu", "Nedovoljno sredstava").
+     * Prijavljeno 14.05.2026 vece-4: Ana fund invest + OTC accept padaju sa generic
+     * porukom umesto pravih BE validation poruka.
+     */
+    @ExceptionHandler(org.springframework.transaction.TransactionSystemException.class)
+    public ResponseEntity<MessageResponseDto> handleTransactionSystemException(
+            org.springframework.transaction.TransactionSystemException ex) {
+        Throwable cause = ex.getMostSpecificCause();
+        // Unwrap chain dok ne nadjemo non-Spring exception
+        while (cause != null
+                && cause.getCause() != null
+                && cause.getCause() != cause
+                && (cause instanceof org.springframework.transaction.TransactionException
+                    || cause instanceof org.springframework.dao.DataAccessException)) {
+            cause = cause.getCause();
+        }
+        String message = cause != null && cause.getMessage() != null && !cause.getMessage().isBlank()
+                ? cause.getMessage()
+                : "Doslo je do greske prilikom obrade zahteva.";
+        // Mapiraj poznate exception tipove u prikladan HTTP status
+        HttpStatus status = HttpStatus.BAD_REQUEST;
+        if (cause instanceof EntityNotFoundException) {
+            status = HttpStatus.NOT_FOUND;
+        } else if (cause instanceof AccessDeniedException) {
+            status = HttpStatus.FORBIDDEN;
+        }
+        return ResponseEntity.status(status).body(new MessageResponseDto(message));
+    }
+
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<MessageResponseDto> handleRuntimeException(RuntimeException ex) {
         return ResponseEntity

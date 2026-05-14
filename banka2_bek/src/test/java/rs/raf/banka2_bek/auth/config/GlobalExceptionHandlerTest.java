@@ -120,4 +120,59 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getMessage()).isEqualTo("Access denied");
     }
+
+    // ── TransactionSystemException (14.05.2026 vece-4 fix) ───────────────
+    // PM prijavio: "Could not commit JPA transaction" toast umesto pravog
+    // BE validation message-a (npr. "Nedovoljno sredstava"). Spring AOP wrap-uje
+    // sve nehvtacene RuntimeException-e u @Transactional metodama u
+    // TransactionSystemException sa generic porukom. Treba unwrap cause lanca.
+
+    @Test
+    void handleTransactionSystemException_unwrapsRootCause() {
+        IllegalArgumentException root = new IllegalArgumentException("Nedovoljno sredstava na racunu.");
+        org.springframework.transaction.TransactionSystemException tx =
+                new org.springframework.transaction.TransactionSystemException("Could not commit JPA transaction", root);
+
+        ResponseEntity<MessageResponseDto> response = handler.handleTransactionSystemException(tx);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Nedovoljno sredstava na racunu.");
+    }
+
+    @Test
+    void handleTransactionSystemException_entityNotFoundCause_returns404() {
+        EntityNotFoundException root = new EntityNotFoundException("Racun ne postoji: 999");
+        org.springframework.transaction.TransactionSystemException tx =
+                new org.springframework.transaction.TransactionSystemException("Could not commit JPA transaction", root);
+
+        ResponseEntity<MessageResponseDto> response = handler.handleTransactionSystemException(tx);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.getBody().getMessage()).isEqualTo("Racun ne postoji: 999");
+    }
+
+    @Test
+    void handleTransactionSystemException_accessDeniedCause_returns403() {
+        AccessDeniedException root = new AccessDeniedException("Racun ne pripada klijentu.");
+        org.springframework.transaction.TransactionSystemException tx =
+                new org.springframework.transaction.TransactionSystemException("Could not commit JPA transaction", root);
+
+        ResponseEntity<MessageResponseDto> response = handler.handleTransactionSystemException(tx);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody().getMessage()).isEqualTo("Racun ne pripada klijentu.");
+    }
+
+    @Test
+    void handleTransactionSystemException_nullMessageFallback() {
+        org.springframework.transaction.TransactionSystemException tx =
+                new org.springframework.transaction.TransactionSystemException("Could not commit");
+
+        ResponseEntity<MessageResponseDto> response = handler.handleTransactionSystemException(tx);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // Fallback message kad nema cause-a (getMostSpecificCause() vraca samog ex-a — sa porukom "Could not commit")
+        assertThat(response.getBody().getMessage()).isNotBlank();
+    }
 }
