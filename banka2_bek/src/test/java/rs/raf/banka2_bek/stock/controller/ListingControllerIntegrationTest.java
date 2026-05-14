@@ -14,6 +14,8 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.client.DefaultResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 import rs.raf.banka2_bek.auth.model.User;
@@ -39,6 +41,14 @@ import static org.springframework.http.HttpStatus.OK;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
+// Test isolation: forsiramo fresh Spring context pre prvog test metoda.
+// Bez ovog, na CI runner-u (sa cached @SpringBootTest context-om koji se deli
+// kroz vise klasa) ListingController endpointi su konzistentno vracali 403
+// umesto 200/400/404. Lokalno testovi prolaze 27/27 zato sto se test klasa
+// pokrece izolovano. BEFORE_CLASS je dovoljan (ne BEFORE_EACH_TEST_METHOD)
+// jer truncateAllTables() u @BeforeEach resava DB state, a Spring context
+// reset eliminise leaked in-memory state (security context, caches, beans).
+@DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_CLASS)
 class ListingControllerIntegrationTest {
 
     @Value("${local.server.port}")
@@ -68,6 +78,12 @@ class ListingControllerIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        // Clear bilo kakvu leaked Authentication iz prethodnih test klasa pre
+        // novog truncate-a. Surefire forkPerThread reuse moze zadrzati
+        // SecurityContextHolder ThreadLocal sa stale principal-om iz drugog
+        // testa, sto bi rezultovalo 403 cak i sa validnim Bearer JWT-om u
+        // ovom testu (Spring koristi cached context umesto novog iz JWT-a).
+        SecurityContextHolder.clearContext();
         IntegrationTestCleanup.truncateAllTables(dataSource);
         seedListings();
         aaplId = listingRepository.findByTicker("AAPL").orElseThrow().getId();

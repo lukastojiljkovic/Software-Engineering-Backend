@@ -54,6 +54,12 @@ class TransferServiceCoverageTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        // Test isolation: clear bilo kakvu zaostalu Authentication iz prethodne
+        // test klase u JVM-u (Surefire fork reuse). Bez ovog, neki testovi
+        // mogu naslediti SecurityContext sa drugim emailom (npr. "marko@banka.rs"
+        // iz integration testa) i Mockito strict stub puca jer code-under-test
+        // poziva findByEmail sa neocekivanim argumentom.
+        SecurityContextHolder.clearContext();
         transferService = new TransferService(transferRepository, accountRepository, exchangeService, clientRepository);
         Field f = TransferService.class.getDeclaredField("bankRegistrationNumber");
         f.setAccessible(true);
