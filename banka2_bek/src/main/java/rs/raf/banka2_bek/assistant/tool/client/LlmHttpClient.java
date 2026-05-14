@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import rs.raf.banka2_bek.assistant.config.AssistantProperties;
+import rs.raf.banka2_bek.assistant.dto.openai.OllamaGenerateRequest;
+import rs.raf.banka2_bek.assistant.dto.openai.OllamaGenerateResponse;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatChunk;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatRequest;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatResponse;
@@ -151,6 +153,56 @@ public class LlmHttpClient {
         } catch (Exception e) {
             log.error("LLM stream call failed: {}", e.getMessage());
             throw new LlmHttpException("LLM provider unreachable: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Plan v3.6 §Task 3 — Ollama-native {@code /api/generate} endpoint za
+     * structured outputs (JSON schema constraint). Koristi se za intent
+     * classification gde nam treba 95%+ pouzdano JSON od malog modela.
+     *
+     * <p>baseUrl je tipicno {@code http://host.docker.internal:11434/v1} —
+     * strip-ujemo {@code /v1} suffix da bismo dobili native Ollama root,
+     * pa appen-dujemo {@code /api/generate}. Ako baseUrl nije Ollama-style
+     * (npr. LM Studio), metoda baca {@link LlmHttpException}.</p>
+     *
+     * @throws LlmHttpException ako baseUrl nije Ollama-compatible, ako
+     *         non-2xx odgovor, ili ako body deserialization failuje
+     */
+    public OllamaGenerateResponse generate(OllamaGenerateRequest request) {
+        String nativeBase = baseUrl;
+        if (nativeBase.endsWith("/v1")) {
+            nativeBase = nativeBase.substring(0, nativeBase.length() - 3);
+        } else if (nativeBase.endsWith("/v1/")) {
+            nativeBase = nativeBase.substring(0, nativeBase.length() - 4);
+        }
+        String url = nativeBase + "/api/generate";
+
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(request);
+        } catch (JsonProcessingException e) {
+            throw new LlmHttpException("Ollama generate request serialization failed: " + e.getMessage(), e);
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMillis(properties.getTimeoutMs()))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() / 100 != 2) {
+                String body = resp.body();
+                log.error("Ollama generate HTTP {}: {}", resp.statusCode(), body);
+                throw new LlmHttpException("Ollama returned " + resp.statusCode() + ": " + body, null);
+            }
+            return objectMapper.readValue(resp.body(), OllamaGenerateResponse.class);
+        } catch (LlmHttpException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Ollama generate call failed: {}", e.getMessage());
+            throw new LlmHttpException("Ollama unreachable: " + e.getMessage(), e);
         }
     }
 

@@ -5,11 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.ObjectProvider;
 import rs.raf.banka2_bek.assistant.config.AssistantProperties;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatRequest;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatResponse;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiMessage;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiToolCall;
+import rs.raf.banka2_bek.assistant.service.StructuredIntentClassifier;
 import rs.raf.banka2_bek.assistant.tool.client.LlmHttpClient;
 import rs.raf.banka2_bek.assistant.wizard.registry.WizardRegistry;
 import rs.raf.banka2_bek.auth.util.UserContext;
@@ -59,6 +61,12 @@ public class IntentClassifier {
     private final AssistantProperties properties;
     private final ObjectMapper assistantObjectMapper;
     private final WizardRegistry wizardRegistry;
+    /**
+     * Plan v3.6 §Task 3 — primary classifier (Ollama structured outputs).
+     * Optional zato sto unit testovi koji instanciraju IntentClassifier
+     * direktno bez Spring konteksta ne moraju da setuju nista.
+     */
+    private final ObjectProvider<StructuredIntentClassifier> structuredClassifier;
 
     /** Tiny LRU cache — prevents repeating the same classifier call on retry. */
     private final java.util.Map<String, String> cache =
@@ -73,11 +81,13 @@ public class IntentClassifier {
     public IntentClassifier(LlmHttpClient llmHttpClient,
                              AssistantProperties properties,
                              @Qualifier("assistantObjectMapper") ObjectMapper assistantObjectMapper,
-                             WizardRegistry wizardRegistry) {
+                             WizardRegistry wizardRegistry,
+                             ObjectProvider<StructuredIntentClassifier> structuredClassifier) {
         this.llmHttpClient = llmHttpClient;
         this.properties = properties;
         this.assistantObjectMapper = assistantObjectMapper;
         this.wizardRegistry = wizardRegistry;
+        this.structuredClassifier = structuredClassifier;
     }
 
     /**
@@ -95,6 +105,27 @@ public class IntentClassifier {
         if (cached != null) {
             log.debug("ARBITRO IntentClassifier cache hit: {} -> {}", key, cached);
             return Optional.of(cached);
+        }
+
+        // Plan v3.6 §Task 3 — primary primary: StructuredIntentClassifier
+        // (Ollama format param sa JSON schema constraint). Pouzdanije od
+        // tool_choice="required" na Gemma 4 E2B (~95% vs ~60%).
+        StructuredIntentClassifier sic = structuredClassifier != null
+                ? structuredClassifier.getIfAvailable() : null;
+        if (sic != null) {
+            Optional<StructuredIntentClassifier.IntentResult> structuredHit =
+                    sic.classify(userMessage, user);
+            if (structuredHit.isPresent()) {
+                String tool = structuredHit.get().tool();
+                if (wizardRegistry.has(tool)) {
+                    cache.put(key, tool);
+                    log.info("ARBITRO IntentClassifier structured picked tool='{}' conf={}",
+                            tool, structuredHit.get().confidence());
+                    return Optional.of(tool);
+                }
+                log.info("ARBITRO IntentClassifier structured picked '{}' but no wizard registered, "
+                        + "falling back to tool_choice classifier", tool);
+            }
         }
 
         try {

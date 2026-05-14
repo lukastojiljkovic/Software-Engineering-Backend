@@ -8,11 +8,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
 import rs.raf.banka2_bek.assistant.config.AssistantProperties;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatRequest;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiChatResponse;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiMessage;
 import rs.raf.banka2_bek.assistant.dto.openai.OpenAiToolCall;
+import rs.raf.banka2_bek.assistant.service.StructuredIntentClassifier;
 import rs.raf.banka2_bek.assistant.tool.client.LlmHttpClient;
 import rs.raf.banka2_bek.assistant.wizard.registry.WizardRegistry;
 import rs.raf.banka2_bek.auth.util.UserContext;
@@ -42,7 +44,14 @@ class IntentClassifierTest {
         properties.setModel("test-model");
         properties.setTopK(64);
         ObjectMapper mapper = new ObjectMapper();
-        classifier = new IntentClassifier(llmHttpClient, properties, mapper, wizardRegistry);
+        // Plan v3.6 §Task 3 — structured classifier provider; ovde vracamo null
+        // (getIfAvailable -> null) tako da test pokriva legacy tool_choice put.
+        @SuppressWarnings("unchecked")
+        ObjectProvider<StructuredIntentClassifier> structuredProvider =
+                mock(ObjectProvider.class);
+        when(structuredProvider.getIfAvailable()).thenReturn(null);
+        classifier = new IntentClassifier(llmHttpClient, properties, mapper, wizardRegistry,
+                structuredProvider);
         clientUser = new UserContext(1L, UserRole.CLIENT);
         // Default: svi tools u registry-ju "imaju" wizard template, tako da
         // buildMinimalTools generise non-empty listu i LLM se zaista pozove.
