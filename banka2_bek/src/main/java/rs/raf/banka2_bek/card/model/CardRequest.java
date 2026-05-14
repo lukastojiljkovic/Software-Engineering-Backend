@@ -27,6 +27,17 @@ public class CardRequest {
     @Column(length = 20)
     private CardType cardType;
 
+    /** Kategorija placanja (Debit / Credit / Internet prepaid) — odvojeno od brenda. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "card_category", length = 25)
+    private CardCategory cardCategory;
+
+    /** Kreditni limit, samo za CREDIT kategoriju. */
+    @Column(name = "credit_limit", precision = 19, scale = 4)
+    @org.hibernate.annotations.ColumnDefault("0")
+    @Builder.Default
+    private BigDecimal creditLimit = BigDecimal.ZERO;
+
     @Column(nullable = false)
     private String clientEmail;
 

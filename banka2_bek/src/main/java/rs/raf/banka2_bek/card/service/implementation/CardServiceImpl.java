@@ -83,6 +83,13 @@ public class CardServiceImpl implements CardService {
     @Override
     @Transactional
     public CardResponseDto createCardForAccount(Long accountId, Long clientId, BigDecimal limit, CardType cardType) {
+        return createCardForAccount(accountId, clientId, limit, cardType, CardCategory.DEBIT, BigDecimal.ZERO);
+    }
+
+    @Override
+    @Transactional
+    public CardResponseDto createCardForAccount(Long accountId, Long clientId, BigDecimal limit, CardType cardType,
+                                                 CardCategory cardCategory, BigDecimal creditLimit) {
         Account account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new RuntimeException("Racun nije pronadjen"));
         Client client = clientRepository.findById(clientId)
@@ -92,7 +99,9 @@ public class CardServiceImpl implements CardService {
 
         BigDecimal cardLimit = limit != null ? limit : BigDecimal.valueOf(100000);
         CardType type = cardType != null ? cardType : CardType.VISA;
-        return toResponse(createAndSaveCard(account, client, cardLimit, type));
+        CardCategory cat = cardCategory != null ? cardCategory : CardCategory.DEBIT;
+        BigDecimal credit = creditLimit != null ? creditLimit : BigDecimal.ZERO;
+        return toResponse(createAndSaveCard(account, client, cardLimit, type, cat, credit));
     }
 
     @Override

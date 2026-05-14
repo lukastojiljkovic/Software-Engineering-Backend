@@ -207,6 +207,7 @@ class CardControllerCoverageTest {
                 .andExpect(jsonPath("$.processedAt").exists())
                 .andExpect(jsonPath("$.processedBy").value("employee@banka.rs"));
 
-        verify(cardService).createCardForAccount(eq(1L), eq(5L), any(BigDecimal.class), eq(CardType.MASTERCARD));
+        // Controller sad poziva 6-arg overload (cardCategory + creditLimit dodati 14.05 vece-5)
+        verify(cardService).createCardForAccount(eq(1L), eq(5L), any(BigDecimal.class), eq(CardType.MASTERCARD), any(), any());
     }
 }

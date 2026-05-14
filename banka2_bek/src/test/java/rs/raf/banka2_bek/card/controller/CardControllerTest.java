@@ -579,7 +579,8 @@ class CardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("APPROVED"));
 
-        verify(cardService).createCardForAccount(eq(1L), eq(5L), any(BigDecimal.class), any());
+        // Controller poziva 6-arg overload (cardCategory + creditLimit dodati 14.05 vece-5)
+        verify(cardService).createCardForAccount(eq(1L), eq(5L), any(BigDecimal.class), any(), any(), any());
     }
 
     @Test

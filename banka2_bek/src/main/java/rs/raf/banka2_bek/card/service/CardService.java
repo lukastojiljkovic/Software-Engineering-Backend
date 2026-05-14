@@ -2,6 +2,7 @@ package rs.raf.banka2_bek.card.service;
 
 import rs.raf.banka2_bek.card.dto.CardResponseDto;
 import rs.raf.banka2_bek.card.dto.CreateCardRequestDto;
+import rs.raf.banka2_bek.card.model.CardCategory;
 import rs.raf.banka2_bek.card.model.CardType;
 
 import java.math.BigDecimal;
@@ -10,6 +11,9 @@ import java.util.List;
 public interface CardService {
     CardResponseDto createCard(CreateCardRequestDto request);
     CardResponseDto createCardForAccount(Long accountId, Long clientId, BigDecimal limit, CardType cardType);
+    /** Verzija koja prosledjuje kategoriju + kreditni limit (za approve flow-a). */
+    CardResponseDto createCardForAccount(Long accountId, Long clientId, BigDecimal limit, CardType cardType,
+                                          CardCategory cardCategory, BigDecimal creditLimit);
     List<CardResponseDto> getMyCards();
     List<CardResponseDto> getCardsByAccount(Long accountId);
     CardResponseDto blockCard(Long cardId);

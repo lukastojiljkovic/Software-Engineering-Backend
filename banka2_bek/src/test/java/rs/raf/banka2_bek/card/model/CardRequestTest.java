@@ -81,10 +81,14 @@ class CardRequestTest {
 
     @Test
     void allArgsConstructor_direct() {
+        // Konstrukor prosiren 14.05.2026 vece-5: dodato cardCategory + creditLimit
+        // izmedju cardType i clientEmail (entitet polje order).
         CardRequest r = new CardRequest(
                 3L, null, new BigDecimal("100"), CardType.DINACARD,
+                rs.raf.banka2_bek.card.model.CardCategory.DEBIT, BigDecimal.ZERO,
                 "e@e.e", "N N", "PENDING", null, LocalDateTime.now(), null, null);
         assertThat(r.getId()).isEqualTo(3L);
         assertThat(r.getCardType()).isEqualTo(CardType.DINACARD);
+        assertThat(r.getCardCategory()).isEqualTo(rs.raf.banka2_bek.card.model.CardCategory.DEBIT);
     }
 }

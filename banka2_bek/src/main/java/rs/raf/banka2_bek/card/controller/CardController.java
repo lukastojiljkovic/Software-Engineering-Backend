@@ -20,6 +20,7 @@ import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.card.dto.CardLimitUpdateDto;
 import rs.raf.banka2_bek.card.dto.CardResponseDto;
 import rs.raf.banka2_bek.card.dto.CreateCardRequestDto;
+import rs.raf.banka2_bek.card.model.CardCategory;
 import rs.raf.banka2_bek.card.model.CardRequest;
 import rs.raf.banka2_bek.card.model.CardType;
 import rs.raf.banka2_bek.card.repository.CardRequestRepository;
@@ -154,10 +155,30 @@ public class CardController {
             }
         }
 
+        // Kategorija placanja (Debit/Credit/Internet prepaid) — odvojeno od brenda
+        CardCategory requestedCategory = CardCategory.DEBIT;
+        if (body.get("cardCategory") != null) {
+            try {
+                requestedCategory = CardCategory.valueOf(String.valueOf(body.get("cardCategory")));
+            } catch (IllegalArgumentException ignored) {
+                // default DEBIT
+            }
+        }
+        BigDecimal creditLimitForCard = BigDecimal.ZERO;
+        if (requestedCategory == CardCategory.CREDIT && body.get("creditLimit") != null) {
+            try {
+                creditLimitForCard = new BigDecimal(String.valueOf(body.get("creditLimit")));
+            } catch (NumberFormatException ignored) {
+                // default 0
+            }
+        }
+
         CardRequest req = CardRequest.builder()
                 .account(account)
                 .cardLimit(limit)
                 .cardType(requestedCardType)
+                .cardCategory(requestedCategory)
+                .creditLimit(creditLimitForCard)
                 .clientEmail(email)
                 .clientName(clientName)
                 .status("PENDING")
@@ -199,7 +220,10 @@ public class CardController {
         Client owner = account.getClient();
         if (owner == null) throw new IllegalStateException("Racun nema vlasnika");
         CardType cardType = req.getCardType() != null ? req.getCardType() : CardType.VISA;
-        cardService.createCardForAccount(account.getId(), owner.getId(), req.getCardLimit(), cardType);
+        CardCategory cardCategory = req.getCardCategory() != null ? req.getCardCategory() : CardCategory.DEBIT;
+        BigDecimal creditLimit = req.getCreditLimit() != null ? req.getCreditLimit() : BigDecimal.ZERO;
+        cardService.createCardForAccount(account.getId(), owner.getId(), req.getCardLimit(), cardType,
+                cardCategory, creditLimit);
 
         String employeeEmail = SecurityContextHolder.getContext().getAuthentication().getName();
         req.setStatus("APPROVED");
@@ -229,12 +253,29 @@ public class CardController {
     private Map<String, Object> toCardRequestMap(CardRequest req) {
         Map<String, Object> map = new java.util.LinkedHashMap<>();
         map.put("id", req.getId());
-        map.put("accountId", req.getAccount().getId());
-        map.put("accountNumber", req.getAccount().getAccountNumber());
+        // Racun — pun detalj (broj, tip, valuta, balans) da zaposleni odmah vidi za
+        // koji racun ide zahtev bez ekstra API poziva
+        Account account = req.getAccount();
+        map.put("accountId", account.getId());
+        map.put("accountNumber", account.getAccountNumber());
+        if (account.getAccountType() != null) {
+            map.put("accountType", account.getAccountType().name());
+        }
+        if (account.getCurrency() != null) {
+            map.put("accountCurrency", account.getCurrency().getCode());
+        }
+        map.put("accountBalance", account.getBalance());
+        // Brend + kategorija + provider info
         map.put("cardLimit", req.getCardLimit());
         map.put("cardType", req.getCardType() != null ? req.getCardType().name() : null);
+        map.put("cardCategory", req.getCardCategory() != null ? req.getCardCategory().name() : "DEBIT");
+        if (req.getCreditLimit() != null && req.getCreditLimit().compareTo(BigDecimal.ZERO) > 0) {
+            map.put("creditLimit", req.getCreditLimit());
+        }
+        // Klijent
         map.put("clientEmail", req.getClientEmail());
         map.put("clientName", req.getClientName());
+        // Status / timestamps
         map.put("status", req.getStatus());
         map.put("createdAt", req.getCreatedAt().toString());
         if (req.getProcessedAt() != null) {
