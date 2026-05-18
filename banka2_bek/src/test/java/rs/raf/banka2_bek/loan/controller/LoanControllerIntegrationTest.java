@@ -42,7 +42,7 @@ import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.transfers.repository.TransferRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.IntegrationTestCleanup;
 
 import javax.sql.DataSource;
@@ -84,7 +84,7 @@ class LoanControllerIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
 
     @MockitoBean private ExchangeService exchangeService;
-    @MockitoBean private MailNotificationService mailNotificationService;
+    @MockitoBean private NotificationPublisher notificationPublisher;
     @MockitoBean private rs.raf.banka2_bek.otp.service.OtpService otpService;
 
     @BeforeEach

@@ -7,8 +7,8 @@ import rs.raf.banka2_bek.notification.model.NotificationType;
 // TODO [B1 - Notifikacioni sistem | Nosilac: Mina Kovacevic, Tadija]
 //
 // Servis koji upravlja in-app notifikacijama i prosledjuje ih
-// na postojeci email kanal (MailNotificationService).
-// Injektovati: NotificationRepository i MailNotificationService.
+// na postojeci email kanal (NotificationPublisher).
+// Injektovati: NotificationRepository i NotificationPublisher.
 //
 // IMPLEMENTIRATI (sve metode):
 //
@@ -19,7 +19,7 @@ import rs.raf.banka2_bek.notification.model.NotificationType;
 //        (recipientId, recipientType, type, title, body,
 //         read = false, createdAt = LocalDateTime.now(),
 //         referenceType, referenceId)
-//      — ZATIM poziva email kanal (MailNotificationService)
+//      — ZATIM poziva email kanal (NotificationPublisher)
 //        da posalje email primaocu ako je to relevantno za dati type;
 //        email kanal se ne sme menjati — samo pozvati odgovarajucu
 //        postojecu metodu (npr. sendPaymentConfirmationMail, itd.)

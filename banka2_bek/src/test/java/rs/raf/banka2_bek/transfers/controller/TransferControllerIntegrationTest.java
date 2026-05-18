@@ -39,7 +39,7 @@ import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
 import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.otp.service.OtpService;
 import rs.raf.banka2_bek.card.repository.CardRepository;
 import rs.raf.banka2_bek.card.repository.CardRequestRepository;
@@ -89,7 +89,7 @@ class TransferControllerIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
 
     @MockitoBean private ExchangeService exchangeService;
-    @MockitoBean private MailNotificationService mailNotificationService;
+    @MockitoBean private NotificationPublisher notificationPublisher;
     @MockitoBean private OtpService otpService;
 
     @BeforeEach

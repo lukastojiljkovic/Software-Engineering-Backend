@@ -18,7 +18,7 @@ import rs.raf.banka2_bek.employee.model.ActivationToken;
 import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.IntegrationTestCleanup;
 
 import javax.sql.DataSource;
@@ -36,7 +36,7 @@ class EmployeeAuthControllerIntegrationTest {
         private final RestTemplate restTemplate = new RestTemplate();
 
     @MockitoBean
-    private MailNotificationService mailNotificationService;
+    private NotificationPublisher notificationPublisher;
 
         @Value("${local.server.port}")
         private int port;

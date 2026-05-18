@@ -5,7 +5,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import rs.raf.banka2_bek.notification.repository.NotificationRepository;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.notification.service.NotificationService;
 
 // ============================================================
@@ -13,7 +13,7 @@ import rs.raf.banka2_bek.notification.service.NotificationService;
 //
 // Jedinicni (Mockito) testovi za NotificationService.
 // Koristiti @ExtendWith(MockitoExtension.class) i @InjectMocks.
-// Mock-ovati: NotificationRepository, MailNotificationService,
+// Mock-ovati: NotificationRepository, NotificationPublisher,
 // i repozitorijume primaoca (ClientRepository, EmployeeRepository).
 //
 // IMPLEMENTIRATI (svi test slucajevi, jedan @Test po stavci):
@@ -24,11 +24,11 @@ import rs.raf.banka2_bek.notification.service.NotificationService;
 //           (verify NotificationRepository.save sa ArgumentCaptor-om
 //            i proveriti sva polja: recipientId, type, title, body,
 //            read = false, referenceType, referenceId)
-//        b) pozove odgovarajucu metodu MailNotificationService-a
+//        b) pozove odgovarajucu metodu NotificationPublisher-a
 //           (npr. sendPaymentConfirmationMail za tip PAYMENT)
 //
 //   2. notify_emailFailureDoesNotRollbackPersistence
-//      — kada MailNotificationService baci RuntimeException,
+//      — kada NotificationPublisher baci RuntimeException,
 //        notifikacija treba da ostane sacuvana u bazi;
 //        service treba da proguta grescu ili je loghuje, ne da je
 //        propagira ka pozivaocima (definisati ocekivano ponasanje)
@@ -82,7 +82,7 @@ class NotificationServiceTest {
     private NotificationRepository notificationRepository;
 
     @Mock
-    private MailNotificationService mailNotificationService;
+    private NotificationPublisher notificationPublisher;
 
     @InjectMocks
     private NotificationService notificationService;

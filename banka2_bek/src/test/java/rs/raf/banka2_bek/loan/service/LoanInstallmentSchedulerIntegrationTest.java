@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
@@ -18,7 +18,7 @@ class LoanInstallmentSchedulerIntegrationTest {
     private LoanInstallmentScheduler loanInstallmentScheduler;
 
     @MockitoBean
-    private MailNotificationService mailNotificationService;
+    private NotificationPublisher notificationPublisher;
 
     @Test
     @DisplayName("processInstallments runs without error when no installments are due")

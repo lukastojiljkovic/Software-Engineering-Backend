@@ -42,7 +42,7 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.exchange.ExchangeService;
-import rs.raf.banka2_bek.notification.service.MailNotificationService;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.IntegrationTestCleanup;
 
 import javax.sql.DataSource;
@@ -84,7 +84,7 @@ class CardControllerIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
 
     @MockitoBean private ExchangeService exchangeService;
-    @MockitoBean private MailNotificationService mailNotificationService;
+    @MockitoBean private NotificationPublisher notificationPublisher;
     @MockitoBean private rs.raf.banka2_bek.otp.service.OtpService otpService;
 
     @BeforeEach
