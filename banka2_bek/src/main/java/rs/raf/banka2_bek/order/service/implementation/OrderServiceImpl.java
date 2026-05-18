@@ -51,6 +51,29 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
+// TODO [B4 + B7 - Notifikacije + audit | Nosioci: Petar Poznanovic, Stasa Draskovic]
+//
+// [B4 - Okidaci notifikacija | Petar Poznanovic]
+// Na sledecim lifecycle dogadjajima ordera pozvati notifikacioni servis:
+//   1. Agent kreirao order (status PENDING) -> createOrder() posle save:
+//        notifikacioniServis.posaljiOrderKreiranNotifikaciju(order, agent);
+//   2. Order u potpunosti izvrsen (status DONE, filledQuantity == quantity) ->
+//      OrderExecutionService ili ovde posle primanja OrderCompletedEvent:
+//        notifikacioniServis.posaljiOrderIzvrsenNotifikaciju(order);
+//   3. Order delimicno izvrsen (partial fill, 0 < filledQuantity < quantity) ->
+//      OrderExecutionService posle svakog fill-a:
+//        notifikacioniServis.posaljiOrderDelimicnoIzvrsenNotifikaciju(order, fillQty);
+//   4. Order automatski otkazan (status DECLINED, cleanup scheduler) ->
+//        notifikacioniServis.posaljiOrderOtkazanNotifikaciju(order, razlog);
+//
+// [B7 - Audit hook | Stasa Draskovic]
+// Pri odobravanju i odbijanju ordera od strane supervizora evidentirati akciju
+// u audit log. Videti takodje OrderController.
+//   - approveOrder() -> posle order.setStatus(APPROVED) i save:
+//        auditServis.logOrderOdobren(order, currentUser);
+//   - declineOrder() -> posle order.setStatus(DECLINED) i save:
+//        auditServis.logOrderOdbijen(order, currentUser, razlog);
+// Audit servis treba da cuva: orderId, akciju, userId supervizora, timestamp, razlog (ako postoji).
 @Service
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {

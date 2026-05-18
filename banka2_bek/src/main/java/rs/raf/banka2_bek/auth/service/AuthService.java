@@ -47,6 +47,37 @@ public class AuthService {
     private final ApplicationEventPublisher eventPublisher;
     private final AccountLockoutService accountLockoutService;
 
+    /*
+     * // TODO [B2 - Validacija + brute-force | Nosilac: Andjela Vilcek]
+     *
+     * Nakon migracije AccountLockoutService na DB-bazirano stanje
+     * (videti TODO u AccountLockoutService.java), potrebne su sledece
+     * izmene u ovom servisu:
+     *
+     * 1. login() metoda:
+     *    - Redosled provera ostaje isti: najpre accountLockoutService.assertNotLocked,
+     *      zatim provera lozinke.
+     *    - Nakon sto AccountLockoutService pocne da cita accountLockedUntil
+     *      iz baze, assertNotLocked automatski postaje DB-svestan — login()
+     *      ne zahteva direktne izmene osim potencijalnog @Transactional
+     *      anotiranja ako se u istoj transakciji i cita i upisuje lockout stanje.
+     *    - Proveriti da li je @Transactional(readOnly = false) potreban na
+     *      login() da bi recordSuccess i recordFailure mogli da commituju.
+     *
+     * 2. resetPassword() metoda (linija ~272):
+     *    - Posle uspesne promene lozinke pozvati:
+     *        accountLockoutService.recordSuccess(targetEmail)
+     *      da se otkljuca nalog i nulira failedLoginAttempts u bazi.
+     *    - targetEmail je email korisnika cija je lozinka promenjena
+     *      (user.getEmail() ili employee.getEmail() — analogno sa
+     *      passwordResetToken.getUser()/getEmployee()).
+     *
+     * 3. Opciono — requestPasswordReset() metoda:
+     *    - Spec ne zahteva, ali je dobra praksa ne otkrivati da li email
+     *      postoji (trenutno baca RuntimeException ako korisnik ne postoji,
+     *      sto je security leak). Razmotriti silent no-op umesto exception-a.
+     */
+
     public AuthService(UserRepository userRepository,
                        EmployeeRepository employeeRepository,
                        ClientRepository clientRepository,

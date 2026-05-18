@@ -63,6 +63,22 @@ public class GlobalSecurityConfig  {
                         // originalna REQUEST dispatch je vec autorizovana, ASYNC je
                         // samo nastavak iste request-response transakcije.
                         .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC, jakarta.servlet.DispatcherType.ERROR).permitAll()
+                        // ============================================================
+                        // TODO [Razvojni ciklus - nove rute za bezbednosnu konfiguraciju]
+                        //
+                        // Pri implementaciji novih feature-a dodati requestMatchers za sledece rute
+                        // (pratiti postojeci obrazac u ovom fajlu — npr. /actuaries/** za role-based,
+                        // /otc/** za authenticated):
+                        //   - /notifications/**            -> authenticated()                 [B1 - Notifikacioni sistem]
+                        //   - /price-alerts/**             -> authenticated()                 [B5 - Cenovni alarmi]
+                        //   - /watchlists/**               -> authenticated()                 [B6 - Watchlist]
+                        //   - /audit/**                    -> ADMIN + SUPERVISOR samo         [B7 - Audit log]
+                        //   - /recurring-orders/**         -> authenticated()                 [B8 - Trajni nalozi]
+                        //   - /dividends/**                -> authenticated()                 [B9 - Dividende]
+                        //   - /otc/negotiation-history/**  -> authenticated()                 [B10 - Istorija OTC pregovora]
+                        // Specificne rute moraju doci PRE generickih matcher-a.
+                        // Spec: Zadaci_Backend.pdf.
+                        // ============================================================
                         .requestMatchers(
                                 "/error",
                                 "/auth/register",

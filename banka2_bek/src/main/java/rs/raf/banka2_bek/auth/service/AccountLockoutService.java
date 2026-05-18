@@ -32,6 +32,50 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class AccountLockoutService {
 
+    /*
+     * // TODO [B2 - Validacija + brute-force | Nosilac: Andjela Vilcek]
+     *
+     * Preraditi servis sa in-memory (Caffeine) na DB-bazirano stanje
+     * koristeci nova polja entiteta User.failedLoginAttempts i
+     * User.accountLockedUntil (analogno za Employee):
+     *
+     * 1. BRISANJE Caffeine cache-a:
+     *    - Ukloniti polja failedAttempts: Cache<String, AtomicInteger> i
+     *      lockedUntil: Cache<String, Instant>.
+     *    - Ukloniti @PostConstruct init() metodu.
+     *    - Ukloniti @Value lockout property-je (ili ostaviti za timeout
+     *      konfiguraciju, po izboru).
+     *
+     * 2. assertNotLocked(email):
+     *    - Ucitati User ili Employee po email-u iz repozitorijuma.
+     *    - Proveriti accountLockedUntil != null &&
+     *      accountLockedUntil.isAfter(LocalDateTime.now()).
+     *    - Ako je lock aktivan, baciti AccountLockedException sa preostalim
+     *      vremenom kao i sada.
+     *
+     * 3. recordFailure(email) — posle 5 uzastopnih neuspesnih pokusaja:
+     *    - Uvecati failedLoginAttempts u bazi (UserRepository.save /
+     *      EmployeeRepository.save).
+     *    - Kad failedLoginAttempts >= maxFailedAttempts, postaviti
+     *      accountLockedUntil = LocalDateTime.now().plusMinutes(10).
+     *    - Poslati email korisniku o zakljucavanju (koristiti postojeci
+     *      MailNotificationService ili ApplicationEventPublisher).
+     *    - Baciti AccountLockedException odmah (kao i sada).
+     *
+     * 4. recordSuccess(email):
+     *    - Nulirati failedLoginAttempts = 0.
+     *    - Postaviti accountLockedUntil = null (otkljucati nalog).
+     *    - Sacuvati u bazi.
+     *
+     * 5. resetPassword tok u AuthService:
+     *    - Posle uspesne promene lozinke, takodje pozvati recordSuccess(email)
+     *      da se otkljuca nalog i nulira brojac.
+     *
+     * VAZNO: metoda mora biti @Transactional jer radi write nad entitetima.
+     * Paziti na lazyno ucitavanje entiteta — koristiti explicit fetch ili
+     * @Transactional(readOnly = false) u pozivajucem servisu.
+     */
+
     /** Posle ovoliko neuspeha — racun je lock-ovan. */
     @Value("${auth.lockout.max-failed-attempts:5}")
     private int maxFailedAttempts;

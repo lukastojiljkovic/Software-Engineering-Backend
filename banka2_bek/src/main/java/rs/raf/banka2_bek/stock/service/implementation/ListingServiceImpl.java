@@ -45,6 +45,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 
+/*
+ * TODO [B5 - Cenovni alarmi | Nosilac: Aleksa Vucinic]
+ *
+ * Pri svakom ciklusu osvezavanja cena (u scheduled metodi koja azurira
+ * currentPrice svakog listinga — tipicno @Scheduled unutar ovog servisa
+ * ili kroz pozivanje refreshPrices / simulateGbm) pozvati servis za
+ * cenovne alarme kako bi se okinula obavestenja korisnicima:
+ *
+ *   priceAlertScheduler.checkAlerts();
+ *   // ili direktno:
+ *   priceAlertService.evaluateAlertsForListing(listing);
+ *
+ * Klase nosioci logike: PriceAlertScheduler i PriceAlertService
+ * (paket rs.raf.banka2_bek.pricealert).
+ *
+ * Alarm se okida kada nova cena presece zadatu gornju ili donju granicu
+ * (cenovni alarm koji je klijent postavio na berzi). Posle okidanja alarm
+ * treba deaktivirati ili oznaciti kao okinut kako se ne bi okidao ponovo
+ * pri svakom narednom osvezavanju.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j

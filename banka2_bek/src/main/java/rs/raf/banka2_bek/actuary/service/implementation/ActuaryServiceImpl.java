@@ -19,6 +19,21 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/*
+ * TODO [B7 - Audit log | Nosilac: Stasa Draskovic]
+ *
+ * Pri promeni limita agentu (updateLimit) i pri resetovanju iskoriscenog
+ * limita (resetUsedLimit / ActuaryLimitResetScheduler) evidentirati akciju
+ * u audit servis:
+ *   - ko je pokrenuo akciju (korisnicko ime / email inicijatora iz SecurityContext-a)
+ *   - kada se desilo (LocalDateTime.now())
+ *   - stara vrednost limita / iskoriscenog limita pre izmene
+ *   - nova vrednost limita / iskoriscenog limita posle izmene
+ *
+ * Primer poziva (pseudokod):
+ *   auditService.log(AuditEvent.ACTUARY_LIMIT_CHANGED, actuaryId, oldLimit, newLimit, initiator);
+ *   auditService.log(AuditEvent.ACTUARY_LIMIT_RESET, actuaryId, oldUsed, 0, "SCHEDULER");
+ */
 @Service
 @RequiredArgsConstructor
 public class ActuaryServiceImpl implements ActuaryService {

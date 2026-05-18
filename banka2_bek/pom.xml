@@ -284,6 +284,30 @@
                         <exclude>rs/raf/banka2_bek/**/mapper/**</exclude>
                         <!-- Arbitro AI asistent (Celina 6 internal, NIJE deo Celine 1-5 KT3 spec-a) -->
                         <exclude>rs/raf/banka2_bek/assistant/**</exclude>
+                        <!--
+                            Skeleton fajlovi sledeceg razvojnog ciklusa (zadaci B1-B12) — prazni
+                            stubovi sa TODO blokovima, JOS NISU implementirani. Iskljuceni iz
+                            coverage merenja dok se ne implementiraju. KAD zadatak bude gotov +
+                            ispraceni testovima, nosilac UKLANJA svoj exclude red odavde.
+                        -->
+                        <exclude>rs/raf/banka2_bek/pricealert/**</exclude>
+                        <exclude>rs/raf/banka2_bek/watchlist/**</exclude>
+                        <exclude>rs/raf/banka2_bek/audit/**</exclude>
+                        <exclude>rs/raf/banka2_bek/recurringorder/**</exclude>
+                        <exclude>rs/raf/banka2_bek/dividend/**</exclude>
+                        <exclude>rs/raf/banka2_bek/notification/model/**</exclude>
+                        <exclude>rs/raf/banka2_bek/notification/repository/**</exclude>
+                        <exclude>rs/raf/banka2_bek/notification/controller/**</exclude>
+                        <exclude>rs/raf/banka2_bek/notification/service/NotificationService*</exclude>
+                        <exclude>rs/raf/banka2_bek/otp/model/TotpSecret*</exclude>
+                        <exclude>rs/raf/banka2_bek/otp/repository/TotpSecretRepository*</exclude>
+                        <exclude>rs/raf/banka2_bek/otp/service/TotpService*</exclude>
+                        <exclude>rs/raf/banka2_bek/otc/model/OtcNegotiationHistory*</exclude>
+                        <exclude>rs/raf/banka2_bek/otc/repository/OtcNegotiationHistoryRepository*</exclude>
+                        <exclude>rs/raf/banka2_bek/otc/service/OtcNegotiationHistoryService*</exclude>
+                        <exclude>rs/raf/banka2_bek/otc/controller/OtcNegotiationHistoryController*</exclude>
+                        <exclude>rs/raf/banka2_bek/investmentfund/service/FundDividendService*</exclude>
+                        <exclude>rs/raf/banka2_bek/investmentfund/service/FundStatisticsService*</exclude>
                     </excludes>
                 </configuration>
                 <executions>

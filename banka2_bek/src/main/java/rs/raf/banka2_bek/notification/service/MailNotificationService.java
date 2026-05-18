@@ -13,6 +13,30 @@ import rs.raf.banka2_bek.notification.template.TransactionEmailTemplate;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
+/*
+ * TODO [B2 + B4 - Email notifikacije]
+ *
+ * [B2] Dodati metodu za slanje email obavestenja korisniku kada mu se nalog
+ *      zakljuca zbog previse neuspesnih pokusaja prijave. Email treba da sadrzi:
+ *      - obavestenje da je nalog privremeno zakljucan (sa trajanjem zakljucavanja),
+ *      - opciju/link za resetovanje lozinke kako bi korisnik mogao da povrati pristup.
+ *      Metoda se okida iz AccountLockoutService u trenutku kada se nalog zakljuca
+ *      (tj. kada recordFailure() dostigne maxFailedAttempts i baci AccountLockedException).
+ *
+ * [B4] Prosiriti notifikacioni sistem novim email sablonima za poslovne dogadjaje:
+ *      - Placanje: potvrda uspesnog placanja (sa iznosom, primaocem i datumom).
+ *      - Transfer: potvrda medjunarodnog/deviznog transfera.
+ *      - Promena limita: obavestenje o promeni dnevnog/mesecnog limita na racunu.
+ *      - Blokada kartice: obavestenje kada zaposleni blokira karticu (vec postoji
+ *        sendCardBlockedMail, prosiriti sadrzaj po potrebi B4 sablonom).
+ *      - Kreiranje kredita: potvrda podnosenja zahteva za kredit.
+ *      - Odobravanje/odbijanje kredita: odgovor banke na zahtev.
+ *      - Lifecycle ordera: obavestenja o statusu ordera (APPROVED, DONE, DECLINED).
+ *      - OTC dogadjaji: obavestenje o primljenoj OTC ponudi, prihvatanju, kontra-ponudi,
+ *        isteku ugovora i iskoristavanju opcijskog ugovora (exercise).
+ *      Svaki sablon treba da bude implementiran kao zaseban Spring bean (po uzoru na
+ *      postojece sablone u notification/template/) i injektovan u ovaj servis.
+ */
 @Service
 public class MailNotificationService {
 
