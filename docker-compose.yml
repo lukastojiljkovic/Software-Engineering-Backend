@@ -88,7 +88,9 @@ services:
 
   # Spring Boot backend
   backend:
-    build: ./banka2_bek
+    build:
+      context: .
+      dockerfile: banka2_bek/Dockerfile
     container_name: banka2_backend
     ports:
       # Gateway sada drzi host 8080. Backend je interno na 8080 (container),
@@ -142,6 +144,11 @@ services:
       ARBITRO_WHISPER_URL: ${WHISPER_STT_URL:-http://host.docker.internal:8094}
       ARBITRO_WHISPER_ENABLED: ${WHISPER_STT_ENABLED:-true}
       ARBITRO_WHISPER_TIMEOUT_MS: ${WHISPER_STT_TIMEOUT_MS:-30000}
+      # RabbitMQ — monolit publish-uje notifikacione poruke (Faza 1).
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: "5672"
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
     # host.docker.internal alias za pristup host portovima (Linux native Docker
     # zahteva eksplicitan host-gateway alias; Docker Desktop ima nativno).
     # Koristi se SAMO za opcioni Arbitro stack u Banka-2-Tools/docker-compose.yml
@@ -156,6 +163,8 @@ services:
       db_replica:
         condition: service_healthy
       influxdb:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     # Healthcheck — `wget` je u eclipse-temurin:25-jre image-u (busybox).
     # `/v3/api-docs` je openapi spec endpoint (dostupan bez auth-a po
@@ -266,12 +275,26 @@ services:
       retries: 6
       start_period: 30s
 
-  # notification-service - Faza 0: prazan shell, samo se boot-uje.
+  # notification-service - Faza 1: konzumira RabbitMQ notifikacione poruke i salje email-ove.
   notification-service:
-    build: ./notification-service
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
     container_name: banka2_notification
     ports:
       - "8083:8083"
+    environment:
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: "5672"
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+      MAIL_USERNAME: ${MAIL_USERNAME:-banka2.notifications@gmail.com}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      NOTIFICATION_ACTIVATION_URL_BASE: http://localhost:3000
+      NOTIFICATION_PASSWORD_RESET_URL_BASE: http://localhost:3000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       # eclipse-temurin:25-jre runtime nema curl/wget; bash /dev/tcp proverava
       # da je Spring Boot HTTP port otvoren (dovoljan health signal za shell).

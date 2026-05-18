@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
-
-# ---- Build stage ----
+# Build kontekst je Banka-2-Backend/ (root aggregatora) jer monolit zavisi
+# od banka2-contracts modula koji nije objavljen na remote repo-u.
+#
 # Java 25 LTS bumpovan 03.05.2026. BuildKit cache mount za .m2 — Maven dep
 # fetch se ne ponavlja izmedju no-cache rebuild-ova ako pom.xml nije menjan.
 # Rebuild time: ~120s (no cache) → ~25s (warm .m2 cache).
@@ -8,10 +9,17 @@ FROM maven:3.9-eclipse-temurin-25 AS build
 WORKDIR /app
 
 COPY pom.xml .
-RUN --mount=type=cache,target=/root/.m2 mvn -B dependency:go-offline -DskipTests
+COPY banka2-contracts/pom.xml banka2-contracts/
+COPY banka2_bek/pom.xml banka2_bek/
+COPY trading-service/pom.xml trading-service/
+COPY notification-service/pom.xml notification-service/
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -pl banka2_bek -am dependency:go-offline -DskipTests
 
-COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B package -DskipTests -q
+COPY banka2-contracts/src banka2-contracts/src
+COPY banka2_bek/src banka2_bek/src
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -pl banka2_bek -am package -DskipTests -q
 
 # ---- Layer extraction stage ----
 # Spring Boot layered jar: razdvaja fat jar u 4 layer-a (dependencies,
@@ -20,7 +28,7 @@ RUN --mount=type=cache,target=/root/.m2 mvn -B package -DskipTests -q
 # samo `application` layer (~5MB), ne 80MB fat jar.
 FROM eclipse-temurin:25-jre AS layers
 WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=build /app/banka2_bek/target/*.jar app.jar
 RUN java -Djarmode=layertools -jar app.jar extract
 
 # ---- Runtime stage ----
