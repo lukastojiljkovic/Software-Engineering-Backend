@@ -72,6 +72,24 @@ services:
       retries: 10
       start_period: 30s
 
+  # trading_db - zasebna Postgres baza za trading-service (shared-nothing).
+  trading_db:
+    image: postgres:16-alpine
+    container_name: banka2_trading_db
+    environment:
+      POSTGRES_DB: trading
+      POSTGRES_USER: tradinguser
+      POSTGRES_PASSWORD: tradingpass
+    ports:
+      - "6435:5432"
+    volumes:
+      - trading_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradinguser -d trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   adminer:
     image: adminer
     container_name: banka2_adminer
@@ -260,12 +278,24 @@ services:
       retries: 6
       start_period: 20s
 
-  # trading-service - Faza 0: prazan shell, samo se boot-uje.
+  # trading-service - Faza 2a: sopstvena baza, JWT, BankaCoreClient.
   trading-service:
-    build: ./trading-service
+    build:
+      context: .
+      dockerfile: trading-service/Dockerfile
     container_name: banka2_trading
     ports:
       - "8082:8082"
+    environment:
+      TRADING_DB_URL: jdbc:postgresql://trading_db:5432/trading
+      TRADING_DB_USER: tradinguser
+      TRADING_DB_PASSWORD: tradingpass
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-do-not-use-in-prod-rotate-via-env-var-on-each-deploy}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key-rotate-in-prod}
+      BANKACORE_BASE_URL: http://backend:8080
+    depends_on:
+      trading_db:
+        condition: service_healthy
     healthcheck:
       # eclipse-temurin:25-jre runtime nema curl/wget; bash /dev/tcp proverava
       # da je Spring Boot HTTP port otvoren (dovoljan health signal za shell).
@@ -309,3 +339,4 @@ volumes:
   postgres_replica_data:
   influxdb_data:
   influxdb_config:
+  trading_db_data:
