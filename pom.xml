@@ -28,6 +28,7 @@
         Task 3 += notification-service; Task 4 += trading-service.
     -->
     <modules>
+        <module>banka2-contracts</module>
         <module>banka2_bek</module>
     </modules>
 
