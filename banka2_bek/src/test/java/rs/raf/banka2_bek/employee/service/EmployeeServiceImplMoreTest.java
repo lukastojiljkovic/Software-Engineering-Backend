@@ -6,7 +6,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -19,6 +18,7 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.employee.service.implementation.EmployeeServiceImpl;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -42,7 +42,7 @@ class EmployeeServiceImplMoreTest {
     @Mock
     private PasswordEncoder passwordEncoder;
     @Mock
-    private ApplicationEventPublisher eventPublisher;
+    private NotificationPublisher notificationPublisher;
 
     @InjectMocks
     private EmployeeServiceImpl employeeService;

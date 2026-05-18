@@ -1,7 +1,6 @@
 package rs.raf.banka2_bek.employee.service.implementation;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -11,8 +10,8 @@ import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2_bek.employee.model.ActivationToken;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.dto.*;
-import rs.raf.banka2_bek.employee.event.EmployeeAccountCreatedEvent;
 import rs.raf.banka2_bek.employee.model.Employee;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.employee.service.EmployeeService;
 import rs.raf.banka2_bek.investmentfund.service.InvestmentFundService;
@@ -50,7 +49,7 @@ public class EmployeeServiceImpl implements EmployeeService {
     private final EmployeeRepository employeeRepository;
     private final ActivationTokenRepository activationTokenRepository;
     private final PasswordEncoder passwordEncoder;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
     private final InvestmentFundService investmentFundService;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -97,9 +96,7 @@ public class EmployeeServiceImpl implements EmployeeService {
 
         activationTokenRepository.save(activationToken);
 
-        eventPublisher.publishEvent(
-                new EmployeeAccountCreatedEvent(this, employee.getEmail(), employee.getFirstName(), tokenValue)
-        );
+        notificationPublisher.sendActivationMail(employee.getEmail(), employee.getFirstName(), tokenValue);
 
         EmployeeResponseDto response = toResponse(employee);
         return response;

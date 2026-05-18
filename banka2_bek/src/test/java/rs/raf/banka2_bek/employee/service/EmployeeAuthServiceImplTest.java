@@ -5,10 +5,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import rs.raf.banka2_bek.employee.event.EmployeeActivationConfirmationEvent;
 import rs.raf.banka2_bek.employee.model.ActivationToken;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
@@ -29,7 +28,7 @@ class EmployeeAuthServiceImplTest {
     @Mock private ActivationTokenRepository activationTokenRepository;
     @Mock private EmployeeRepository employeeRepository;
     @Mock private PasswordEncoder passwordEncoder;
-    @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private NotificationPublisher notificationPublisher;
 
     @InjectMocks private EmployeeAuthServiceImpl service;
 
@@ -53,7 +52,7 @@ class EmployeeAuthServiceImplTest {
         assertThat(tok.isUsed()).isTrue();
         verify(employeeRepository).save(emp);
         verify(activationTokenRepository).save(tok);
-        verify(eventPublisher).publishEvent(any(EmployeeActivationConfirmationEvent.class));
+        verify(notificationPublisher).sendActivationConfirmationMail(anyString(), anyString());
     }
 
     @Test void activateAccount_invalidToken_throws() {

@@ -30,9 +30,8 @@ import java.util.stream.Collectors;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
-import rs.raf.banka2_bek.account.event.AccountCreatedEvent;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -53,7 +52,7 @@ public class AccountServiceImplementation implements AccountService {
     private final EmployeeRepository employeeRepository;
     private final UserRepository userRepository;
     private final CardService cardService;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
     private final String bankRegistrationNumber;
 
     public AccountServiceImplementation(AccountRepository accountRepository,
@@ -63,7 +62,7 @@ public class AccountServiceImplementation implements AccountService {
                                          EmployeeRepository employeeRepository,
                                          UserRepository userRepository,
                                          @Lazy CardService cardService,
-                                         ApplicationEventPublisher eventPublisher,
+                                         NotificationPublisher notificationPublisher,
                                          @Value("${bank.registration-number}") String bankRegistrationNumber) {
         this.accountRepository = accountRepository;
         this.clientRepository = clientRepository;
@@ -72,7 +71,7 @@ public class AccountServiceImplementation implements AccountService {
         this.employeeRepository = employeeRepository;
         this.userRepository = userRepository;
         this.cardService = cardService;
-        this.eventPublisher = eventPublisher;
+        this.notificationPublisher = notificationPublisher;
         this.bankRegistrationNumber = bankRegistrationNumber;
     }
 
@@ -222,11 +221,11 @@ public class AccountServiceImplementation implements AccountService {
             String accountTypeLabel = account.getAccountType() != null
                     ? account.getAccountType().name() + " (" + account.getCurrency().getCode() + ")"
                     : account.getCurrency().getCode();
-            eventPublisher.publishEvent(new AccountCreatedEvent(
+            notificationPublisher.sendAccountCreatedConfirmationMail(
                     client.getEmail(),
                     client.getFirstName() + " " + client.getLastName(),
                     account.getAccountNumber(),
-                    accountTypeLabel));
+                    accountTypeLabel);
         }
 
         return toResponse(account);

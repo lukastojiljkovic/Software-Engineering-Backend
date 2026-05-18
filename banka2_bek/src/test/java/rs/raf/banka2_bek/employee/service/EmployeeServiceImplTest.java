@@ -7,11 +7,10 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import rs.raf.banka2_bek.employee.dto.CreateEmployeeRequestDto;
 import rs.raf.banka2_bek.employee.dto.UpdateEmployeeRequestDto;
-import rs.raf.banka2_bek.employee.event.EmployeeAccountCreatedEvent;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.model.ActivationToken;
 import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
@@ -26,6 +25,8 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,7 +43,7 @@ class EmployeeServiceImplTest {
     private PasswordEncoder passwordEncoder;
 
     @Mock
-    private ApplicationEventPublisher eventPublisher;
+    private NotificationPublisher notificationPublisher;
 
     @InjectMocks
     private EmployeeServiceImpl employeeService;
@@ -89,9 +90,7 @@ class EmployeeServiceImplTest {
         assertThat(token.getExpiresAt()).isAfter(LocalDateTime.now().minusMinutes(1));
         assertThat(token.isUsed()).isFalse();
 
-        ArgumentCaptor<EmployeeAccountCreatedEvent> eventCaptor = ArgumentCaptor.forClass(EmployeeAccountCreatedEvent.class);
-        verify(eventPublisher).publishEvent(eventCaptor.capture());
-        assertThat(eventCaptor.getValue().getEmail()).isEqualTo(createRequest.getEmail());
+        verify(notificationPublisher).sendActivationMail(eq(createRequest.getEmail()), anyString(), anyString());
     }
 
     @Test

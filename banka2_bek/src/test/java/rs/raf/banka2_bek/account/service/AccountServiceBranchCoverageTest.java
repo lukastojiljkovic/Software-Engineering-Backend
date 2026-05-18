@@ -8,8 +8,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -67,7 +67,7 @@ class AccountServiceBranchCoverageTest {
     @Mock private EmployeeRepository employeeRepository;
     @Mock private UserRepository userRepository;
     @Mock private CardService cardService;
-    @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private NotificationPublisher notificationPublisher;
 
     private AccountServiceImplementation accountService;
 
@@ -76,7 +76,7 @@ class AccountServiceBranchCoverageTest {
         accountService = new AccountServiceImplementation(
                 accountRepository, clientRepository, currencyRepository,
                 companyRepository, employeeRepository, userRepository,
-                cardService, eventPublisher, "22200011"
+                cardService, notificationPublisher, "22200011"
         );
     }
 

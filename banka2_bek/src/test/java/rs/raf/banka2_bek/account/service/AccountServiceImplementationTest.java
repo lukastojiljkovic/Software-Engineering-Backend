@@ -26,8 +26,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.security.core.Authentication;
@@ -57,7 +57,7 @@ class AccountServiceImplementationTest {
     @Mock private EmployeeRepository employeeRepository;
     @Mock private UserRepository userRepository;
     @Mock private CardService cardService;
-    @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private NotificationPublisher notificationPublisher;
 
     private AccountServiceImplementation accountService;
 
@@ -66,7 +66,7 @@ class AccountServiceImplementationTest {
         accountService = new AccountServiceImplementation(
                 accountRepository, clientRepository, currencyRepository,
                 companyRepository, employeeRepository, userRepository,
-                cardService, eventPublisher, "22200011"
+                cardService, notificationPublisher, "22200011"
         );
     }
 
@@ -1462,7 +1462,7 @@ class AccountServiceImplementationTest {
             AccountResponseDto result = accountService.createAccount(dto);
             assertNotNull(result);
             // No email sent since no client
-            verify(eventPublisher, never()).publishEvent(any());
+            verify(notificationPublisher, never()).sendAccountCreatedConfirmationMail(any(), any(), any(), any());
         }
 
         @Test

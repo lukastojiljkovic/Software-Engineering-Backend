@@ -1,6 +1,5 @@
 package rs.raf.banka2_bek.auth.service;
 
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,8 +12,8 @@ import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.account.util.AccountNumberUtils;
 import rs.raf.banka2_bek.auth.dto.*;
 import rs.raf.banka2_bek.auth.exception.AuthenticationFailedException;
-import rs.raf.banka2_bek.auth.model.PasswordResetRequestedEvent;
 import rs.raf.banka2_bek.auth.model.PasswordResetToken;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.auth.model.User;
 import rs.raf.banka2_bek.auth.repository.PasswordResetTokenRepository;
 import rs.raf.banka2_bek.auth.repository.UserRepository;
@@ -44,7 +43,7 @@ public class AuthService {
     private final PasswordResetTokenRepository passwordResetTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
     private final AccountLockoutService accountLockoutService;
 
     /*
@@ -86,7 +85,7 @@ public class AuthService {
                        PasswordResetTokenRepository passwordResetTokenRepository,
                        PasswordEncoder passwordEncoder,
                        JwtService jwtService,
-                       ApplicationEventPublisher eventPublisher,
+                       NotificationPublisher notificationPublisher,
                        AccountLockoutService accountLockoutService) {
         this.userRepository = userRepository;
         this.employeeRepository = employeeRepository;
@@ -96,7 +95,7 @@ public class AuthService {
         this.passwordResetTokenRepository = passwordResetTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
-        this.eventPublisher = eventPublisher;
+        this.notificationPublisher = notificationPublisher;
         this.accountLockoutService = accountLockoutService;
     }
 
@@ -293,9 +292,7 @@ public class AuthService {
         passwordResetTokenRepository.save(passwordResetToken);
 
         String targetEmail = user != null ? user.getEmail() : employee.getEmail();
-        eventPublisher.publishEvent(
-            new PasswordResetRequestedEvent(targetEmail, tokenValue)
-        );
+        notificationPublisher.sendPasswordResetMail(targetEmail, tokenValue);
 
         return "Password reset token generated and email event emitted";
     }

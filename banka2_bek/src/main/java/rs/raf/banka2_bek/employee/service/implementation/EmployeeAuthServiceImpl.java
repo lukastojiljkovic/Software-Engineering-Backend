@@ -1,13 +1,12 @@
 package rs.raf.banka2_bek.employee.service.implementation;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2_bek.employee.dto.ActivationTokenStatusDto;
-import rs.raf.banka2_bek.employee.event.EmployeeActivationConfirmationEvent;
 import rs.raf.banka2_bek.employee.model.ActivationToken;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
@@ -28,7 +27,7 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
     private final EmployeeRepository employeeRepository;
     private final PasswordEncoder passwordEncoder;
 
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
 
     @Override
     @Transactional
@@ -62,7 +61,7 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
         employeeRepository.save(employee);
         activationTokenRepository.save(token);
 
-        eventPublisher.publishEvent(new EmployeeActivationConfirmationEvent(this, employee.getEmail(), employee.getFirstName()));
+        notificationPublisher.sendActivationConfirmationMail(employee.getEmail(), employee.getFirstName());
     }
 
     /**

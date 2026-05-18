@@ -5,14 +5,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import rs.raf.banka2_bek.employee.dto.*;
-import rs.raf.banka2_bek.employee.event.EmployeeAccountCreatedEvent;
 import rs.raf.banka2_bek.employee.model.Employee;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.repository.ActivationTokenRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.employee.service.implementation.EmployeeServiceImpl;
@@ -34,7 +33,7 @@ class EmployeeServiceImplExtendedTest {
     @Mock private EmployeeRepository employeeRepository;
     @Mock private ActivationTokenRepository activationTokenRepository;
     @Mock private PasswordEncoder passwordEncoder;
-    @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private NotificationPublisher notificationPublisher;
     @InjectMocks private EmployeeServiceImpl service;
 
     private CreateEmployeeRequestDto buildReq() {
@@ -61,7 +60,7 @@ class EmployeeServiceImplExtendedTest {
         when(activationTokenRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         EmployeeResponseDto r = service.createEmployee(buildReq());
         assertThat(r.getId()).isEqualTo(1L);
-        verify(eventPublisher).publishEvent(any(EmployeeAccountCreatedEvent.class));
+        verify(notificationPublisher).sendActivationMail(anyString(), anyString(), anyString());
     }
 
     @Test void createEmployee_dupEmail() {

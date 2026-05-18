@@ -3,11 +3,9 @@ package rs.raf.banka2_bek.auth.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
@@ -18,9 +16,9 @@ import rs.raf.banka2_bek.auth.dto.PasswordResetRequestDto;
 import rs.raf.banka2_bek.auth.dto.RefreshTokenRequestDto;
 import rs.raf.banka2_bek.auth.dto.RefreshTokenResponseDto;
 import rs.raf.banka2_bek.auth.dto.RegisterRequestDto;
-import rs.raf.banka2_bek.auth.model.PasswordResetRequestedEvent;
 import rs.raf.banka2_bek.auth.model.PasswordResetToken;
 import rs.raf.banka2_bek.auth.model.User;
+import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.auth.repository.PasswordResetTokenRepository;
 import rs.raf.banka2_bek.auth.repository.UserRepository;
 import rs.raf.banka2_bek.client.model.Client;
@@ -39,6 +37,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -71,7 +70,7 @@ class AuthServiceTest {
     private JwtService jwtService;
 
     @Mock
-    private ApplicationEventPublisher eventPublisher;
+    private NotificationPublisher notificationPublisher;
 
     @Mock
     private AccountLockoutService accountLockoutService;
@@ -146,9 +145,7 @@ class AuthServiceTest {
 
         authService.requestPasswordReset(new PasswordResetRequestDto(employee.getEmail()));
 
-        ArgumentCaptor<PasswordResetRequestedEvent> eventCaptor = ArgumentCaptor.forClass(PasswordResetRequestedEvent.class);
-        verify(eventPublisher).publishEvent(eventCaptor.capture());
-        assertThat(eventCaptor.getValue().getEmail()).isEqualTo(employee.getEmail());
+        verify(notificationPublisher).sendPasswordResetMail(eq(employee.getEmail()), anyString());
     }
 
     @Test
@@ -464,9 +461,7 @@ class AuthServiceTest {
 
         authService.requestPasswordReset(new PasswordResetRequestDto(user.getEmail()));
 
-        ArgumentCaptor<PasswordResetRequestedEvent> eventCaptor = ArgumentCaptor.forClass(PasswordResetRequestedEvent.class);
-        verify(eventPublisher).publishEvent(eventCaptor.capture());
-        assertThat(eventCaptor.getValue().getEmail()).isEqualTo(user.getEmail());
+        verify(notificationPublisher).sendPasswordResetMail(eq(user.getEmail()), anyString());
     }
 
     @Test
