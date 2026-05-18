@@ -14,6 +14,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import rs.raf.banka2_bek.internalapi.config.InternalAuthFilter;
 
 import java.util.List;
 
@@ -25,13 +26,16 @@ public class GlobalSecurityConfig  {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final InterbankAuthFilter interbankAuthFilter;
     private final AuthRateLimitFilter authRateLimitFilter;
+    private final InternalAuthFilter internalAuthFilter;
 
     public GlobalSecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                                 InterbankAuthFilter interbankAuthFilter,
-                                AuthRateLimitFilter authRateLimitFilter) {
+                                AuthRateLimitFilter authRateLimitFilter,
+                                InternalAuthFilter internalAuthFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.interbankAuthFilter = interbankAuthFilter;
         this.authRateLimitFilter = authRateLimitFilter;
+        this.internalAuthFilter = internalAuthFilter;
     }
 
     /**
@@ -180,6 +184,10 @@ public class GlobalSecurityConfig  {
                         .requestMatchers(HttpMethod.POST, "/savings/deposits/*/withdraw-early").authenticated()
                         .requestMatchers(HttpMethod.GET, "/savings/rates").authenticated()
                         .requestMatchers("/admin/savings/**").hasAnyAuthority("ROLE_ADMIN", "ADMIN", "SUPERVISOR")
+                        // Interni API (Faza 2 - SAGA seam ka trading-service).
+                        // InternalAuthFilter validira X-Internal-Key i postavlja ROLE_INTERNAL.
+                        // MORA biti deklarisan PRE anyRequest() matcher-a.
+                        .requestMatchers("/internal/**").hasAuthority("ROLE_INTERNAL")
                         .anyRequest().authenticated()
                 )
                 .formLogin(AbstractHttpConfigurer::disable)
@@ -189,10 +197,12 @@ public class GlobalSecurityConfig  {
                 .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
         )
                 // Filter chain order: rate limit najdublje, pa interbank API key,
-                // pa JWT auth. Svaki invalidan auth pokusaj puca pre nego sto stigne
-                // do JWT validacije (sprecava brute-force i side-channel napade).
+                // pa interni API key, pa JWT auth. Svaki invalidan auth pokusaj puca
+                // pre nego sto stigne do JWT validacije (sprecava brute-force i
+                // side-channel napade).
                 .addFilterBefore(authRateLimitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(interbankAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(internalAuthFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 // Security response headers (defense-in-depth) — primenjuju se na sve
                 // odgovore. nginx ima svoje header-e takodje, ali Spring dodaje za
