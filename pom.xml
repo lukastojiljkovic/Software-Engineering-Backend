@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        CIST REACTOR - bez <parent>. Aggregator nema kod, nema dependencies,
+        nema build sekciju, pa mu spring-boot-starter-parent ne treba (i ne sme
+        da se vodi kao parent jer bi divergirao od child verzija). Svaki modul
+        sam navodi svoj spring-boot-starter-parent.
+    -->
+    <groupId>rs.raf</groupId>
+    <artifactId>banka2-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>Banka 2 - Parent (aggregator)</name>
+    <description>Banka 2 - Maven aggregator (reactor) za mikroservise</description>
+
+    <!--
+        Aggregator je CIST REACTOR - okuplja module u jedan `mvn verify`,
+        ali NIJE parent modulima. Svaki modul (banka2_bek, banka2-contracts,
+        trading-service, notification-service) ima svoj `spring-boot-starter-parent`
+        parent i ostaje standalone-buildabilan.
+
+        Lista raste task-po-task: Task 1 = banka2_bek; Task 2 += banka2-contracts;
+        Task 3 += notification-service; Task 4 += trading-service.
+    -->
+    <modules>
+        <module>banka2_bek</module>
+    </modules>
+
+</project>
