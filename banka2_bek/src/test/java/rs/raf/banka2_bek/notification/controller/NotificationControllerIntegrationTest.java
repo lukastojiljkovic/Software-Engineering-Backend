@@ -160,6 +160,10 @@ class NotificationControllerIntegrationTest {
 
     @Test
     void unauthenticatedRequestIsRejected() throws Exception {
+        // GlobalSecurityConfig has no custom AuthenticationEntryPoint and formLogin is
+        // disabled. Spring Security therefore uses Http403ForbiddenEntryPoint by default,
+        // which returns 403 (not 401) for unauthenticated requests. This assertion is
+        // intentionally 403 — it accurately reflects the configured entry-point behavior.
         HttpResponse<String> response = send("GET", "/notifications", false);
 
         assertThat(response.statusCode()).isEqualTo(403);

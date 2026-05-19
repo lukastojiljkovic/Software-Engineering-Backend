@@ -74,5 +74,4 @@ public enum NotificationType {
     NotificationType(boolean sendsEmail) {
         this.sendsEmail = sendsEmail;
     }
-
 }

@@ -25,12 +25,14 @@ import rs.raf.banka2_bek.notification.service.NotificationServiceImpl;
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -99,9 +101,9 @@ class NotificationServiceImplTest {
     }
 
     @Test
-    void notify_publisherFailureDoesNotRollbackPersistence() {
-        // Recipient lookup fails — the service must swallow the exception and
-        // still keep the saved Notification (in-app row already persisted).
+    void notify_contactResolutionFailureDoesNotRollbackPersistence() {
+        // Recipient lookup fails (client not found) — the service must swallow the
+        // exception and still keep the saved Notification (in-app row already persisted).
         when(clientRepository.findById(CLIENT_ID)).thenReturn(Optional.empty());
 
         notificationService.notify(CLIENT_ID, "CLIENT", NotificationType.PAYMENT,
@@ -110,6 +112,28 @@ class NotificationServiceImplTest {
         verify(notificationRepository).save(any(Notification.class));
         verify(notificationPublisher, never()).sendInAppGenericMail(
                 any(), any(), any(), any());
+    }
+
+    @Test
+    void notify_brokerFailureDoesNotRollbackPersistence() {
+        // Recipient lookup succeeds, but the publisher (broker) throws a RuntimeException
+        // (simulating a RabbitMQ connectivity failure that escaped the publisher's
+        // internal catch). The in-app DB row must be persisted and notify() must NOT
+        // propagate the broker exception to the caller.
+        Client client = mock(Client.class);
+        when(client.getEmail()).thenReturn("marko@test.rs");
+        when(client.getFirstName()).thenReturn("Marko");
+        when(clientRepository.findById(CLIENT_ID)).thenReturn(Optional.of(client));
+
+        doThrow(new RuntimeException("Broker unavailable"))
+                .when(notificationPublisher)
+                .sendInAppGenericMail(any(), any(), any(), any());
+
+        assertDoesNotThrow(() ->
+                notificationService.notify(CLIENT_ID, "CLIENT", NotificationType.PAYMENT,
+                        "Placanje", "Vase placanje je izvrseno", null, null));
+
+        verify(notificationRepository).save(any(Notification.class));
     }
 
     // [B1 — Test coverage] Verifies that types with sendsEmail=false never trigger the

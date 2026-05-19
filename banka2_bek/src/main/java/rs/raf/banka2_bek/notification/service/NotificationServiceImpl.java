@@ -78,6 +78,7 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
+    @Transactional(readOnly = true)
     @Override
     public Page<NotificationDto> getMyNotifications(Long recipientId,
                                                     String recipientType,
@@ -93,6 +94,7 @@ public class NotificationServiceImpl implements NotificationService {
         return result.map(NotificationObjectMapper::toDto);
     }
 
+    @Transactional(readOnly = true)
     @Override
     public Long getUnreadCount(Long recipientId, String recipientType) {
         return notificationRepository.countByRecipientIdAndRecipientTypeAndRead(
