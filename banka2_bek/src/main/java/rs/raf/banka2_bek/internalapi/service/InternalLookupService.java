@@ -46,18 +46,7 @@ public class InternalLookupService {
         Account account = accountRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Account not found: " + id));
 
-        String ownerName = resolveOwnerName(account);
-
-        return new InternalAccountDto(
-                account.getId(),
-                account.getAccountNumber(),
-                ownerName,
-                account.getBalance(),
-                account.getAvailableBalance(),
-                account.getReservedAmount(),
-                account.getCurrency().getCode(),
-                account.getStatus().name()
-        );
+        return toDto(account);
     }
 
     /**
@@ -71,16 +60,7 @@ public class InternalLookupService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Bank trading account not found for currency: " + currencyCode));
 
-        return new InternalAccountDto(
-                account.getId(),
-                account.getAccountNumber(),
-                resolveOwnerName(account),
-                account.getBalance(),
-                account.getAvailableBalance(),
-                account.getReservedAmount(),
-                account.getCurrency().getCode(),
-                account.getStatus().name()
-        );
+        return toDto(account);
     }
 
     /**
@@ -180,5 +160,27 @@ public class InternalLookupService {
             return account.getCompany().getName();
         }
         return "Unknown";
+    }
+
+    /**
+     * Mapira {@link Account} u {@link InternalAccountDto}, ukljucujuci polja
+     * vlasnistva ({@code ownerClientId}/{@code ownerEmployeeId}/
+     * {@code accountCategory}) koja trading-service koristi za reprodukciju
+     * monolitove provere vlasnistva racuna.
+     */
+    private InternalAccountDto toDto(Account account) {
+        return new InternalAccountDto(
+                account.getId(),
+                account.getAccountNumber(),
+                resolveOwnerName(account),
+                account.getBalance(),
+                account.getAvailableBalance(),
+                account.getReservedAmount(),
+                account.getCurrency().getCode(),
+                account.getStatus().name(),
+                account.getClient() != null ? account.getClient().getId() : null,
+                account.getEmployee() != null ? account.getEmployee().getId() : null,
+                account.getAccountCategory() != null ? account.getAccountCategory().name() : null
+        );
     }
 }

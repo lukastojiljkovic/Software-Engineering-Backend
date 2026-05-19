@@ -193,23 +193,28 @@ public class FundLiquidationService {
         BigDecimal grossCredit = RSD.equals(destinationCurrency)
                 ? amountRsd
                 : convertFromRsd(amountRsd, destinationCurrency);
-        // Originalno: FX provizija samo za licni klijentski racun. U trading-service-u
-        // InternalAccountDto ne nosi tip vlasnika; provizija se obracunava kad je
-        // racun za isplatu u stranoj valuti i isplata je za klijenta (CLIENT pozicija).
-        boolean clientForeignDestination = UserRole.CLIENT.equals(tx.getUserRole())
-                && !RSD.equals(destinationCurrency);
-        BigDecimal fxFee = clientForeignDestination
+        // Verno monolitu (FundLiquidationService.executeTransactionPayout): FX
+        // provizija samo za licni klijentski racun. Sada InternalAccountDto nosi
+        // ownerClientId — racun je licni klijentski kad ownerClientId != null,
+        // a transakcija je za klijenta (CLIENT pozicija).
+        boolean isPersonalClientAccount = destinationAccount.ownerClientId() != null
+                && UserRole.CLIENT.equals(tx.getUserRole());
+        BigDecimal fxFee = (!RSD.equals(destinationCurrency) && isPersonalClientAccount)
                 ? grossCredit.multiply(FX_FEE_RATE).setScale(MONEY_SCALE, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
+        BigDecimal netCredit = grossCredit.subtract(fxFee).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
 
-        // banka-core transfer: fond racun (RSD) -> racun za isplatu; FX provizija
-        // (ako postoji) ide bankinom racunu (banka-core ga sam resolve-uje).
+        // banka-core transfer: fond racun (RSD) -> racun za isplatu. Verno monolitu:
+        // fond gubi amountRsd u RSD, racun za isplatu dobija netCredit (= grossCredit
+        // - fxFee) u SVOJOJ valuti, banka dobija fxFee u valuti racuna za isplatu.
         // banka-core pise audit Transaction. Idempotency kljuc je deterministicki
         // po ClientFundTransaction id-u.
         bankaCoreClient.transferFunds(
                 "fund-payout-" + tx.getId(),
-                new TransferFundsRequest(fundAccount.id(), destinationAccount.id(),
-                        amountRsd, RSD, fxFee,
+                new TransferFundsRequest(
+                        fundAccount.id(), amountRsd,
+                        destinationAccount.id(), netCredit,
+                        fxFee, destinationCurrency,
                         "Isplata iz fonda — transakcija #" + tx.getId()));
 
         tx.setStatus(ClientFundTransactionStatus.COMPLETED);

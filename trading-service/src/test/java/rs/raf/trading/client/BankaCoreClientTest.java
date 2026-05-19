@@ -17,6 +17,8 @@ import rs.raf.banka2.contracts.internal.ReserveFundsRequest;
 import rs.raf.banka2.contracts.internal.ReserveFundsResponse;
 import rs.raf.banka2.contracts.internal.TaxCollectRequest;
 import rs.raf.banka2.contracts.internal.TaxCollectResponse;
+import rs.raf.banka2.contracts.internal.TransferFundsRequest;
+import rs.raf.banka2.contracts.internal.TransferFundsResponse;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -85,7 +87,8 @@ class BankaCoreClientTest {
         InternalAccountDto stubAccount = new InternalAccountDto(
                 7L, "222000112345678911", "Stefan Jovanovic",
                 new BigDecimal("5000.00"), new BigDecimal("4500.00"),
-                new BigDecimal("500.00"), "RSD", "ACTIVE");
+                new BigDecimal("500.00"), "RSD", "ACTIVE",
+                7L, null, "CLIENT");
         String responseJson = objectMapper.writeValueAsString(stubAccount);
 
         mockServer.expect(requestTo(BASE_URL + "/internal/accounts/7"))
@@ -100,6 +103,9 @@ class BankaCoreClientTest {
         assertThat(result.ownerName()).isEqualTo("Stefan Jovanovic");
         assertThat(result.currencyCode()).isEqualTo("RSD");
         assertThat(result.status()).isEqualTo("ACTIVE");
+        assertThat(result.ownerClientId()).isEqualTo(7L);
+        assertThat(result.ownerEmployeeId()).isNull();
+        assertThat(result.accountCategory()).isEqualTo("CLIENT");
 
         mockServer.verify();
     }
@@ -284,7 +290,8 @@ class BankaCoreClientTest {
     void provisionFundAccount_happyPath_returnsDeserializedInternalAccountDto() throws Exception {
         InternalAccountDto stub = new InternalAccountDto(
                 55L, "222000999000000001", "Banka 2 Stable Income",
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "RSD", "ACTIVE");
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "RSD", "ACTIVE",
+                null, 1L, "FUND");
         String responseJson = objectMapper.writeValueAsString(stub);
 
         mockServer.expect(requestTo(BASE_URL + "/internal/accounts/fund"))
@@ -308,7 +315,8 @@ class BankaCoreClientTest {
         InternalAccountDto stub = new InternalAccountDto(
                 90L, "222000111000000099", "Banka 2",
                 new BigDecimal("1000000.00"), new BigDecimal("1000000.00"),
-                BigDecimal.ZERO, "EUR", "ACTIVE");
+                BigDecimal.ZERO, "EUR", "ACTIVE",
+                null, null, "BANK_TRADING");
         String responseJson = objectMapper.writeValueAsString(stub);
 
         mockServer.expect(requestTo(BASE_URL + "/internal/accounts/bank-trading/EUR"))
@@ -387,6 +395,44 @@ class BankaCoreClientTest {
         assertThat(result.accountId()).isEqualTo(42L);
         assertThat(result.creditedAmount()).isEqualByComparingTo(new BigDecimal("750.00"));
         assertThat(result.balanceAfter()).isEqualByComparingTo(new BigDecimal("4250.00"));
+
+        mockServer.verify();
+    }
+
+    @Test
+    void transferFunds_crossCurrency_sendsXIdempotencyKeyHeader_andReturnsResponse() throws Exception {
+        // Fond uplata sa EUR racuna: from gubi 1015.00 EUR (debit), fond dobija
+        // 119000.00 RSD (credit), banka dobija 15.00 EUR provizije.
+        TransferFundsResponse stub = new TransferFundsResponse(
+                12L, 50L, new BigDecimal("1015.00"),
+                new BigDecimal("3985.00"), new BigDecimal("119000.00"));
+        String responseJson = objectMapper.writeValueAsString(stub);
+
+        mockServer.expect(requestTo(BASE_URL + "/internal/funds/transfer"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Key", INTERNAL_API_KEY))
+                .andExpect(header("X-Idempotency-Key", "fund-invest-77"))
+                .andExpect(jsonPath("$.fromAccountId").value(12))
+                .andExpect(jsonPath("$.toAccountId").value(50))
+                .andExpect(jsonPath("$.debitAmount").value(1015.00))
+                .andExpect(jsonPath("$.creditAmount").value(119000.00))
+                .andExpect(jsonPath("$.commission").value(15.00))
+                .andExpect(jsonPath("$.commissionCurrency").value("EUR"))
+                .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
+
+        TransferFundsRequest request = new TransferFundsRequest(
+                12L, new BigDecimal("1015.00"),
+                50L, new BigDecimal("119000.00"),
+                new BigDecimal("15.00"), "EUR",
+                "Uplata u fond — transakcija #77");
+
+        TransferFundsResponse result = bankaCoreClient.transferFunds("fund-invest-77", request);
+
+        assertThat(result.fromAccountId()).isEqualTo(12L);
+        assertThat(result.toAccountId()).isEqualTo(50L);
+        assertThat(result.amount()).isEqualByComparingTo(new BigDecimal("1015.00"));
+        assertThat(result.fromBalanceAfter()).isEqualByComparingTo(new BigDecimal("3985.00"));
+        assertThat(result.toBalanceAfter()).isEqualByComparingTo(new BigDecimal("119000.00"));
 
         mockServer.verify();
     }

@@ -105,7 +105,12 @@ public class InternalAccountProvisioningService {
                 fundAccount.getAvailableBalance(),
                 fundAccount.getReservedAmount(),
                 fundAccount.getCurrency().getCode(),
-                fundAccount.getStatus().name()
+                fundAccount.getStatus().name(),
+                // Fond racun je company-owned (bankina firma) — bez klijent vlasnika.
+                null,
+                supervisor.getId(),
+                fundAccount.getAccountCategory() != null
+                        ? fundAccount.getAccountCategory().name() : null
         );
     }
 }

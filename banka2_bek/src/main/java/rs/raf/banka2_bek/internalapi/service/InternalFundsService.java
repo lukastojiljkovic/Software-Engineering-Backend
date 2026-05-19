@@ -367,12 +367,33 @@ public class InternalFundsService {
     }
 
     /**
-     * Direktan prenos novca izmedju dva racuna (ista valuta).
-     * Bez rezervacije — atomski debit/credit.
+     * Direktan prenos novca izmedju dva racuna.
+     *
+     * <p>Cross-currency-sposoban: from-racun se debituje za {@code debitAmount}
+     * (uvek u SOPSTVENOJ valuti from-racuna), to-racun se kreditira za
+     * {@code creditAmount} (u NJEGOVOJ sopstvenoj valuti). Pozivalac je vec
+     * uradio FX matematiku i dostavlja tacne iznose; za prenos iste valute je
+     * {@code debitAmount == creditAmount}. Opciona provizija se kreditira
+     * bankinom BANK_TRADING racunu u {@code commissionCurrency}.
+     *
+     * <p>Bez rezervacije — atomski debit/credit. Nedovoljna sredstva na
+     * debit-nozi → {@link IllegalStateException} (→ HTTP 409).
      */
     @Transactional
     public TransferFundsResponse transfer(TransferFundsRequest req) {
-        // 1. Pesimisticki lock oba racuna (uvek isti redosled po ID-u da bi se izbeglo deadlock)
+        // 1. Validacija iznosa
+        if (req.debitAmount() == null || req.debitAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Debit iznos mora biti pozitivan");
+        }
+        if (req.creditAmount() == null || req.creditAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Credit iznos mora biti pozitivan");
+        }
+        BigDecimal commission = req.commission() != null ? req.commission() : BigDecimal.ZERO;
+        if (commission.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("Provizija ne sme biti negativna");
+        }
+
+        // 2. Pesimisticki lock oba racuna (uvek isti redosled po ID-u da bi se izbeglo deadlock)
         Long minId = Math.min(req.fromAccountId(), req.toAccountId());
         Long maxId = Math.max(req.fromAccountId(), req.toAccountId());
         Account first = accountRepository.findForUpdateById(minId)
@@ -383,57 +404,33 @@ public class InternalFundsService {
         Account from = first.getId().equals(req.fromAccountId()) ? first : second;
         Account to = first.getId().equals(req.toAccountId()) ? first : second;
 
-        // 2. Validacija valute (oba racuna moraju biti u istoj valuti)
-        if (!from.getCurrency().getCode().equals(req.currencyCode())) {
-            throw new IllegalArgumentException(
-                    "Valuta from-racuna (" + from.getCurrency().getCode()
-                            + ") ne odgovara zahtevanoj (" + req.currencyCode() + ")");
-        }
-        if (!to.getCurrency().getCode().equals(req.currencyCode())) {
-            throw new IllegalArgumentException(
-                    "Valuta to-racuna (" + to.getCurrency().getCode()
-                            + ") ne odgovara zahtevanoj (" + req.currencyCode() + ")");
-        }
-
-        // 3. Validacija iznosa
-        if (req.amount() == null || req.amount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Iznos mora biti pozitivan");
-        }
-
-        // 4. Provizija (opciono) — debituje se sa from-a uz amount, kreditira banci
-        BigDecimal commission = req.commission() != null ? req.commission() : BigDecimal.ZERO;
-        if (commission.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("Provizija ne sme biti negativna");
-        }
-        BigDecimal debitTotal = req.amount().add(commission);
-
-        // 5. Provjera raspolozivih sredstava (amount + provizija)
-        if (from.getAvailableBalance().compareTo(debitTotal) < 0) {
+        // 3. Provjera raspolozivih sredstava na from-nozi (debitAmount u valuti from-racuna)
+        if (from.getAvailableBalance().compareTo(req.debitAmount()) < 0) {
             throw new IllegalStateException(
                     "Nedovoljno raspolozivih sredstava na racunu " + req.fromAccountId()
                             + ": raspolozivo " + from.getAvailableBalance()
-                            + ", potrebno " + debitTotal);
+                            + ", potrebno " + req.debitAmount());
         }
 
-        // 6. Debit from (amount + provizija), credit to (amount)
-        from.setBalance(from.getBalance().subtract(debitTotal));
-        from.setAvailableBalance(from.getAvailableBalance().subtract(debitTotal));
-        to.setBalance(to.getBalance().add(req.amount()));
-        to.setAvailableBalance(to.getAvailableBalance().add(req.amount()));
+        // 4. Debit from (debitAmount, valuta from-racuna), credit to (creditAmount, valuta to-racuna)
+        from.setBalance(from.getBalance().subtract(req.debitAmount()));
+        from.setAvailableBalance(from.getAvailableBalance().subtract(req.debitAmount()));
+        to.setBalance(to.getBalance().add(req.creditAmount()));
+        to.setAvailableBalance(to.getAvailableBalance().add(req.creditAmount()));
         accountRepository.save(from);
         accountRepository.save(to);
 
-        // 7. Audit transakcije
-        saveDebitTransaction(from, debitTotal, req.description());
-        saveCreditTransaction(to, req.amount(), req.description());
+        // 5. Audit transakcije (debit-noga u valuti from-racuna, credit-noga u valuti to-racuna)
+        saveDebitTransaction(from, req.debitAmount(), req.description());
+        saveCreditTransaction(to, req.creditAmount(), req.description());
 
-        // 8. Provizija se kreditira bankinom BANK_TRADING racunu u valuti prenosa.
-        creditBankCommission(req.currencyCode(), commission);
+        // 6. Provizija se kreditira bankinom BANK_TRADING racunu u commissionCurrency.
+        creditBankCommission(req.commissionCurrency(), commission);
 
         return new TransferFundsResponse(
                 req.fromAccountId(),
                 req.toAccountId(),
-                req.amount(),
+                req.debitAmount(),
                 from.getBalance(),
                 to.getBalance());
     }

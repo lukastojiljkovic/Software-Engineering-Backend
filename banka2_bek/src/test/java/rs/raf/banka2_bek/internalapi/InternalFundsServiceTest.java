@@ -59,6 +59,7 @@ class InternalFundsServiceTest {
     @InjectMocks InternalFundsService service;
 
     private Currency rsd;
+    private Currency eur;
     private Account account;
     /** Bankin BANK_TRADING racun u RSD — prima provizije. */
     private Account bankTradingAccount;
@@ -75,6 +76,13 @@ class InternalFundsServiceTest {
         rsd.setName("Srpski dinar");
         rsd.setSymbol("din");
         rsd.setCountry("RS");
+
+        eur = new Currency();
+        eur.setId(2L);
+        eur.setCode("EUR");
+        eur.setName("Evro");
+        eur.setSymbol("€");
+        eur.setCountry("EU");
 
         account = Account.builder()
                 .accountNumber("222000100000000001")
@@ -355,7 +363,10 @@ class InternalFundsServiceTest {
         when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        TransferFundsRequest req = new TransferFundsRequest(1L, 2L, new BigDecimal("200.00"), "RSD", "dividend");
+        // ista valuta → debitAmount == creditAmount == 200
+        TransferFundsRequest req = new TransferFundsRequest(
+                1L, new BigDecimal("200.00"), 2L, new BigDecimal("200.00"),
+                null, null, "dividend");
         TransferFundsResponse response = service.transfer(req);
 
         assertThat(response.fromAccountId()).isEqualTo(1L);
@@ -371,7 +382,7 @@ class InternalFundsServiceTest {
     }
 
     @Test
-    void transfer_withCommission_debitsAmountPlusCommissionAndCreditsBank() {
+    void transfer_withCommission_debitsDebitAmountAndCreditsBank() {
         Account toAccount = buildPlainAccount("222000200000000003", "500.00", 2L);
 
         when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
@@ -381,21 +392,58 @@ class InternalFundsServiceTest {
         when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // amount 200 + provizija 15
+        // Pozivalac je vec uradio FX matematiku: from gubi debitAmount 215 (svoja
+        // valuta), to dobija creditAmount 200, banka dobija proviziju 15.
         TransferFundsRequest req = new TransferFundsRequest(
-                1L, 2L, new BigDecimal("200.00"), "RSD", new BigDecimal("15.00"), "fond uplata");
+                1L, new BigDecimal("215.00"), 2L, new BigDecimal("200.00"),
+                new BigDecimal("15.00"), "RSD", "fond uplata");
         TransferFundsResponse response = service.transfer(req);
 
-        assertThat(response.amount()).isEqualByComparingTo("200.00");
-        // from skida amount + provizija = 215 → 10000-215 = 9785
+        // response.amount() echo-uje debitAmount (from-noga)
+        assertThat(response.amount()).isEqualByComparingTo("215.00");
+        // from skida debitAmount = 215 → 10000-215 = 9785
         assertThat(account.getBalance()).isEqualByComparingTo("9785.00");
         assertThat(account.getAvailableBalance()).isEqualByComparingTo("9785.00");
-        // to dobija samo amount (200)
+        // to dobija creditAmount (200)
         assertThat(toAccount.getBalance()).isEqualByComparingTo("700.00");
         // banka dobija proviziju (15)
         assertThat(bankTradingAccount.getBalance()).isEqualByComparingTo("100015.00");
         assertThat(bankTradingAccount.getAvailableBalance()).isEqualByComparingTo("100015.00");
         verify(accountRepository).save(bankTradingAccount);
+    }
+
+    @Test
+    void transfer_crossCurrency_debitsFromInOwnCurrencyAndCreditsToInOwnCurrency() {
+        // from = EUR racun (1015 EUR), to = RSD racun (0 RSD). Pozivalac je vec
+        // uradio FX: from gubi debitAmount 1015 EUR, to dobija creditAmount
+        // 119000 RSD, banka dobija proviziju 15 EUR.
+        Account eurFrom = buildPlainAccount("311000100000000001", "5000.00", 1L, eur);
+        Account rsdTo = buildPlainAccount("222000200000000005", "0.00", 2L);
+
+        when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(eurFrom));
+        when(accountRepository.findForUpdateById(2L)).thenReturn(Optional.of(rsdTo));
+        when(accountRepository.findFirstByAccountCategoryAndCurrency_Code(
+                AccountCategory.BANK_TRADING, "EUR")).thenReturn(Optional.of(
+                buildPlainAccount("311000900000000099", "100000.00", 99L, eur)));
+        when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        TransferFundsRequest req = new TransferFundsRequest(
+                1L, new BigDecimal("1015.00"), 2L, new BigDecimal("119000.00"),
+                new BigDecimal("15.00"), "EUR", "Uplata u fond — transakcija #77");
+        TransferFundsResponse response = service.transfer(req);
+
+        assertThat(response.fromAccountId()).isEqualTo(1L);
+        assertThat(response.toAccountId()).isEqualTo(2L);
+        // from-noga: EUR racun gubi 1015 EUR (5000 - 1015 = 3985)
+        assertThat(eurFrom.getBalance()).isEqualByComparingTo("3985.00");
+        assertThat(eurFrom.getAvailableBalance()).isEqualByComparingTo("3985.00");
+        // to-noga: RSD racun dobija 119000 RSD
+        assertThat(rsdTo.getBalance()).isEqualByComparingTo("119000.00");
+        assertThat(rsdTo.getAvailableBalance()).isEqualByComparingTo("119000.00");
+        // banka dobija proviziju u EUR — bankin EUR racun resolve-ovan
+        verify(accountRepository).findFirstByAccountCategoryAndCurrency_Code(
+                AccountCategory.BANK_TRADING, "EUR");
     }
 
     @Test
@@ -405,7 +453,9 @@ class InternalFundsServiceTest {
         when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
         when(accountRepository.findForUpdateById(2L)).thenReturn(Optional.of(toAccount));
 
-        TransferFundsRequest req = new TransferFundsRequest(1L, 2L, new BigDecimal("99999.00"), "RSD", "test");
+        TransferFundsRequest req = new TransferFundsRequest(
+                1L, new BigDecimal("99999.00"), 2L, new BigDecimal("99999.00"),
+                null, null, "test");
         assertThatThrownBy(() -> service.transfer(req))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Nedovoljno raspolozivih sredstava");
@@ -655,10 +705,15 @@ class InternalFundsServiceTest {
 
     /** RSD CHECKING racun sa datim brojem, balansom i ID-em (balance == available). */
     private Account buildPlainAccount(String accountNumber, String balance, Long id) {
+        return buildPlainAccount(accountNumber, balance, id, rsd);
+    }
+
+    /** CHECKING racun u datoj valuti sa datim brojem, balansom i ID-em (balance == available). */
+    private Account buildPlainAccount(String accountNumber, String balance, Long id, Currency currency) {
         Account a = Account.builder()
                 .accountNumber(accountNumber)
                 .accountType(AccountType.CHECKING)
-                .currency(rsd)
+                .currency(currency)
                 .balance(new BigDecimal(balance))
                 .availableBalance(new BigDecimal(balance))
                 .reservedAmount(BigDecimal.ZERO)

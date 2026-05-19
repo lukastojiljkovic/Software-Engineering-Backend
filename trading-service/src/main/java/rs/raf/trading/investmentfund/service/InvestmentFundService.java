@@ -377,16 +377,21 @@ public class InvestmentFundService {
         tx.setCreatedAt(LocalDateTime.now());
         tx = clientFundTransactionRepository.save(tx);
 
-        // banka-core transfer: izvorni racun -> fond racun (RSD priliv); opciona
-        // FX provizija ide bankinom racunu (banka-core ga sam resolve-uje).
-        // banka-core transfer baca 409 ako izvorni racun nema dovoljno sredstava.
-        // Idempotency kljuc je deterministicki po ClientFundTransaction id-u
-        // (tx je perzistiran sa PENDING statusom PRE novcane noge).
+        // banka-core transfer: izvorni racun -> fond racun. Verno monolitu
+        // (InvestmentFundService.invest): izvorni racun gubi debitAmount+fxCommission
+        // u SVOJOJ valuti (= totalDebit), fond racun dobija amountRsd u RSD, banka
+        // dobija fxCommission u valuti izvornog racuna. Pozivalac je vec uradio FX
+        // matematiku (calculateInvestmentAmounts). banka-core transfer baca 409 ako
+        // izvorni racun nema dovoljno sredstava. Idempotency kljuc je deterministicki
+        // po ClientFundTransaction id-u (tx je perzistiran sa PENDING statusom PRE
+        // novcane noge).
         try {
             bankaCoreClient.transferFunds(
                     "fund-invest-" + tx.getId(),
-                    new TransferFundsRequest(sourceAccount.id(), fundAccount.id(),
-                            amounts.amountRsd(), RSD, amounts.fxCommission(),
+                    new TransferFundsRequest(
+                            sourceAccount.id(), totalDebit,
+                            fundAccount.id(), amounts.amountRsd(),
+                            amounts.fxCommission(), sourceAccount.currencyCode(),
                             "Uplata u fond '" + fund.getName() + "' — transakcija #" + tx.getId()));
         } catch (BankaCoreClientException ex) {
             if (ex.getHttpStatus() == 409) {
@@ -748,15 +753,19 @@ public class InvestmentFundService {
         BigDecimal fxFee = (!RSD.equals(destinationCurrency) && UserRole.isClient(actorRole))
                 ? grossCredit.multiply(FX_FEE_RATE).setScale(MONEY_SCALE, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
+        BigDecimal netCredit = grossCredit.subtract(fxFee).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
 
-        // banka-core transfer: fond racun (RSD) -> racun za isplatu; FX provizija
-        // (ako postoji) ide bankinom racunu (banka-core ga sam resolve-uje).
-        // banka-core pise audit Transaction. Idempotency kljuc je deterministicki
-        // po ClientFundTransaction id-u.
+        // banka-core transfer: fond racun (RSD) -> racun za isplatu. Verno monolitu
+        // (InvestmentFundService.executePayout): fond gubi amountRsd u RSD, racun za
+        // isplatu dobija netCredit (= grossCredit - fxFee) u SVOJOJ valuti, banka
+        // dobija fxFee u valuti racuna za isplatu. banka-core pise audit Transaction.
+        // Idempotency kljuc je deterministicki po ClientFundTransaction id-u.
         bankaCoreClient.transferFunds(
                 "fund-payout-" + tx.getId(),
-                new TransferFundsRequest(fundAccount.id(), destinationAccount.id(),
-                        amountRsd, RSD, fxFee,
+                new TransferFundsRequest(
+                        fundAccount.id(), amountRsd,
+                        destinationAccount.id(), netCredit,
+                        fxFee, destinationCurrency,
                         "Isplata iz fonda — transakcija #" + tx.getId()));
 
         tx.setStatus(ClientFundTransactionStatus.COMPLETED);
@@ -795,22 +804,37 @@ public class InvestmentFundService {
     /**
      * Validacija racuna za uplatu/isplatu.
      *
-     * NAPOMENA (faza 2c): monolit je proveravao vlasnistvo racuna direktno
-     * ({@code account.getClient()} / {@code account.getCompany()} /
-     * {@code accountCategory}). {@link InternalAccountDto} ne nosi tip vlasnika,
-     * pa se ovde proverava status racuna + supervizorska autorizacija (lokalni
-     * actuary domen). Stvarnu garanciju vlasnistva nad sredstvima daje
-     * banka-core {@code transfer} (vraca 409 ako racun nema dovoljno sredstava).
+     * <p>Verno monolitovom {@code InvestmentFundService.ensureAccountCanBeUsed}:
+     * {@link InternalAccountDto} sada nosi {@code ownerClientId}/
+     * {@code accountCategory}, pa se monolitova provera vlasnistva reprodukuje:
+     * <ul>
+     *   <li>racun mora biti ACTIVE;</li>
+     *   <li>klijent moze koristiti samo SVOJ racun
+     *       ({@code ownerClientId == actorId});</li>
+     *   <li>supervizor za uplatu/isplatu u ime banke mora izabrati bankin
+     *       {@code BANK_TRADING} racun (company-owned — {@code ownerClientId}
+     *       je {@code null}).</li>
+     * </ul>
      */
     private void ensureAccountCanBeUsed(InternalAccountDto account, Long actorId, String actorRole, String operationName) {
         if (account.status() == null || !"ACTIVE".equalsIgnoreCase(account.status())) {
             throw new IllegalArgumentException("Racun " + account.accountNumber() + " nije aktivan.");
         }
         if (UserRole.isClient(actorRole)) {
+            if (account.ownerClientId() == null || !account.ownerClientId().equals(actorId)) {
+                throw new AccessDeniedException("Racun " + account.accountNumber()
+                        + " ne pripada ulogovanom klijentu.");
+            }
             return;
         }
         if (isEmployeeActor(actorRole)) {
             ensureSupervisor(actorId);
+            // BANK_TRADING racun je company-owned (bankina firma) — ownerClientId je null.
+            if (account.ownerClientId() != null
+                    || !"BANK_TRADING".equalsIgnoreCase(account.accountCategory())) {
+                throw new AccessDeniedException("Supervizor za " + operationName
+                        + " u ime banke mora izabrati bankin trading racun.");
+            }
             return;
         }
         throw new AccessDeniedException("Nepodrzana uloga za operaciju fonda: " + actorRole);

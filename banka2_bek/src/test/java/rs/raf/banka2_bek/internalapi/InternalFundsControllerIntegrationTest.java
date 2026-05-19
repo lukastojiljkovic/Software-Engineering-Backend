@@ -376,6 +376,80 @@ class InternalFundsControllerIntegrationTest {
         assertThat(reloadedState.getBalance()).isEqualByComparingTo("250.00");
     }
 
+    // ─── Transfer: cross-currency — from u EUR, to u RSD, provizija u EUR ─────
+
+    @Test
+    void transfer_crossCurrency_debitsFromEurCreditsRsdAndCreditsBankCommission() throws Exception {
+        // Fond uplata sa EUR racuna: from gubi debitAmount u EUR, fond dobija
+        // creditAmount u RSD, banka dobija proviziju u EUR. banka-core debituje/
+        // kreditira svaki racun u NJEGOVOJ sopstvenoj valuti.
+        Account eurFrom = persistAccount("311000000000000001", "EUR", new BigDecimal("5000.00"));
+        Account rsdTo = persistAccount("222000000000000031", "RSD", new BigDecimal("0.00"));
+        Account eurBank = persistBankTradingAccount("EUR", new BigDecimal("100000.00"));
+        String idempotencyKey = "it-transfer-xccy-001";
+
+        String body = """
+                { "fromAccountId": %d, "debitAmount": 1015.00,
+                  "toAccountId": %d, "creditAmount": 119000.00,
+                  "commission": 15.00, "commissionCurrency": "EUR",
+                  "description": "Uplata u fond" }
+                """.formatted(eurFrom.getId(), rsdTo.getId());
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/transfer"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)),
+                String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode json = objectMapper.readTree(resp.getBody());
+        assertThat(json.path("fromAccountId").asLong()).isEqualTo(eurFrom.getId());
+        assertThat(json.path("toAccountId").asLong()).isEqualTo(rsdTo.getId());
+
+        // from-noga: EUR racun gubi 1015 EUR
+        Account reloadedFrom = accountRepository.findById(eurFrom.getId()).orElseThrow();
+        assertThat(reloadedFrom.getBalance()).isEqualByComparingTo("3985.00");
+        assertThat(reloadedFrom.getAvailableBalance()).isEqualByComparingTo("3985.00");
+        // to-noga: RSD racun dobija 119000 RSD
+        Account reloadedTo = accountRepository.findById(rsdTo.getId()).orElseThrow();
+        assertThat(reloadedTo.getBalance()).isEqualByComparingTo("119000.00");
+        assertThat(reloadedTo.getAvailableBalance()).isEqualByComparingTo("119000.00");
+        // banka dobija proviziju u EUR
+        Account reloadedBank = accountRepository.findById(eurBank.getId()).orElseThrow();
+        assertThat(reloadedBank.getBalance()).isEqualByComparingTo("100015.00");
+        assertThat(reloadedBank.getAvailableBalance()).isEqualByComparingTo("100015.00");
+
+        assertThat(internalRequestRepository.findByIdempotencyKey(idempotencyKey)).isPresent();
+    }
+
+    // ─── Transfer: nedovoljno sredstava na from-nozi → 409 ───────────────────
+
+    @Test
+    void transfer_insufficientFunds_returns409() throws Exception {
+        Account from = persistAccount("222000000000000032", "RSD", new BigDecimal("100.00"));
+        Account to = persistAccount("222000000000000033", "RSD", new BigDecimal("0.00"));
+        String idempotencyKey = "it-transfer-insufficient-001";
+
+        String body = """
+                { "fromAccountId": %d, "debitAmount": 99999.00,
+                  "toAccountId": %d, "creditAmount": 99999.00,
+                  "commission": 0, "commissionCurrency": "RSD",
+                  "description": "preveliki prenos" }
+                """.formatted(from.getId(), to.getId());
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/transfer"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)),
+                String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+
+        // Nista nije pomereno
+        Account reloadedFrom = accountRepository.findById(from.getId()).orElseThrow();
+        assertThat(reloadedFrom.getBalance()).isEqualByComparingTo("100.00");
+        Account reloadedTo = accountRepository.findById(to.getId()).orElseThrow();
+        assertThat(reloadedTo.getBalance()).isEqualByComparingTo("0.00");
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private HttpHeaders internalHeaders(String idempotencyKey) {
