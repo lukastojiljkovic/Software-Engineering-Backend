@@ -4,12 +4,18 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import rs.raf.banka2.contracts.internal.InternalUserDto;
 import rs.raf.banka2_bek.internalapi.service.InternalLookupService;
 
+import java.util.List;
+
 /**
- * Interni REST API za razresavanje identiteta korisnika (trading-service).
+ * Interni REST API za razresavanje identiteta korisnika (trading-service):
+ *   GET /internal/users/by-email/{email}  — identitet po email-u
+ *   GET /internal/users/{userRole}/{id}   — identitet po roli + id-u
+ *   GET /internal/employees               — filtrirana lista zaposlenih
  * trading-service JWT nosi samo email — ove rute mu daju numericki id + rolu.
  * Sve rute su zasticene X-Internal-Key (InternalAuthFilter + ROLE_INTERNAL).
  *
@@ -42,5 +48,19 @@ public class InternalUsersController {
     public ResponseEntity<InternalUserDto> getUserById(@PathVariable String userRole,
                                                        @PathVariable Long id) {
         return ResponseEntity.ok(lookupService.getUserById(userRole, id));
+    }
+
+    /**
+     * Vraca zaposlene filtrirane po opcionim atributima (firstName / lastName /
+     * email / position — case-insensitive contains). Bez parametara → svi.
+     * Podrzava actuary domen koji posle ekstrakcije filtrira zaposlene.
+     */
+    @GetMapping("/employees")
+    public ResponseEntity<List<InternalUserDto>> getEmployees(
+            @RequestParam(required = false) String firstName,
+            @RequestParam(required = false) String lastName,
+            @RequestParam(required = false) String email,
+            @RequestParam(required = false) String position) {
+        return ResponseEntity.ok(lookupService.findEmployees(firstName, lastName, email, position));
     }
 }

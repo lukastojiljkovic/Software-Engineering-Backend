@@ -10,19 +10,23 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import rs.raf.banka2.contracts.internal.CommitFundsRequest;
 import rs.raf.banka2.contracts.internal.InternalErrorDto;
+import rs.raf.banka2.contracts.internal.ProvisionFundAccountRequest;
 import rs.raf.banka2.contracts.internal.ReleaseFundsRequest;
 import rs.raf.banka2.contracts.internal.ReserveFundsRequest;
 import rs.raf.banka2.contracts.internal.TransferFundsRequest;
+import rs.raf.banka2_bek.internalapi.service.InternalAccountProvisioningService;
 import rs.raf.banka2_bek.internalapi.service.InternalFundsService;
 import rs.raf.banka2_bek.internalapi.service.InternalLookupService;
 
 /**
  * Interni REST API za trading-service SAGA seam.
  * Sve rute su zasticene X-Internal-Key (InternalAuthFilter + ROLE_INTERNAL).
- * Mutirajuci endpoint-i zahtevaju X-Idempotency-Key; idempotency se handluje
- * direktno u InternalFundsService (reserveIdempotent / commitIdempotent /
- * releaseIdempotent / transferIdempotent) — store + operacija su atomicni u
- * jednoj @Transactional.
+ * {@code /funds/**} mutirajuci endpoint-i zahtevaju X-Idempotency-Key;
+ * idempotency se handluje direktno u InternalFundsService (reserveIdempotent /
+ * commitIdempotent / releaseIdempotent / transferIdempotent) — store + operacija
+ * su atomicni u jednoj @Transactional.
+ * {@code POST /accounts/fund} provizionira FUND racun (bez idempotency kljuca —
+ * fond se kreira jednom po pozivu trading-service-a).
  */
 @RestController
 @RequestMapping("/internal")
@@ -30,11 +34,14 @@ public class InternalFundsController {
 
     private final InternalFundsService fundsService;
     private final InternalLookupService lookupService;
+    private final InternalAccountProvisioningService provisioningService;
 
     public InternalFundsController(InternalFundsService fundsService,
-                                   InternalLookupService lookupService) {
+                                   InternalLookupService lookupService,
+                                   InternalAccountProvisioningService provisioningService) {
         this.fundsService = fundsService;
         this.lookupService = lookupService;
+        this.provisioningService = provisioningService;
     }
 
     // ── Funds ────────────────────────────────────────────────────────────────
@@ -109,6 +116,25 @@ public class InternalFundsController {
     @GetMapping("/accounts/{id}")
     public ResponseEntity<?> getAccount(@PathVariable Long id) {
         return ResponseEntity.ok(lookupService.getAccount(id));
+    }
+
+    /**
+     * Provizionira gotovinski (RSD) FUND racun za nov investicioni fond.
+     * Literalni segment {@code fund} ne kolidira sa {@code /accounts/{id:Long}}
+     * (drugi HTTP metod + Spring ne mapira ne-numericku vrednost na Long path var).
+     */
+    @PostMapping("/accounts/fund")
+    public ResponseEntity<?> provisionFundAccount(@RequestBody ProvisionFundAccountRequest body) {
+        return ResponseEntity.ok(
+                provisioningService.provisionFundAccount(body.fundName(), body.managerEmployeeId()));
+    }
+
+    /**
+     * Vraca bankin trading racun za datu valutu (kod).
+     */
+    @GetMapping("/accounts/bank-trading/{currencyCode}")
+    public ResponseEntity<?> getBankTradingAccount(@PathVariable String currencyCode) {
+        return ResponseEntity.ok(lookupService.getBankTradingAccount(currencyCode));
     }
 
     /**

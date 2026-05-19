@@ -5,6 +5,7 @@ import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2.contracts.internal.InternalAccountDto;
 import rs.raf.banka2.contracts.internal.InternalUserDto;
 import rs.raf.banka2_bek.account.model.Account;
+import rs.raf.banka2_bek.account.model.AccountCategory;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
@@ -57,6 +58,48 @@ public class InternalLookupService {
                 account.getCurrency().getCode(),
                 account.getStatus().name()
         );
+    }
+
+    /**
+     * Vraca metadata bankinog trading racuna za datu valutu.
+     * Baca {@link IllegalArgumentException} (→ 404) ako racun ne postoji.
+     */
+    @Transactional(readOnly = true)
+    public InternalAccountDto getBankTradingAccount(String currencyCode) {
+        Account account = accountRepository
+                .findFirstByAccountCategoryAndCurrency_Code(AccountCategory.BANK_TRADING, currencyCode)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Bank trading account not found for currency: " + currencyCode));
+
+        return new InternalAccountDto(
+                account.getId(),
+                account.getAccountNumber(),
+                resolveOwnerName(account),
+                account.getBalance(),
+                account.getAvailableBalance(),
+                account.getReservedAmount(),
+                account.getCurrency().getCode(),
+                account.getStatus().name()
+        );
+    }
+
+    /**
+     * Vraca zaposlene filtrirane po opcionim atributima (case-insensitive
+     * {@code contains}). Bez parametara → svi zaposleni. Podrzava actuary domen
+     * koji posle ekstrakcije filtrira zaposlene po imenu/prezimenu/email/poziciji.
+     */
+    @Transactional(readOnly = true)
+    public List<InternalUserDto> findEmployees(String firstName, String lastName,
+                                               String email, String position) {
+        return employeeRepository.findByFilters(
+                        blankToNull(email), blankToNull(firstName),
+                        blankToNull(lastName), blankToNull(position))
+                .stream()
+                .map(e -> new InternalUserDto(
+                        e.getId(), "EMPLOYEE", e.getEmail(),
+                        e.getFirstName(), e.getLastName(),
+                        Boolean.TRUE.equals(e.getActive())))
+                .toList();
     }
 
     /**
@@ -122,6 +165,10 @@ public class InternalLookupService {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    private static String blankToNull(String value) {
+        return (value == null || value.isBlank()) ? null : value;
+    }
 
     private String resolveOwnerName(Account account) {
         if (account.getClient() != null) {

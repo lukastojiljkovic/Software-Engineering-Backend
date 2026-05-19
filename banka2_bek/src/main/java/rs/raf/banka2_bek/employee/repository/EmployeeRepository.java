@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import rs.raf.banka2_bek.employee.model.Employee;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface EmployeeRepository extends JpaRepository<Employee, Long> {
@@ -32,4 +33,17 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
             @Param("lastName") String lastName,
             @Param("position") String position,
             Pageable pageable);
+
+    // Ne-paginirana varijanta za interni API (faza2c-A) — actuary domen filtrira
+    // zaposlene po atributima posle ekstrakcije. Isti casting obrazac kao iznad.
+    @Query("SELECT e FROM Employee e WHERE " +
+            "(cast(:email as string) IS NULL OR LOWER(e.email) LIKE LOWER(CONCAT('%', cast(:email as string), '%'))) AND " +
+            "(cast(:firstName as string) IS NULL OR LOWER(e.firstName) LIKE LOWER(CONCAT('%', cast(:firstName as string), '%'))) AND " +
+            "(cast(:lastName as string) IS NULL OR LOWER(e.lastName) LIKE LOWER(CONCAT('%', cast(:lastName as string), '%'))) AND " +
+            "(cast(:position as string) IS NULL OR LOWER(e.position) LIKE LOWER(CONCAT('%', cast(:position as string), '%')))")
+    List<Employee> findByFilters(
+            @Param("email") String email,
+            @Param("firstName") String firstName,
+            @Param("lastName") String lastName,
+            @Param("position") String position);
 }
