@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.List;
 
 /**
@@ -40,7 +42,7 @@ public class InternalAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         String provided = request.getHeader("X-Internal-Key");
-        if (provided == null || apiKey == null || apiKey.isBlank() || !apiKey.equals(provided)) {
+        if (!keyMatches(provided)) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType("application/json");
             response.getWriter().write("{\"code\":\"UNAUTHORIZED\",\"message\":\"Nevazeci X-Internal-Key\"}");
@@ -50,5 +52,20 @@ public class InternalAuthFilter extends OncePerRequestFilter {
                 "internal-service", null, List.of(new SimpleGrantedAuthority("ROLE_INTERNAL")));
         SecurityContextHolder.getContext().setAuthentication(auth);
         chain.doFilter(request, response);
+    }
+
+    /**
+     * Konstantno-vremensko poredjenje prosledjenog X-Internal-Key sa konfigurisanim
+     * kljucem ({@link MessageDigest#isEqual} ne kratko-spaja na prvoj razlici, pa
+     * ne curi duzinu/prefiks kljuca kroz timing). Null/blank prosledjeni ili
+     * nekonfigurisan kljuc se odbijaju pre poredjenja.
+     */
+    private boolean keyMatches(String provided) {
+        if (provided == null || apiKey == null || apiKey.isBlank()) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                provided.getBytes(StandardCharsets.UTF_8),
+                apiKey.getBytes(StandardCharsets.UTF_8));
     }
 }

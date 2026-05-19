@@ -1,6 +1,8 @@
 package rs.raf.trading.option.repository;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -9,6 +11,7 @@ import rs.raf.trading.option.model.Option;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * JPA repozitorijum za Option entitet.
@@ -26,6 +29,23 @@ public interface OptionRepository extends JpaRepository<Option, Long> {
      * @return lista svih opcija vezanih za tu akciju
      */
     List<Option> findByStockListingId(Long listingId);
+
+    /**
+     * Pesimisticki write-lock dohvat opcije po ID-u — koristi se u
+     * {@code exerciseOption} flow-u da spreci lost-update trku: dva paralelna
+     * exercise-a bi inace procitala isti {@code openInterest}, dvaput ga
+     * dekrementirala sa stale vrednosti i (preko idempotency replay-a) zaduzila
+     * settlement samo jednom. Lock drzi red opcije do kraja exercise transakcije.
+     *
+     * <p>Mirror {@code OrderRepository.findByIdForUpdate} /
+     * {@code PortfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate}.
+     *
+     * @param id ID Option entiteta
+     * @return zakljucani Option red ili prazan Optional
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM Option o WHERE o.id = :id")
+    Optional<Option> findByIdForUpdate(@Param("id") Long id);
 
     /**
      * Pronalazi opcije za odredjenu akciju i konkretan settlement datum.

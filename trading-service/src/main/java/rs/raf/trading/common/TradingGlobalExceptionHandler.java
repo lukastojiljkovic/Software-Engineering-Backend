@@ -12,6 +12,7 @@ import org.springframework.transaction.TransactionSystemException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import rs.raf.trading.client.BankaCoreClientException;
 import rs.raf.trading.common.dto.MessageResponseDto;
 
 /**
@@ -114,6 +115,51 @@ public class TradingGlobalExceptionHandler {
             status = HttpStatus.NOT_FOUND;
         } else if (cause instanceof AccessDeniedException) {
             status = HttpStatus.FORBIDDEN;
+        }
+        return ResponseEntity.status(status).body(new MessageResponseDto(message));
+    }
+
+    /**
+     * Greska pri pozivu banka-core internog {@code /internal/**} API-ja.
+     *
+     * <p>{@link BankaCoreClientException} nosi upstream HTTP status koji je vratio
+     * banka-core. Servisi koji ocekuju domensku gresku (npr. {@code OptionService}
+     * pri 409 = nedovoljno sredstava) sami hvataju {@code BankaCoreClientException}
+     * i bacaju domensku gresku — ovaj handler hvata SAMO {@code BankaCoreClientException}
+     * koji je izmakao servisu (nepredvidjen upstream pad / nedostupnost). Pre ovog
+     * handler-a takav izuzetak je padao na {@code RuntimeException} catch-all → 400,
+     * sto je pogresno: banka-core 500/503 je upstream kvar, ne losa klijentska
+     * poruka. Mapiranje po upstream statusu:
+     * <ul>
+     *   <li>upstream 503 &rarr; 503 (interni servis privremeno nedostupan);</li>
+     *   <li>upstream ostali 5xx &rarr; 502 (interni servis vratio gresku);</li>
+     *   <li>upstream 404 &rarr; 404 (resurs ne postoji u internom servisu);</li>
+     *   <li>upstream 409 &rarr; 409 (konflikt — konzistentno sa servisnim mapiranjem
+     *       nedovoljnih sredstava);</li>
+     *   <li>upstream ostali 4xx &rarr; 500 (genuini upstream 4xx koji nijedan servis
+     *       nije obradio ukazuje na nesklad ugovora internog API-ja).</li>
+     * </ul>
+     */
+    @ExceptionHandler(BankaCoreClientException.class)
+    public ResponseEntity<MessageResponseDto> handleBankaCoreClientException(BankaCoreClientException ex) {
+        int upstream = ex.getHttpStatus();
+        HttpStatus status;
+        String message;
+        if (upstream == 503) {
+            status = HttpStatus.SERVICE_UNAVAILABLE;
+            message = "Interni servis privremeno nedostupan: " + ex.getMessage();
+        } else if (upstream >= 500) {
+            status = HttpStatus.BAD_GATEWAY;
+            message = "Interni servis nedostupan: " + ex.getMessage();
+        } else if (upstream == 404) {
+            status = HttpStatus.NOT_FOUND;
+            message = ex.getMessage();
+        } else if (upstream == 409) {
+            status = HttpStatus.CONFLICT;
+            message = ex.getMessage();
+        } else {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+            message = "Greska internog API ugovora: " + ex.getMessage();
         }
         return ResponseEntity.status(status).body(new MessageResponseDto(message));
     }

@@ -99,4 +99,36 @@ class InternalAuthFilterTest {
         assertThat(res.getStatus()).isEqualTo(401);
         assertThat(chain.getRequest()).isNull();
     }
+
+    // ─── H3: constant-time compare — prefiks i isto-duzinski pogresan kljuc ────
+
+    @Test
+    void keyThatIsPrefixOfValidKey_returns401() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.setRequestURI("/internal/portfolio/reserve-stock");
+        // Prefiks validnog kljuca (razlicita duzina) — MessageDigest.isEqual ga odbija.
+        req.addHeader("X-Internal-Key", VALID_KEY.substring(0, VALID_KEY.length() - 4));
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(req, res, chain);
+
+        assertThat(res.getStatus()).isEqualTo(401);
+        assertThat(chain.getRequest()).isNull();
+    }
+
+    @Test
+    void wrongKeyOfSameLength_returns401() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.setRequestURI("/internal/portfolio/reserve-stock");
+        // Ista duzina, drugaciji sadrzaj — constant-time compare ga odbija.
+        req.addHeader("X-Internal-Key", "X".repeat(VALID_KEY.length()));
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(req, res, chain);
+
+        assertThat(res.getStatus()).isEqualTo(401);
+        assertThat(chain.getRequest()).isNull();
+    }
 }

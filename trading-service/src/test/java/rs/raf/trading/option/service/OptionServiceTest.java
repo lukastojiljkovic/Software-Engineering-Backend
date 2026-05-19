@@ -30,6 +30,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -154,7 +155,7 @@ class OptionServiceTest {
     @Test
     void exerciseOption_throwsWhenOptionMissing() {
         mockAuthorizedActuary("agent@test.com", 12L);
-        when(optionRepository.findById(55L)).thenReturn(Optional.empty());
+        when(optionRepository.findByIdForUpdate(55L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> optionService.exerciseOption(55L, "agent@test.com"))
                 .isInstanceOf(EntityNotFoundException.class)
@@ -170,7 +171,7 @@ class OptionServiceTest {
                 new BigDecimal("210.00"), new BigDecimal("180.00"),
                 LocalDate.now().minusDays(1), 3);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
 
         assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -186,7 +187,7 @@ class OptionServiceTest {
                 new BigDecimal("170.00"), new BigDecimal("180.00"),
                 LocalDate.now().plusDays(5), 3);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
 
         assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -202,7 +203,7 @@ class OptionServiceTest {
                 new BigDecimal("150.00"), new BigDecimal("180.00"),
                 LocalDate.now().plusDays(5), 0);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
 
         assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -220,7 +221,7 @@ class OptionServiceTest {
                 new BigDecimal("210.00"), new BigDecimal("180.00"),
                 LocalDate.now().plusDays(5), 4);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD"))
                 .thenReturn(bankAccount(new BigDecimal("10000000.00")));
         when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
@@ -244,7 +245,7 @@ class OptionServiceTest {
                 new BigDecimal("210.00"), new BigDecimal("180.00"),
                 LocalDate.now().plusDays(5), 4);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD"))
                 .thenReturn(bankAccount(new BigDecimal("1000000.00")));
         when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
@@ -275,7 +276,7 @@ class OptionServiceTest {
         portfolio.setQuantity(200);
         portfolio.setAverageBuyPrice(new BigDecimal("170.00"));
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD"))
                 .thenReturn(bankAccount(new BigDecimal("100000.00")));
         when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
@@ -293,6 +294,31 @@ class OptionServiceTest {
     }
 
     @Test
+    void exerciseOption_usesPessimisticLockQueryNotPlainFindById() {
+        // H2: exerciseOption mora da zakljuca Option red (findByIdForUpdate),
+        // ne plain findById — inace dva paralelna exercise-a procitaju isti
+        // openInterest, dvaput ga dekrementiraju, a idempotency replay-uje drugi
+        // settlement (lost-update / off-by-one).
+        mockAuthorizedActuary("agent@test.com", 12L);
+
+        Option option = buildOption(
+                1L, OptionType.CALL,
+                new BigDecimal("210.00"), new BigDecimal("180.00"),
+                LocalDate.now().plusDays(5), 4);
+
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
+        when(bankaCoreClient.getBankTradingAccount("USD"))
+                .thenReturn(bankAccount(new BigDecimal("10000000.00")));
+        when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
+                .thenReturn(java.util.Collections.emptyList());
+
+        optionService.exerciseOption(1L, "agent@test.com");
+
+        verify(optionRepository).findByIdForUpdate(1L);
+        verify(optionRepository, never()).findById(anyLong());
+    }
+
+    @Test
     void exerciseOption_callThrowsWhenBankaCoreReturns409() {
         mockAuthorizedActuary("agent@test.com", 12L);
 
@@ -301,7 +327,7 @@ class OptionServiceTest {
                 new BigDecimal("210.00"), new BigDecimal("180.00"),
                 LocalDate.now().plusDays(5), 4);
 
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD"))
                 .thenReturn(bankAccount(new BigDecimal("100.00")));
         // banka-core odbija debit jer bankin racun nema dovoljno sredstava.

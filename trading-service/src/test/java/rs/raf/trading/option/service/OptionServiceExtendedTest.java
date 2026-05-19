@@ -249,7 +249,7 @@ class OptionServiceExtendedTest {
             Option option = buildOption(1L, OptionType.CALL, new BigDecimal("210.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 4);
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(Collections.emptyList());
@@ -272,7 +272,7 @@ class OptionServiceExtendedTest {
             Option option = buildOption(1L, OptionType.CALL, new BigDecimal("210.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 4);
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(bankaCoreClient.debitFunds(any(), any(DebitFundsRequest.class)))
                     .thenThrow(new BankaCoreClientException(409, "insufficient funds"));
@@ -297,7 +297,7 @@ class OptionServiceExtendedTest {
             existingPortfolio.setQuantity(50);
             existingPortfolio.setAverageBuyPrice(new BigDecimal("200.00"));
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(List.of(existingPortfolio));
@@ -331,7 +331,7 @@ class OptionServiceExtendedTest {
             portfolio.setQuantity(200);
             portfolio.setAverageBuyPrice(new BigDecimal("170.00"));
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(List.of(portfolio));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
@@ -360,7 +360,7 @@ class OptionServiceExtendedTest {
             portfolio.setQuantity(100); // Exactly contractSize
             portfolio.setAverageBuyPrice(new BigDecimal("170.00"));
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(List.of(portfolio));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
@@ -378,7 +378,7 @@ class OptionServiceExtendedTest {
             Option option = buildOption(1L, OptionType.PUT, new BigDecimal("150.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 3);
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(Collections.emptyList());
@@ -403,7 +403,7 @@ class OptionServiceExtendedTest {
             portfolio.setQuantity(50); // Less than contractSize (100)
             portfolio.setAverageBuyPrice(new BigDecimal("170.00"));
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(portfolioRepository.findByUserIdAndUserRole(12L, "EMPLOYEE"))
                     .thenReturn(List.of(portfolio));
@@ -422,7 +422,7 @@ class OptionServiceExtendedTest {
             Option option = buildOption(1L, OptionType.PUT, new BigDecimal("200.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 3);
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
 
             assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
                     .isInstanceOf(IllegalArgumentException.class)
@@ -447,7 +447,7 @@ class OptionServiceExtendedTest {
             Option option = buildOption(1L, OptionType.CALL, new BigDecimal("210.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 4);
 
-            when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+            when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
             when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
             when(portfolioRepository.findByUserIdAndUserRole(15L, "EMPLOYEE"))
                     .thenReturn(Collections.emptyList());

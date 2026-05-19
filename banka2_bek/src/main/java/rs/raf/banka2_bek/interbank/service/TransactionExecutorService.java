@@ -244,11 +244,10 @@ public class TransactionExecutorService {
 
             } else if (p.asset() instanceof Asset.Stock s && p.account() instanceof TxAccount.Person pe) {
                 String ticker = s.asset().ticker();
-                // Provera postojanja hartije — trading-service vlasnik listings tabele.
-                if (tradingServiceClient.findListingByTicker(ticker).isEmpty()) {
-                    throw new InterbankExceptions.InterbankProtocolException(
-                            "Listing not found: " + ticker);
-                }
+                // commitStock razresava listing po ticker-u u trading-service-u i
+                // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
+                // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
+                // HTTP round-trip unutar @Transactional.
                 Long userId = Long.parseLong(pe.id().id());
                 reservationApplier.commitStock(
                         stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
@@ -306,11 +305,10 @@ public class TransactionExecutorService {
 
             } else if (p.asset() instanceof Asset.Stock s && p.account() instanceof TxAccount.Person pe) {
                 String ticker = s.asset().ticker();
-                // Provera postojanja hartije — trading-service vlasnik listings tabele.
-                if (tradingServiceClient.findListingByTicker(ticker).isEmpty()) {
-                    throw new InterbankExceptions.InterbankProtocolException(
-                            "Listing not found: " + ticker);
-                }
+                // releaseStock razresava listing po ticker-u u trading-service-u i
+                // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
+                // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
+                // HTTP round-trip unutar @Transactional.
                 Long userId = Long.parseLong(pe.id().id());
                 reservationApplier.releaseStock(
                         stockIdempotencyKey(transactionId, "release", userId, "CLIENT", ticker, i),

@@ -115,7 +115,7 @@ class OptionServiceBranchCoverageTest {
         when(bankaCoreClient.getUserPermissions("agent@test.com")).thenReturn(List.of("ADMIN"));
 
         Option option = buildCall(1L, new BigDecimal("210.00"), new BigDecimal("180.00"), 3);
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD"))
                 .thenThrow(new BankaCoreClientException(404, "Bank USD account not found"));
 
@@ -133,7 +133,7 @@ class OptionServiceBranchCoverageTest {
         when(bankaCoreClient.getUserPermissions("agent@test.com")).thenReturn(List.of("ADMIN"));
 
         Option option = buildCall(1L, new BigDecimal("210.00"), new BigDecimal("180.00"), 3);
-        when(optionRepository.findById(1L)).thenReturn(Optional.of(option));
+        when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
         when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(
                 new InternalAccountDto(99L, "333000000000000001", "Banka", BigDecimal.TEN,
                         BigDecimal.TEN, BigDecimal.ZERO, "USD", "ACTIVE", null, null, "BANK_TRADING"));

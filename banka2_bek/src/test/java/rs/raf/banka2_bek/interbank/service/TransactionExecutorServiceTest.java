@@ -618,8 +618,8 @@ class TransactionExecutorServiceTest {
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker("AAPL"))
-                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        // H4: commitLocal vise ne radi findListingByTicker pre-check — commitStock
+        // (trading-service seam) sam razresava listing po ticker-u.
         stubTxSave();
 
         service.commitLocal(tx.transactionId());
@@ -637,8 +637,7 @@ class TransactionExecutorServiceTest {
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker("AAPL"))
-                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        // H4: commitLocal vise ne radi findListingByTicker pre-check.
         stubTxSave();
 
         service.commitLocal(tx.transactionId());
@@ -661,14 +660,22 @@ class TransactionExecutorServiceTest {
     @Test
     @DisplayName("commitLocal: STOCK listing not found → throws InterbankProtocolException")
     void commitLocal_stockListingNotFound_throws() throws Exception {
+        // H4: commitLocal vise ne radi findListingByTicker pre-check — odsustvo
+        // listinga sad povrsava commitStock (trading-service seam): realan
+        // InterbankReservationApplier.commitStock prevodi trading-service
+        // "Listing not found" gresku u InterbankProtocolException. Tu putanju
+        // simuliramo direktnim throw-om iz mock-ovanog reservationApplier-a.
         Transaction tx = localStockTx();
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker(any())).thenReturn(Optional.empty());
+        doThrow(new InterbankExceptions.InterbankProtocolException("Listing not found: AAPL"))
+                .when(reservationApplier)
+                .commitStock(anyString(), anyLong(), anyString(), anyString(), anyInt(), anyBoolean());
 
         assertThatThrownBy(() -> service.commitLocal(tx.transactionId()))
-                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class);
+                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class)
+                .hasMessageContaining("Listing not found");
     }
 
     // =========================================================================
@@ -741,8 +748,8 @@ class TransactionExecutorServiceTest {
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker("AAPL"))
-                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        // H4: rollbackLocal vise ne radi findListingByTicker pre-check — releaseStock
+        // (trading-service seam) sam razresava listing po ticker-u.
         stubTxSave();
 
         service.rollbackLocal(tx.transactionId());
@@ -764,8 +771,7 @@ class TransactionExecutorServiceTest {
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker("AAPL"))
-                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        // H4: rollbackLocal vise ne radi findListingByTicker pre-check.
         stubTxSave();
 
         service.rollbackLocal(tx.transactionId());
@@ -777,14 +783,21 @@ class TransactionExecutorServiceTest {
     @Test
     @DisplayName("rollbackLocal: STOCK listing not found → throws InterbankProtocolException")
     void rollbackLocal_stockListingNotFound_throws() throws Exception {
+        // H4: rollbackLocal vise ne radi findListingByTicker pre-check — odsustvo
+        // listinga sad povrsava releaseStock (trading-service seam): realan
+        // InterbankReservationApplier.releaseStock prevodi trading-service
+        // "Listing not found" gresku u InterbankProtocolException.
         Transaction tx = localStockTx();
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
                 .thenReturn(Optional.of(ibt));
-        when(tradingServiceClient.findListingByTicker(any())).thenReturn(Optional.empty());
+        doThrow(new InterbankExceptions.InterbankProtocolException("Listing not found: AAPL"))
+                .when(reservationApplier)
+                .releaseStock(anyString(), anyLong(), anyString(), anyString(), anyInt());
 
         assertThatThrownBy(() -> service.rollbackLocal(tx.transactionId()))
-                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class);
+                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class)
+                .hasMessageContaining("Listing not found");
     }
 
     // =========================================================================

@@ -124,4 +124,40 @@ class InternalAuthFilterTest {
         assertThat(res.getStatus()).isEqualTo(401);
         assertThat(chain.getRequest()).isNull();
     }
+
+    // ─── H3: prefiks validnog kljuca se odbija (constant-time compare ne sme da
+    //         prihvati skraceni kljuc) ──────────────────────────────────────────
+
+    @Test
+    void keyThatIsPrefixOfValidKey_returns401() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.setRequestURI("/internal/funds/reserve");
+        // "test-internal" je prefiks "test-internal-key" — duzina se razlikuje;
+        // MessageDigest.isEqual odbija (ne sme da prihvati skraceni kljuc).
+        req.addHeader("X-Internal-Key", VALID_KEY.substring(0, VALID_KEY.length() - 4));
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(req, res, chain);
+
+        assertThat(res.getStatus()).isEqualTo(401);
+        assertThat(chain.getRequest()).isNull();
+    }
+
+    @Test
+    void wrongKeyOfSameLength_returns401() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.setRequestURI("/internal/funds/reserve");
+        // Ista duzina kao VALID_KEY, drugaciji sadrzaj — constant-time compare
+        // ga odbija (sva poredjenja moraju da prodju, bez kratkog spoja).
+        String sameLengthWrong = "X".repeat(VALID_KEY.length());
+        req.addHeader("X-Internal-Key", sameLengthWrong);
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(req, res, chain);
+
+        assertThat(res.getStatus()).isEqualTo(401);
+        assertThat(chain.getRequest()).isNull();
+    }
 }

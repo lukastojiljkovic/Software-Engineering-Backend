@@ -133,7 +133,10 @@ public class OptionService {
     public void exerciseOption(Long optionId, String userEmail) {
         Long employeeUserId = ensureUserCanExerciseOptions(userEmail);
 
-        Option option = optionRepository.findById(optionId)
+        // Pesimisticki lock — sprecava lost-update trku na openInterest izmedju
+        // dva paralelna exercise-a (oba bi inace dekrementirala sa iste stale
+        // vrednosti, a idempotency bi drugi settlement progutao).
+        Option option = optionRepository.findByIdForUpdate(optionId)
                 .orElseThrow(() -> new EntityNotFoundException("Option id: " + optionId + " not found."));
 
         if (option.getSettlementDate().isBefore(LocalDate.now())) {
