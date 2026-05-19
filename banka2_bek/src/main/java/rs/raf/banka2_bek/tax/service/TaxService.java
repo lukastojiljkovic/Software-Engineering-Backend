@@ -16,7 +16,7 @@ import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.order.model.Order;
 import rs.raf.banka2_bek.order.model.OrderDirection;
 import rs.raf.banka2_bek.order.repository.OrderRepository;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.otc.model.OtcContract;
 import rs.raf.banka2_bek.otc.model.OtcContractStatus;
 import rs.raf.banka2_bek.otc.repository.OtcContractRepository;

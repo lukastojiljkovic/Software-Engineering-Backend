@@ -26,7 +26,7 @@ import rs.raf.banka2_bek.investmentfund.mapper.InvestmentFundMapper;
 import rs.raf.banka2_bek.investmentfund.model.*;
 import rs.raf.banka2_bek.investmentfund.repository.*;
 import rs.raf.banka2_bek.order.exception.InsufficientFundsException;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.portfolio.model.Portfolio;
 import rs.raf.banka2_bek.portfolio.repository.PortfolioRepository;
 import rs.raf.banka2_bek.stock.model.Listing;

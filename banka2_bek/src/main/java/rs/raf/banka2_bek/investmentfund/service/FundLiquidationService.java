@@ -18,7 +18,7 @@ import rs.raf.banka2_bek.order.model.OrderDirection;
 import rs.raf.banka2_bek.order.model.OrderStatus;
 import rs.raf.banka2_bek.order.model.OrderType;
 import rs.raf.banka2_bek.order.repository.OrderRepository;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.portfolio.model.Portfolio;
 import rs.raf.banka2_bek.portfolio.repository.PortfolioRepository;
 import rs.raf.banka2_bek.stock.model.Listing;

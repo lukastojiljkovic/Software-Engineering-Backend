@@ -6,8 +6,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService.ConversionResult;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService.ConversionResult;
 
 import java.math.BigDecimal;
 

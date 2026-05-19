@@ -1,8 +1,7 @@
-package rs.raf.banka2_bek.order.service;
+package rs.raf.banka2_bek.exchange;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import rs.raf.banka2_bek.exchange.ExchangeService;
 import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 import rs.raf.banka2_bek.order.exception.UnsupportedCurrencyException;
 

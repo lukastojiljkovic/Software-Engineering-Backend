@@ -8,7 +8,7 @@ import rs.raf.banka2_bek.investmentfund.model.ClientFundPosition;
 import rs.raf.banka2_bek.investmentfund.model.InvestmentFund;
 import rs.raf.banka2_bek.investmentfund.repository.ClientFundPositionRepository;
 import rs.raf.banka2_bek.investmentfund.repository.InvestmentFundRepository;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.portfolio.model.Portfolio;
 import rs.raf.banka2_bek.portfolio.repository.PortfolioRepository;
 import rs.raf.banka2_bek.stock.model.Listing;

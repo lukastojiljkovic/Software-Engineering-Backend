@@ -1,4 +1,4 @@
-package rs.raf.banka2_bek.order.service;
+package rs.raf.banka2_bek.exchange;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -6,7 +6,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import rs.raf.banka2_bek.exchange.ExchangeService;
 import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 import rs.raf.banka2_bek.order.exception.UnsupportedCurrencyException;
 

@@ -30,7 +30,7 @@ import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.ClientFundPositio
 import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.ClientFundTransactionDto;
 import rs.raf.banka2_bek.investmentfund.model.*;
 import rs.raf.banka2_bek.investmentfund.repository.*;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.portfolio.repository.PortfolioRepository;
 import rs.raf.banka2_bek.stock.repository.ListingRepository;
 import rs.raf.banka2_bek.order.exception.InsufficientFundsException;

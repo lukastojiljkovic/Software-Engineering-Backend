@@ -2,8 +2,8 @@ package rs.raf.banka2_bek.interbank.service;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService.ConversionResult;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService.ConversionResult;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;

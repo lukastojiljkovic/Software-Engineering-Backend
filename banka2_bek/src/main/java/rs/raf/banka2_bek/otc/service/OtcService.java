@@ -16,7 +16,7 @@ import rs.raf.banka2_bek.auth.util.UserContext;
 import rs.raf.banka2_bek.auth.util.UserResolver;
 import rs.raf.banka2_bek.auth.util.UserRole;
 import rs.raf.banka2_bek.order.exception.InsufficientFundsException;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.otc.dto.CounterOtcOfferDto;
 import rs.raf.banka2_bek.otc.dto.CreateOtcOfferDto;
 import rs.raf.banka2_bek.otc.dto.OtcContractDto;

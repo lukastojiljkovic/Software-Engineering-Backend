@@ -25,7 +25,7 @@ import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.InvestmentFundDetailDto;
 import rs.raf.banka2_bek.investmentfund.model.InvestmentFund;
 import rs.raf.banka2_bek.investmentfund.repository.*;
-import rs.raf.banka2_bek.order.service.CurrencyConversionService;
+import rs.raf.banka2_bek.exchange.CurrencyConversionService;
 import rs.raf.banka2_bek.portfolio.repository.PortfolioRepository;
 import rs.raf.banka2_bek.stock.repository.ListingRepository;
 
