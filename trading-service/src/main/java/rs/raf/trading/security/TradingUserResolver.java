@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import rs.raf.banka2.contracts.internal.InternalUserDto;
 import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.common.UserContext;
+import rs.raf.trading.common.UserRole;
 
 import java.time.Duration;
 
@@ -37,6 +38,12 @@ public class TradingUserResolver {
 
     /** "userRole|userId" -> ime i prezime. */
     private final Cache<String, String> nameCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .build();
+
+    /** numericki userId -> rola ("CLIENT" / "EMPLOYEE"). */
+    private final Cache<Long, String> roleCache = Caffeine.newBuilder()
             .maximumSize(10_000)
             .expireAfterWrite(Duration.ofMinutes(5))
             .build();
@@ -71,6 +78,37 @@ public class TradingUserResolver {
             return "Unknown";
         }
         return nameCache.get(userRole + "|" + userId, key -> lookupName(userId, userRole));
+    }
+
+    /**
+     * Odreduje ulogu korisnika na osnovu cistog numerickog user-ID-ja.
+     *
+     * <p>NAPOMENA (copy-first ekstrakcija, faza 2d-B): monolitni
+     * {@code UserResolver.resolveRole} je proveravao {@code clients} pa
+     * pretpostavljao {@code employees}. trading-service nema te tabele, pa se
+     * rola razresava preko banka-core internog seam-a: pokusava se CLIENT
+     * lookup ({@link BankaCoreClient#getUserById}), na gresku (404) se
+     * pretpostavlja EMPLOYEE — verno monolitovom
+     * {@code clientRepository.findById(userId).isPresent() ? CLIENT : EMPLOYEE}.
+     * Rezultat se kesira (numericki id je nepromenljiv).
+     *
+     * @return {@link UserRole#CLIENT} ako klijent sa tim id-em postoji,
+     *         inace {@link UserRole#EMPLOYEE}
+     */
+    public String resolveRole(Long userId) {
+        if (userId == null) {
+            return UserRole.EMPLOYEE;
+        }
+        return roleCache.get(userId, this::lookupRole);
+    }
+
+    private String lookupRole(Long userId) {
+        try {
+            bankaCoreClient.getUserById(UserRole.CLIENT, userId);
+            return UserRole.CLIENT;
+        } catch (RuntimeException e) {
+            return UserRole.EMPLOYEE;
+        }
     }
 
     private UserContext lookupUserContext(String email) {

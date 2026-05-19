@@ -86,6 +86,22 @@ public class OtcContract {
     @org.hibernate.annotations.ColumnDefault("0")
     private BigDecimal buyerReservedAmount;
 
+    /**
+     * Handle rezervacije koji vrati banka-core {@code POST /internal/funds/reserve}
+     * pri sklapanju ugovora ({@code OtcService.acceptOffer}). trading-service ga
+     * koristi pri exercise-u ({@code commitFunds}) i abandon/expire
+     * ({@code releaseFunds}). Nullable — legacy (pre-mikroservisni) ugovori i
+     * ugovori bez novcane rezervacije ga nemaju.
+     *
+     * NAPOMENA (copy-first ekstrakcija, faza 2d-B): kolona je aditivna; u
+     * monolitu novcanu rezervaciju drze {@code Account.reservedAmount} +
+     * {@code buyerReservedAccountId}/{@code buyerReservedAmount}, a u
+     * trading-service-u racuni zive u banka-core domenu, pa rezervacija postaje
+     * banka-core {@code FundReservation} kome je ovo identifikator.
+     */
+    @Column(name = "banka_core_reservation_id")
+    private String bankaCoreReservationId;
+
     @PrePersist
     void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
