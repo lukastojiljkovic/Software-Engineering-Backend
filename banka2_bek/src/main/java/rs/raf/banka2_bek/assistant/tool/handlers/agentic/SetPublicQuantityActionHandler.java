@@ -2,10 +2,10 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.portfolio.service.PortfolioService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,12 +13,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — postavlja "javni rezim" akcija za OTC discovery.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code PATCH
+ * /portfolio/{id}/public} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class SetPublicQuantityActionHandler implements WriteToolHandler {
 
-    private final PortfolioService portfolioService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -54,7 +57,7 @@ public class SetPublicQuantityActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        portfolioService.setPublicQuantity(
+        tradingServiceClient.setPublicQuantity(
                 support.getLong(args, "portfolioId"), support.getInt(args, "quantity"));
         return Map.of("status", "OK", "publicQuantity", support.getInt(args, "quantity"));
     }

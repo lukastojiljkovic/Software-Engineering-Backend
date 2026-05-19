@@ -2,11 +2,11 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOrder;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.order.dto.OrderDto;
-import rs.raf.banka2_bek.order.service.OrderService;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,12 +15,15 @@ import java.util.Map;
  * Phase 4 v3.5 — otkazuje order (full ili parcijalan).
  *  - quantityToCancel == null → full decline
  *  - quantityToCancel = X (X < remaining) → parcijalni cancel
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code PATCH
+ * /orders/{id}/decline} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class CancelOrderActionHandler implements WriteToolHandler {
 
-    private final OrderService orderService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -60,11 +63,11 @@ public class CancelOrderActionHandler implements WriteToolHandler {
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
         Long orderId = support.getLong(args, "orderId");
         Integer qty = support.getInt(args, "quantityToCancel");
-        OrderDto dto = orderService.cancelOrder(orderId, qty);
+        TsOrder dto = tradingServiceClient.cancelOrder(orderId, qty);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("orderId", dto.getId());
-        result.put("status", dto.getStatus());
-        result.put("remainingPortions", dto.getRemainingPortions());
+        result.put("orderId", dto.id());
+        result.put("status", dto.status());
+        result.put("remainingPortions", dto.remainingPortions());
         return result;
     }
 }

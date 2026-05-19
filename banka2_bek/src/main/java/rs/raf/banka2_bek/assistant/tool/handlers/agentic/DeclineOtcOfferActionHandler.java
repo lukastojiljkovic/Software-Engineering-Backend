@@ -2,22 +2,25 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.otc.service.OtcService;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Phase 4 v3.5 — odustaje od OTC pregovora.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /otc/offers/{id}/decline} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class DeclineOtcOfferActionHandler implements WriteToolHandler {
 
-    private final OtcService otcService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -45,7 +48,8 @@ public class DeclineOtcOfferActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        otcService.declineOffer(support.getLong(args, "offerId"));
-        return Map.of("status", "DECLINED", "offerId", support.getLong(args, "offerId"));
+        Long offerId = support.getLong(args, "offerId");
+        tradingServiceClient.declineOtcOffer(offerId);
+        return Map.of("status", "DECLINED", "offerId", offerId);
     }
 }

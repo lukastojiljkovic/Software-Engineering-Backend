@@ -2,11 +2,11 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOtcOffer;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.otc.dto.OtcOfferDto;
-import rs.raf.banka2_bek.otc.service.OtcService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,12 +14,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — prihvatanje OTC ponude. Kupac placa premiju → kreira ugovor.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /otc/offers/{id}/accept} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class AcceptOtcOfferActionHandler implements WriteToolHandler {
 
-    private final OtcService otcService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -56,12 +59,12 @@ public class AcceptOtcOfferActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        OtcOfferDto resp = otcService.acceptOffer(
+        TsOtcOffer resp = tradingServiceClient.acceptOtcOffer(
                 support.getLong(args, "offerId"),
                 support.getLong(args, "buyerAccountId"));
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("offerId", resp.getId());
-        result.put("status", resp.getStatus());
+        result.put("offerId", resp.id());
+        result.put("status", resp.status());
         return result;
     }
 }

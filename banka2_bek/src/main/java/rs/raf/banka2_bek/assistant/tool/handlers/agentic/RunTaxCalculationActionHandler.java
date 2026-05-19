@@ -2,10 +2,10 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.tax.service.TaxService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,12 +13,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — supervizor pokrece obracun poreza na kapitalnu dobit (15% od prodaje akcija).
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /tax/calculate} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class RunTaxCalculationActionHandler implements WriteToolHandler {
 
-    private final TaxService taxService;
+    private final TradingServiceClient tradingServiceClient;
 
     @Override
     public String name() { return "run_tax_calculation"; }
@@ -48,7 +51,7 @@ public class RunTaxCalculationActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        taxService.calculateTaxForAllUsers();
+        tradingServiceClient.runTaxCalculation();
         return Map.of("status", "OK", "message", "Tax calculation triggered for all users");
     }
 }

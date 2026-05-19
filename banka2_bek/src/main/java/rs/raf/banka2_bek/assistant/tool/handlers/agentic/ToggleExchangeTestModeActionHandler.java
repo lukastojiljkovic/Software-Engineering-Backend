@@ -2,10 +2,10 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.berza.service.ExchangeManagementService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,12 +13,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — admin/supervizor toggle-uje test mode na berzi.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code PATCH
+ * /exchanges/{acronym}/test-mode} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class ToggleExchangeTestModeActionHandler implements WriteToolHandler {
 
-    private final ExchangeManagementService exchangeService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -57,7 +60,7 @@ public class ToggleExchangeTestModeActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        exchangeService.setTestMode(support.getString(args, "acronym"),
+        tradingServiceClient.setExchangeTestMode(support.getString(args, "acronym"),
                 Boolean.TRUE.equals(support.getBool(args, "enabled")));
         return Map.of("status", "OK", "acronym", support.getString(args, "acronym"),
                 "testMode", support.getBool(args, "enabled"));

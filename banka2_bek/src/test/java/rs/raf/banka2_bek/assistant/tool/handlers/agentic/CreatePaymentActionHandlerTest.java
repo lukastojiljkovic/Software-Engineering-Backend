@@ -10,6 +10,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
 import rs.raf.banka2_bek.auth.util.UserRole;
@@ -20,7 +21,6 @@ import rs.raf.banka2_bek.payment.dto.PaymentDirection;
 import rs.raf.banka2_bek.payment.dto.PaymentResponseDto;
 import rs.raf.banka2_bek.payment.model.PaymentStatus;
 import rs.raf.banka2_bek.payment.service.PaymentService;
-import rs.raf.banka2_bek.stock.repository.ListingRepository;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -44,7 +44,10 @@ class CreatePaymentActionHandlerTest {
     @Mock private AccountRepository accountRepository;
     @Mock private ClientRepository clientRepository;
     @Mock private EmployeeRepository employeeRepository;
-    @Mock private ListingRepository listingRepository;
+    // Faza 2f: AgenticHandlerSupport vise ne drzi ListingRepository — listing
+    // lookup ide preko TradingServiceClient. CreatePayment je bankarska akcija
+    // (ne dira trgovinski seam), pa se klijent samo mock-uje za konstruktor.
+    @Mock private TradingServiceClient tradingServiceClient;
     @InjectMocks private AgenticHandlerSupport support;
 
     private CreatePaymentActionHandler handler;

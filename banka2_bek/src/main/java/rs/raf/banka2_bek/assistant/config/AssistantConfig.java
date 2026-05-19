@@ -3,10 +3,17 @@ package rs.raf.banka2_bek.assistant.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.TaskDecorator;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.web.client.RestClient;
+import rs.raf.banka2_bek.assistant.client.CallerTokenHolder;
+
+import java.time.Duration;
 
 /**
  * Bean providers za Arbitro asistent.
@@ -42,8 +49,59 @@ public class AssistantConfig {
         executor.setThreadNamePrefix("arbitro-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(10);
+        // Faza 2f: Arbitro chat trci na ovom pool-u (runChat), van niti zahteva.
+        // TradingServiceClient prosledjuje JWT pozivaoca; chat tok (buildPreview,
+        // get_recent_orders, wizard slot resolveri) mora videti taj token.
+        // Decorator snimi CallerTokenHolder vrednost sa niti koja PREDAJE zadatak
+        // (nit zahteva, gde je CallerTokenFilter token vec postavio) i re-instalira
+        // je na radnu nit za trajanje zadatka; uvek brise u finally da recikliranje
+        // niti ne iznese token u sledeci zadatak.
+        executor.setTaskDecorator(callerTokenPropagatingDecorator());
         executor.initialize();
         return executor;
+    }
+
+    /**
+     * {@link TaskDecorator} koji propagira {@link CallerTokenHolder} sa niti
+     * koja predaje zadatak na radnu nit pool-a (faza 2f). Vidi
+     * {@link #assistantTaskExecutor()}.
+     */
+    private TaskDecorator callerTokenPropagatingDecorator() {
+        return runnable -> {
+            String capturedToken = CallerTokenHolder.get();
+            return () -> {
+                CallerTokenHolder.set(capturedToken);
+                try {
+                    runnable.run();
+                } finally {
+                    CallerTokenHolder.clear();
+                }
+            };
+        };
+    }
+
+    /**
+     * {@link RestClient} ka {@code trading-service} PUBLIC API-ju (faza 2f).
+     *
+     * <p>Koristi ga {@code TradingServiceClient} iz Arbitro {@code assistant}
+     * paketa — write handler-i i read tool-ovi vise ne zovu trgovinske servise
+     * in-process nego javne kontrolere {@code trading-service}-a. Bearer token
+     * pozivaoca se dodaje per-poziv u {@code TradingServiceClient} (ne kao
+     * {@code defaultHeader}) jer je token specifican za zahtev.
+     *
+     * <p>{@code tradingservice.base-url} je isti property koji koristi
+     * {@code interbank} {@code TradingServiceClientConfig} (interni seam, 2f-2).
+     */
+    @Bean(name = "tradingServicePublicRestClient")
+    public RestClient tradingServicePublicRestClient(
+            @Value("${tradingservice.base-url}") String baseUrl) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(5));
+        factory.setReadTimeout(Duration.ofSeconds(30));
+        return RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(factory)
+                .build();
     }
 
     @Bean(name = "interbankTaskExecutor")

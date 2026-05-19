@@ -2,12 +2,12 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsFundTransaction;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.WithdrawFundReq;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.ClientFundTransactionDto;
-import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.WithdrawFundDto;
-import rs.raf.banka2_bek.investmentfund.service.InvestmentFundService;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -15,12 +15,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — povlacenje sredstava iz fonda. Null amount = sva pozicija.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /funds/{id}/withdraw} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class WithdrawFromFundActionHandler implements WriteToolHandler {
 
-    private final InvestmentFundService fundService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -61,15 +64,15 @@ public class WithdrawFromFundActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        WithdrawFundDto dto = new WithdrawFundDto();
-        dto.setAmount(support.getBigDecimal(args, "amount"));
-        dto.setDestinationAccountId(support.getLong(args, "destinationAccountId"));
-        ClientFundTransactionDto tx = fundService.withdraw(
-                support.getLong(args, "fundId"), dto, user.userId(), user.userRole());
+        WithdrawFundReq req = new WithdrawFundReq(
+                support.getBigDecimal(args, "amount"),
+                support.getLong(args, "destinationAccountId"));
+        TsFundTransaction tx = tradingServiceClient.withdrawFromFund(
+                support.getLong(args, "fundId"), req);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("transactionId", tx.getId());
-        result.put("amount", tx.getAmountRsd());
-        result.put("status", tx.getStatus());
+        result.put("transactionId", tx.id());
+        result.put("amount", tx.amountRsd());
+        result.put("status", tx.status());
         return result;
     }
 }

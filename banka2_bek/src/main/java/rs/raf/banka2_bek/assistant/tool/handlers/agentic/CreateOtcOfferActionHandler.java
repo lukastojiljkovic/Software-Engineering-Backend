@@ -2,12 +2,12 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.CreateOtcOfferReq;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOtcOffer;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.otc.dto.CreateOtcOfferDto;
-import rs.raf.banka2_bek.otc.dto.OtcOfferDto;
-import rs.raf.banka2_bek.otc.service.OtcService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -16,12 +16,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — kreiranje OTC ponude (kupac inicira pregovor sa prodavcem).
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /otc/offers} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class CreateOtcOfferActionHandler implements WriteToolHandler {
 
-    private final OtcService otcService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -73,17 +76,17 @@ public class CreateOtcOfferActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        CreateOtcOfferDto dto = new CreateOtcOfferDto();
-        dto.setListingId(support.getLong(args, "listingId"));
-        dto.setSellerId(support.getLong(args, "sellerId"));
-        dto.setQuantity(support.getInt(args, "quantity"));
-        dto.setPricePerStock(support.getBigDecimal(args, "pricePerStock"));
-        dto.setPremium(support.getBigDecimal(args, "premium"));
-        dto.setSettlementDate(LocalDate.parse(support.getString(args, "settlementDate")));
-        OtcOfferDto resp = otcService.createOffer(dto);
+        CreateOtcOfferReq req = new CreateOtcOfferReq(
+                support.getLong(args, "listingId"),
+                support.getLong(args, "sellerId"),
+                support.getInt(args, "quantity"),
+                support.getBigDecimal(args, "pricePerStock"),
+                support.getBigDecimal(args, "premium"),
+                LocalDate.parse(support.getString(args, "settlementDate")));
+        TsOtcOffer resp = tradingServiceClient.createOtcOffer(req);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("offerId", resp.getId());
-        result.put("status", resp.getStatus());
+        result.put("offerId", resp.id());
+        result.put("status", resp.status());
         return result;
     }
 }

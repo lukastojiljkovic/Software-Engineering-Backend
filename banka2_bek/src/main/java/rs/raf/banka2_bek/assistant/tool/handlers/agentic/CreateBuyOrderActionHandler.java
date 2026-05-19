@@ -2,13 +2,13 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.CreateOrderReq;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsListing;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOrder;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.order.dto.CreateOrderDto;
-import rs.raf.banka2_bek.order.dto.OrderDto;
-import rs.raf.banka2_bek.order.service.OrderService;
-import rs.raf.banka2_bek.stock.model.Listing;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -22,12 +22,16 @@ import java.util.Map;
  *  - samo limit → LIMIT
  *  - samo stop → STOP
  *  - oba → STOP_LIMIT
+ *
+ * <p>Faza 2f: order se kreira preko {@link TradingServiceClient} ({@code POST
+ * /orders} na trading-service, JWT pozivaoca) umesto in-process
+ * {@code OrderService}. Logika, validacija i OTP gating su nepromenjeni.
  */
 @Component
 @RequiredArgsConstructor
 public class CreateBuyOrderActionHandler implements WriteToolHandler {
 
-    private final OrderService orderService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -67,7 +71,7 @@ public class CreateBuyOrderActionHandler implements WriteToolHandler {
     @Override
     public PreviewResult buildPreview(Map<String, Object> args, UserContext user) {
         Long listingId = support.getLong(args, "listingId");
-        Listing listing;
+        TsListing listing;
         if (listingId != null) {
             listing = support.findListing(listingId)
                     .orElseThrow(() -> new IllegalArgumentException(
@@ -94,7 +98,7 @@ public class CreateBuyOrderActionHandler implements WriteToolHandler {
 
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("Smer", "KUPOVINA (BUY)");
-        fields.put("Hartija", listing.getTicker() + " (" + listing.getName() + ")");
+        fields.put("Hartija", listing.ticker() + " (" + listing.name() + ")");
         fields.put("Kolicina", quantity);
         fields.put("Tip naloga", orderType);
         if (limitValue != null) fields.put("Limit cena", limitValue.toPlainString());
@@ -105,7 +109,7 @@ public class CreateBuyOrderActionHandler implements WriteToolHandler {
         if (Boolean.TRUE.equals(margin)) fields.put("Margin", "Da (pozajmljena sredstva)");
 
         BigDecimal approxPerUnit = limitValue != null ? limitValue
-                : (stopValue != null ? stopValue : listing.getPrice());
+                : (stopValue != null ? stopValue : listing.price());
         if (approxPerUnit != null) {
             BigDecimal approxTotal = approxPerUnit.multiply(BigDecimal.valueOf(quantity));
             fields.put("Priblizna ukupna cena", approxTotal.toPlainString());
@@ -116,43 +120,43 @@ public class CreateBuyOrderActionHandler implements WriteToolHandler {
             warnings.add("Margin order koristi pozajmljena sredstva — povecan rizik gubitka.");
         }
 
-        String summary = "BUY " + quantity + "× " + listing.getTicker() + " (" + orderType + ")";
+        String summary = "BUY " + quantity + "× " + listing.ticker() + " (" + orderType + ")";
         return new PreviewResult(summary, fields, warnings);
     }
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        CreateOrderDto dto = new CreateOrderDto();
         Long listingId = support.getLong(args, "listingId");
         if (listingId == null) {
             String ticker = support.getString(args, "ticker");
             listingId = support.findListingByTicker(ticker)
                     .orElseThrow(() -> new IllegalArgumentException("Hartija ne postoji"))
-                    .getId();
+                    .id();
         }
-        dto.setListingId(listingId);
-        dto.setQuantity(support.getInt(args, "quantity"));
-        dto.setAccountId(support.getLong(args, "accountId"));
-        Integer cs = support.getInt(args, "contractSize");
-        dto.setContractSize(cs == null ? 1 : cs);
-        dto.setDirection("BUY");
         BigDecimal limitValue = support.getBigDecimal(args, "limitValue");
         BigDecimal stopValue = support.getBigDecimal(args, "stopValue");
-        dto.setLimitValue(limitValue);
-        dto.setStopValue(stopValue);
-        dto.setOrderType(orderTypeFor(limitValue, stopValue));
-        dto.setAllOrNone(Boolean.TRUE.equals(support.getBool(args, "allOrNone")));
-        dto.setMargin(Boolean.TRUE.equals(support.getBool(args, "margin")));
-        dto.setOtpCode(otpCode);
-        dto.setFundId(support.getLong(args, "fundId"));
+        Integer cs = support.getInt(args, "contractSize");
+        CreateOrderReq req = new CreateOrderReq(
+                listingId,
+                orderTypeFor(limitValue, stopValue),
+                support.getInt(args, "quantity"),
+                cs == null ? 1 : cs,
+                "BUY",
+                limitValue,
+                stopValue,
+                Boolean.TRUE.equals(support.getBool(args, "allOrNone")),
+                Boolean.TRUE.equals(support.getBool(args, "margin")),
+                support.getLong(args, "accountId"),
+                otpCode,
+                support.getLong(args, "fundId"));
 
-        OrderDto created = orderService.createOrder(dto);
+        TsOrder created = tradingServiceClient.createOrder(req);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("orderId", created.getId());
-        result.put("status", created.getStatus());
-        result.put("orderType", created.getOrderType());
-        result.put("quantity", created.getQuantity());
-        result.put("listingId", created.getListingId());
+        result.put("orderId", created.id());
+        result.put("status", created.status());
+        result.put("orderType", created.orderType());
+        result.put("quantity", created.quantity());
+        result.put("listingId", created.listingId());
         return result;
     }
 

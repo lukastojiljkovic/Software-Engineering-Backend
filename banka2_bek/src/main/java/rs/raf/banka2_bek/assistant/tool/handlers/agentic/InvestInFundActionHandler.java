@@ -2,12 +2,12 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.InvestFundReq;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsFundPosition;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.ClientFundPositionDto;
-import rs.raf.banka2_bek.investmentfund.dto.InvestmentFundDtos.InvestFundDto;
-import rs.raf.banka2_bek.investmentfund.service.InvestmentFundService;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -15,12 +15,16 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — uplata u investicioni fond.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /funds/{id}/invest} na trading-service, JWT pozivaoca). Korisnik (klijent ili
+ * supervizor u ime banke) se na trading-service strani resolvuje iz JWT-a.
  */
 @Component
 @RequiredArgsConstructor
 public class InvestInFundActionHandler implements WriteToolHandler {
 
-    private final InvestmentFundService fundService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -61,18 +65,18 @@ public class InvestInFundActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        InvestFundDto dto = new InvestFundDto();
-        dto.setAmount(support.getBigDecimal(args, "amount"));
-        dto.setSourceAccountId(support.getLong(args, "accountId"));
         // Investicioni fond uvek RSD; LLM moze poslati drugu valutu, mi forsiramo RSD
         String currency = support.getString(args, "currency");
-        dto.setCurrency(currency == null ? "RSD" : currency);
-        ClientFundPositionDto pos = fundService.invest(
-                support.getLong(args, "fundId"), dto, user.userId(), user.userRole());
+        InvestFundReq req = new InvestFundReq(
+                support.getBigDecimal(args, "amount"),
+                currency == null ? "RSD" : currency,
+                support.getLong(args, "accountId"));
+        TsFundPosition pos = tradingServiceClient.investInFund(
+                support.getLong(args, "fundId"), req);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("positionId", pos.getId());
-        result.put("totalInvested", pos.getTotalInvested());
-        result.put("currentValue", pos.getCurrentValue());
+        result.put("positionId", pos.id());
+        result.put("totalInvested", pos.totalInvested());
+        result.put("currentValue", pos.currentValue());
         return result;
     }
 }

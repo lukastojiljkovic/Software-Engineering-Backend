@@ -2,9 +2,9 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
-import rs.raf.banka2_bek.actuary.dto.ActuaryInfoDto;
-import rs.raf.banka2_bek.actuary.dto.UpdateActuaryLimitDto;
-import rs.raf.banka2_bek.actuary.service.ActuaryService;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsActuaryInfo;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.UpdateActuaryLimitReq;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
@@ -16,12 +16,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — supervizor postavlja dnevni limit agenta.
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code PATCH
+ * /actuaries/{id}/limit} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class UpdateActuaryLimitActionHandler implements WriteToolHandler {
 
-    private final ActuaryService actuaryService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -65,15 +68,15 @@ public class UpdateActuaryLimitActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        UpdateActuaryLimitDto dto = new UpdateActuaryLimitDto();
-        dto.setDailyLimit(support.getBigDecimal(args, "dailyLimit"));
-        Boolean approval = support.getBool(args, "needApproval");
-        dto.setNeedApproval(approval);
-        ActuaryInfoDto resp = actuaryService.updateAgentLimit(support.getLong(args, "employeeId"), dto);
+        UpdateActuaryLimitReq req = new UpdateActuaryLimitReq(
+                support.getBigDecimal(args, "dailyLimit"),
+                support.getBool(args, "needApproval"));
+        TsActuaryInfo resp = tradingServiceClient.updateActuaryLimit(
+                support.getLong(args, "employeeId"), req);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("employeeId", resp.getEmployeeId());
-        result.put("dailyLimit", resp.getDailyLimit());
-        result.put("needApproval", resp.isNeedApproval());
+        result.put("employeeId", resp.employeeId());
+        result.put("dailyLimit", resp.dailyLimit());
+        result.put("needApproval", resp.needApproval());
         return result;
     }
 }

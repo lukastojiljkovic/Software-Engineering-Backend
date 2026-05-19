@@ -4,11 +4,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsListing;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
-import rs.raf.banka2_bek.stock.model.Listing;
-import rs.raf.banka2_bek.stock.repository.ListingRepository;
 
 import java.math.BigDecimal;
 import java.util.Optional;
@@ -17,6 +17,13 @@ import java.util.Optional;
  * Pomocni komponent za WriteToolHandler-e — pretvaranje LLM args u BE entitete.
  * Centralizuje resolver-e koji se cesto koriste (broj racuna → Account, listingId
  * → Listing, ime primaoca, itd).
+ *
+ * <p>Faza 2f: listing lookup vise ne ide preko in-process {@code ListingRepository}
+ * (trgovinski domen je iseljen u {@code trading-service}) nego preko
+ * {@link TradingServiceClient} (HTTP, JWT pozivaoca). {@code findListing*} sada
+ * vracaju {@link TsListing} record umesto {@code stock.model.Listing} entiteta.
+ * Bankarski resolver-i ({@code findAccountByNumber}, {@code resolveOwnerName}) su
+ * netaknuti — koriste ih i ne-trgovinski handler-i (placanja, kartice, krediti).
  */
 @Component
 @RequiredArgsConstructor
@@ -25,7 +32,7 @@ public class AgenticHandlerSupport {
     final AccountRepository accountRepository;
     final ClientRepository clientRepository;
     final EmployeeRepository employeeRepository;
-    final ListingRepository listingRepository;
+    final TradingServiceClient tradingServiceClient;
 
     public BigDecimal getBigDecimal(java.util.Map<String, Object> args, String key) {
         Object v = args.get(key);
@@ -82,14 +89,22 @@ public class AgenticHandlerSupport {
         return accountRepository.findByAccountNumber(number);
     }
 
-    public Optional<Listing> findListing(Long id) {
+    /**
+     * Hartija po internom ID-u — {@code GET /listings/{id}} na trading-service
+     * (faza 2f). {@code Optional.empty()} ako ne postoji.
+     */
+    public Optional<TsListing> findListing(Long id) {
         if (id == null) return Optional.empty();
-        return listingRepository.findById(id);
+        return tradingServiceClient.findListingById(id);
     }
 
-    public Optional<Listing> findListingByTicker(String ticker) {
+    /**
+     * Hartija po ticker-u — {@code GET /listings?search=} na trading-service
+     * (faza 2f). {@code Optional.empty()} ako nema tacnog poklapanja.
+     */
+    public Optional<TsListing> findListingByTicker(String ticker) {
         if (ticker == null) return Optional.empty();
-        return listingRepository.findByTicker(ticker.trim().toUpperCase());
+        return tradingServiceClient.findListingByTicker(ticker.trim().toUpperCase());
     }
 
     public String resolveOwnerName(String accountNumber) {

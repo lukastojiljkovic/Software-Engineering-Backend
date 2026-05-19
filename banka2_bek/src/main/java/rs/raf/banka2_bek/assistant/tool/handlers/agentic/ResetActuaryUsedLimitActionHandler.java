@@ -2,8 +2,8 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
-import rs.raf.banka2_bek.actuary.dto.ActuaryInfoDto;
-import rs.raf.banka2_bek.actuary.service.ActuaryService;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsActuaryInfo;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
@@ -14,12 +14,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — supervizor resetuje usedLimit agenta na 0 (van auto-reset 23:59h).
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code PATCH
+ * /actuaries/{id}/reset-limit} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class ResetActuaryUsedLimitActionHandler implements WriteToolHandler {
 
-    private final ActuaryService actuaryService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -51,10 +54,10 @@ public class ResetActuaryUsedLimitActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        ActuaryInfoDto resp = actuaryService.resetUsedLimit(support.getLong(args, "employeeId"));
+        TsActuaryInfo resp = tradingServiceClient.resetActuaryUsedLimit(support.getLong(args, "employeeId"));
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("employeeId", resp.getEmployeeId());
-        result.put("usedLimit", resp.getUsedLimit());
+        result.put("employeeId", resp.employeeId());
+        result.put("usedLimit", resp.usedLimit());
         return result;
     }
 }

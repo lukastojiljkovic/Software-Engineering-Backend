@@ -2,25 +2,20 @@ package rs.raf.banka2_bek.assistant.wizard.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2_bek.account.model.Account;
 import rs.raf.banka2_bek.account.repository.AccountRepository;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsListing;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOrder;
 import rs.raf.banka2_bek.assistant.wizard.model.SlotOption;
 import rs.raf.banka2_bek.auth.util.UserContext;
 import rs.raf.banka2_bek.auth.util.UserRole;
 import rs.raf.banka2_bek.card.model.Card;
 import rs.raf.banka2_bek.card.repository.CardRepository;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
-import rs.raf.banka2_bek.investmentfund.repository.InvestmentFundRepository;
-import rs.raf.banka2_bek.order.model.Order;
-import rs.raf.banka2_bek.order.repository.OrderRepository;
-import rs.raf.banka2_bek.otc.repository.OtcContractRepository;
-import rs.raf.banka2_bek.otc.repository.OtcOfferRepository;
 import rs.raf.banka2_bek.payment.repository.PaymentRecipientRepository;
-import rs.raf.banka2_bek.stock.model.Listing;
-import rs.raf.banka2_bek.stock.repository.ListingRepository;
 
 import java.math.BigDecimal;
 import java.text.Normalizer;
@@ -33,6 +28,12 @@ import java.util.List;
  *
  * Each method produces a list of {@link SlotOption} that the wizard can
  * render as buttons. Robust to missing data (empty list returned, never null).
+ *
+ * <p>Faza 2f: trgovinski lookup-i (listinzi, orderi, fondovi, OTC ponude i
+ * ugovori) vise ne idu preko in-process trgovinskih repozitorijuma — trgovinski
+ * domen je iseljen u {@code trading-service}. Resolveri tih slot-ova zovu
+ * {@link TradingServiceClient} (HTTP, JWT pozivaoca). Bankarski resolveri
+ * (racuni, primaoci placanja, kartice) su netaknuti.
  */
 @Component
 @RequiredArgsConstructor
@@ -44,11 +45,7 @@ public class SlotResolvers {
     private final ClientRepository clientRepository;
     private final PaymentRecipientRepository paymentRecipientRepository;
     private final CardRepository cardRepository;
-    private final ListingRepository listingRepository;
-    private final OrderRepository orderRepository;
-    private final InvestmentFundRepository investmentFundRepository;
-    private final OtcOfferRepository otcOfferRepository;
-    private final OtcContractRepository otcContractRepository;
+    private final TradingServiceClient tradingServiceClient;
 
     /* ============================== ACCOUNTS ============================== */
 
@@ -150,14 +147,15 @@ public class SlotResolvers {
 
     /**
      * Top N listings by type — for ticker selection slot. Includes ticker,
-     * name, current price.
+     * name, current price. Faza 2f: {@code GET /listings} na trading-service.
      */
     public List<SlotOption> topListings(String listingTypeName, int limit) {
         try {
-            var page = listingRepository.findAll(PageRequest.of(0, limit));
-            return page.getContent().stream()
+            List<TsListing> listings = tradingServiceClient.searchListings(listingTypeName, null);
+            return listings.stream()
                     .filter(l -> listingTypeName == null
-                            || (l.getListingType() != null && listingTypeName.equalsIgnoreCase(l.getListingType().name())))
+                            || (l.listingType() != null && listingTypeName.equalsIgnoreCase(l.listingType())))
+                    .limit(limit)
                     .map(this::listingToOption)
                     .toList();
         } catch (Exception e) {
@@ -168,34 +166,42 @@ public class SlotResolvers {
 
     /**
      * Lookup listing by ticker (case-insensitive). Returns 0/1 options for confirmation.
+     * Faza 2f: {@code GET /listings?search=} na trading-service.
      */
     public List<SlotOption> listingByTicker(String ticker) {
         if (ticker == null || ticker.isBlank()) return List.of();
-        return listingRepository.findByTicker(ticker.toUpperCase())
-                .map(l -> List.of(listingToOption(l)))
-                .orElse(List.of());
+        try {
+            return tradingServiceClient.findListingByTicker(ticker)
+                    .map(l -> List.of(listingToOption(l)))
+                    .orElse(List.of());
+        } catch (Exception e) {
+            log.warn("Failed to look up listing by ticker: {}", e.getMessage());
+            return List.of();
+        }
     }
 
-    private SlotOption listingToOption(Listing l) {
-        String label = (l.getTicker() == null ? "?" : l.getTicker())
-                + " — " + (l.getName() == null ? "(bez naziva)" : l.getName());
-        String hint = (l.getPrice() == null ? "?" : l.getPrice().toPlainString())
-                + " " + (l.getQuoteCurrency() == null ? "" : l.getQuoteCurrency())
-                + (l.getExchangeAcronym() == null ? "" : " · " + l.getExchangeAcronym());
-        return new SlotOption(String.valueOf(l.getId()), label, hint);
+    private SlotOption listingToOption(TsListing l) {
+        String label = (l.ticker() == null ? "?" : l.ticker())
+                + " — " + (l.name() == null ? "(bez naziva)" : l.name());
+        String hint = (l.price() == null ? "?" : l.price().toPlainString())
+                + " " + (l.quoteCurrency() == null ? "" : l.quoteCurrency())
+                + (l.exchangeAcronym() == null ? "" : " · " + l.exchangeAcronym());
+        return new SlotOption(String.valueOf(l.id()), label, hint);
     }
 
     /* ============================== ORDERS ============================== */
 
     /**
      * Cancelable orders (PENDING / APPROVED with remainingPortions > 0) of the user.
+     * Faza 2f: {@code GET /orders/my} na trading-service vraca samo ordere
+     * pozivaoca, pa se userId vise ne filtrira ovde.
      */
     public List<SlotOption> userCancelableOrders(UserContext user) {
         try {
-            var all = orderRepository.findAll();
+            List<TsOrder> all = tradingServiceClient.recentOrders(20);
             return all.stream()
-                    .filter(o -> isCancelable(o, user))
-                    .sorted(Comparator.comparing(Order::getId).reversed())
+                    .filter(this::isCancelable)
+                    .sorted(Comparator.comparing(TsOrder::id).reversed())
                     .limit(20)
                     .map(this::orderToOption)
                     .toList();
@@ -205,35 +211,35 @@ public class SlotResolvers {
         }
     }
 
-    private boolean isCancelable(Order o, UserContext user) {
-        if (o == null || o.getUserId() == null) return false;
-        if (!o.getUserId().equals(user.userId())) return false;
-        if (o.getStatus() == null) return false;
-        String s = o.getStatus().name();
+    private boolean isCancelable(TsOrder o) {
+        if (o == null || o.id() == null) return false;
+        if (o.status() == null) return false;
+        String s = o.status();
         if (!"PENDING".equals(s) && !"APPROVED".equals(s)) return false;
-        Integer remaining = o.getRemainingPortions();
+        Integer remaining = o.remainingPortions();
         return remaining != null && remaining > 0;
     }
 
-    private SlotOption orderToOption(Order o) {
-        String label = "Nalog #" + o.getId() + " — " + safe(o.getDirection())
-                + " " + safe(o.getOrderType());
-        String hint = "Preostalo: " + (o.getRemainingPortions() == null ? "?" : o.getRemainingPortions())
-                + " · status: " + safe(o.getStatus());
-        return new SlotOption(String.valueOf(o.getId()), label, hint);
+    private SlotOption orderToOption(TsOrder o) {
+        String label = "Nalog #" + o.id() + " — " + safe(o.direction())
+                + " " + safe(o.orderType());
+        String hint = "Preostalo: " + (o.remainingPortions() == null ? "?" : o.remainingPortions())
+                + " · status: " + safe(o.status());
+        return new SlotOption(String.valueOf(o.id()), label, hint);
     }
 
     /* ============================== FUNDS ============================== */
 
+    /** Faza 2f: {@code GET /funds} na trading-service. */
     public List<SlotOption> investmentFunds(int limit) {
         try {
-            var funds = investmentFundRepository.findAll(PageRequest.of(0, limit));
-            return funds.getContent().stream()
+            return tradingServiceClient.listFunds().stream()
+                    .limit(limit)
                     .map(f -> new SlotOption(
-                            String.valueOf(f.getId()),
-                            f.getName() == null ? "Fond #" + f.getId() : f.getName(),
-                            f.getMinimumContribution() == null ? null
-                                    : "Min ulog: " + f.getMinimumContribution().toPlainString()
+                            String.valueOf(f.id()),
+                            f.name() == null ? "Fond #" + f.id() : f.name(),
+                            f.minimumContribution() == null ? null
+                                    : "Min ulog: " + f.minimumContribution().toPlainString()
                     ))
                     .toList();
         } catch (Exception e) {
@@ -244,19 +250,20 @@ public class SlotResolvers {
 
     /* ============================== OTC ============================== */
 
+    /**
+     * Faza 2f: {@code GET /otc/offers/active} na trading-service vraca aktivne
+     * ponude pozivaoca (kupac ili prodavac), pa se status/ucesnik vise ne
+     * filtriraju ovde.
+     */
     public List<SlotOption> userActiveOtcOffers(UserContext user) {
         try {
-            var all = otcOfferRepository.findAll();
-            return all.stream()
-                    .filter(o -> o.getStatus() != null && "ACTIVE".equalsIgnoreCase(o.getStatus().name()))
-                    .filter(o -> (o.getBuyerId() != null && o.getBuyerId().equals(user.userId()))
-                            || (o.getSellerId() != null && o.getSellerId().equals(user.userId())))
+            return tradingServiceClient.myActiveOtcOffers().stream()
                     .limit(20)
                     .map(o -> new SlotOption(
-                            String.valueOf(o.getId()),
-                            "OTC ponuda #" + o.getId(),
-                            "Cena/akcija: " + (o.getPricePerStock() == null ? "?" : o.getPricePerStock().toPlainString())
-                                    + " · premium: " + (o.getPremium() == null ? "?" : o.getPremium().toPlainString())
+                            String.valueOf(o.id()),
+                            "OTC ponuda #" + o.id(),
+                            "Cena/akcija: " + (o.pricePerStock() == null ? "?" : o.pricePerStock().toPlainString())
+                                    + " · premium: " + (o.premium() == null ? "?" : o.premium().toPlainString())
                     ))
                     .toList();
         } catch (Exception e) {
@@ -265,17 +272,20 @@ public class SlotResolvers {
         }
     }
 
+    /**
+     * Faza 2f: {@code GET /otc/contracts?status=ACTIVE} na trading-service
+     * vraca ugovore pozivaoca; samo kupac moze da iskoristi ugovor pa se
+     * {@code buyerId == user} filter zadrzava.
+     */
     public List<SlotOption> userExercisableOtcContracts(UserContext user) {
         try {
-            var all = otcContractRepository.findAll();
-            return all.stream()
-                    .filter(c -> c.getStatus() != null && "ACTIVE".equalsIgnoreCase(c.getStatus().name()))
-                    .filter(c -> c.getBuyerId() != null && c.getBuyerId().equals(user.userId()))
+            return tradingServiceClient.myActiveOtcContracts().stream()
+                    .filter(c -> c.buyerId() != null && c.buyerId().equals(user.userId()))
                     .limit(20)
                     .map(c -> new SlotOption(
-                            String.valueOf(c.getId()),
-                            "Ugovor #" + c.getId(),
-                            "Strike: " + (c.getStrikePrice() == null ? "?" : c.getStrikePrice().toPlainString())
+                            String.valueOf(c.id()),
+                            "Ugovor #" + c.id(),
+                            "Strike: " + (c.strikePrice() == null ? "?" : c.strikePrice().toPlainString())
                     ))
                     .toList();
         } catch (Exception e) {

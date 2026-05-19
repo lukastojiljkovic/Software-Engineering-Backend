@@ -2,11 +2,11 @@ package rs.raf.banka2_bek.assistant.tool.handlers.agentic;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOtcContract;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.WriteToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.otc.dto.OtcContractDto;
-import rs.raf.banka2_bek.otc.service.OtcService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,12 +14,15 @@ import java.util.Map;
 
 /**
  * Phase 4 v3.5 — iskoriscenje opcionog ugovora (kupac uzima akcije po strike ceni).
+ *
+ * <p>Faza 2f: poziv ide preko {@link TradingServiceClient} ({@code POST
+ * /otc/contracts/{id}/exercise} na trading-service, JWT pozivaoca).
  */
 @Component
 @RequiredArgsConstructor
 public class ExerciseOtcContractActionHandler implements WriteToolHandler {
 
-    private final OtcService otcService;
+    private final TradingServiceClient tradingServiceClient;
     private final AgenticHandlerSupport support;
 
     @Override
@@ -56,12 +59,12 @@ public class ExerciseOtcContractActionHandler implements WriteToolHandler {
 
     @Override
     public Map<String, Object> executeFinal(Map<String, Object> args, UserContext user, String otpCode) {
-        OtcContractDto contract = otcService.exerciseContract(
+        TsOtcContract contract = tradingServiceClient.exerciseOtcContract(
                 support.getLong(args, "contractId"),
                 support.getLong(args, "buyerAccountId"));
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("contractId", contract.getId());
-        result.put("status", contract.getStatus());
+        result.put("contractId", contract.id());
+        result.put("status", contract.status());
         return result;
     }
 }

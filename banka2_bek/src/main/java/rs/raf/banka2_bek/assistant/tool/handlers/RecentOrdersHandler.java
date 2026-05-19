@@ -1,15 +1,13 @@
 package rs.raf.banka2_bek.assistant.tool.handlers;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
+import rs.raf.banka2_bek.assistant.client.TradingServiceClient;
+import rs.raf.banka2_bek.assistant.client.TradingServiceDtos.TsOrder;
 import rs.raf.banka2_bek.assistant.config.AssistantProperties;
 import rs.raf.banka2_bek.assistant.tool.ToolDefinition;
 import rs.raf.banka2_bek.assistant.tool.ToolHandler;
 import rs.raf.banka2_bek.auth.util.UserContext;
-import rs.raf.banka2_bek.order.model.Order;
-import rs.raf.banka2_bek.order.repository.OrderRepository;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,14 +17,18 @@ import java.util.Map;
  * get_recent_orders(limit) -> {orderCount, orders[]}
  *
  * Vraca poslednjih N ordera korisnika (sortirano po lastModification desc).
- * Klijenti i zaposleni dobijaju samo SVOJE ordere (filtriranje po userId+userRole
- * je ugrađeno u OrderRepository pretragu).
+ * Klijenti i zaposleni dobijaju samo SVOJE ordere.
+ *
+ * <p>Faza 2f: orderi vise ne dolaze iz in-process {@code OrderRepository}
+ * (trgovinski domen je iseljen u {@code trading-service}) nego preko
+ * {@link TradingServiceClient} — {@code GET /orders/my} na trading-service-u,
+ * koji vec filtrira po JWT korisniku i sortira po {@code lastModification}.
  */
 @Component
 @RequiredArgsConstructor
 public class RecentOrdersHandler implements ToolHandler {
 
-    private final OrderRepository orderRepository;
+    private final TradingServiceClient tradingServiceClient;
     private final AssistantProperties properties;
 
     @Override
@@ -55,24 +57,19 @@ public class RecentOrdersHandler implements ToolHandler {
     @Override
     public Map<String, Object> execute(Map<String, Object> args, UserContext user) {
         int limit = Math.min(Math.max(parseInt(args.get("limit"), 5), 1), 20);
-        var page = orderRepository.findByUserId(
-                user.userId(),
-                PageRequest.of(0, limit, Sort.by(Sort.Direction.DESC, "lastModification"))
-        );
+        List<TsOrder> orders = tradingServiceClient.recentOrders(limit);
         List<Map<String, Object>> rows = new ArrayList<>();
-        for (Order o : page.getContent()) {
-            // Filtriraj jos i po userRole — nije obuhvaceno u pretrazi
-            if (!user.userRole().equalsIgnoreCase(o.getUserRole())) continue;
+        for (TsOrder o : orders) {
             rows.add(Map.of(
-                    "id", o.getId(),
-                    "ticker", o.getListing() != null ? o.getListing().getTicker() : "?",
-                    "direction", o.getDirection() != null ? o.getDirection().name() : "?",
-                    "type", o.getOrderType() != null ? o.getOrderType().name() : "?",
-                    "quantity", o.getQuantity() != null ? o.getQuantity() : 0,
-                    "status", o.getStatus() != null ? o.getStatus().name() : "?",
+                    "id", o.id(),
+                    "ticker", o.listingTicker() != null ? o.listingTicker() : "?",
+                    "direction", o.direction() != null ? o.direction() : "?",
+                    "type", o.orderType() != null ? o.orderType() : "?",
+                    "quantity", o.quantity() != null ? o.quantity() : 0,
+                    "status", o.status() != null ? o.status() : "?",
                     "isDone", o.isDone(),
-                    "lastModification", o.getLastModification() != null
-                            ? o.getLastModification().toString() : "-"
+                    "lastModification", o.lastModification() != null
+                            ? o.lastModification() : "-"
             ));
         }
         return Map.of(
