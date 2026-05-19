@@ -1,33 +1,30 @@
 package rs.raf.banka2_bek.notification.dto;
 
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
+import lombok.*;
 
-// ============================================================
-// TODO [B1 - Notifikacioni sistem | Nosilac: Mina Kovacevic, Tadija]
+import java.time.LocalDateTime;
+
+// [B1 — DONE] Response DTO for GET /notifications and PATCH /{id}/read.
+// All fields are implemented: id, type (NotificationType.name()), title, body,
+// read, createdAt, referenceType (nullable), referenceId (nullable).
 //
-// DTO koji se vraca klijentu kao odgovor na GET /notifications
-// i za paginiranu listu notifikacija.
-//
-// IMPLEMENTIRATI (sva polja dodati):
-//   - id            : Long       — primarni kljuc notifikacije
-//   - type          : String     — naziv enum vrednosti NotificationType
-//                     (npr. "PAYMENT", "OTC_ACCEPTED")
-//   - title         : String     — naslov notifikacije
-//   - body          : String     — telo poruke
-//   - read          : boolean    — da li je korisnik procitao notifikaciju
-//   - createdAt     : LocalDateTime — vreme kreiranja
-//   - referenceType : String     — nullable, tip resursa (npr. "ORDER")
-//   - referenceId   : Long       — nullable, ID resursa
-//
-// Konvencija: pratiti paket `savings` kao sablon.
-// Spec: Zadaci_Backend.pdf, zadatak B1.
-// ============================================================
-// Napomena: skeleton je prazan pa nosi samo @NoArgsConstructor. Pri dodavanju
-// polja vratiti @AllArgsConstructor i @Builder (videti Lombok napomenu u TODO-u).
+// [B4/B5/B8] The type field is a plain String (enum name) so the frontend can
+// switch on it to render type-specific icons or deep-links using referenceType/referenceId.
+
 @Getter
 @Setter
 @NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class NotificationDto {
+
+    private Long id;
+    private String type;
+    private String title;
+    private String body;
+    private boolean read;
+    private LocalDateTime createdAt;
+    private String referenceType;
+    private Long referenceId;
+
 }

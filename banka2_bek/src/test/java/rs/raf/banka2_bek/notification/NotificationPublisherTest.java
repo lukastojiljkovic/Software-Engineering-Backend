@@ -54,6 +54,33 @@ class NotificationPublisherTest {
         publisher.sendCardUnblockedMail("a@b.rs", "1234");
     }
 
+    @Test
+    void inAppGeneric_publishesIN_APP_GENERICWithEmailAndCopy() {
+        publisher.sendInAppGenericMail("user@banka2.rs", "Marko",
+                "Naslov", "Vase placanje je izvrseno.");
+
+        ArgumentCaptor<NotificationMessage> captor = ArgumentCaptor.forClass(NotificationMessage.class);
+        verify(rabbitTemplate).convertAndSend(eqEx(), eqRk(), captor.capture());
+        NotificationMessage msg = captor.getValue();
+        assertThat(msg.kind()).isEqualTo(NotificationKind.IN_APP_GENERIC);
+        assertThat(msg.data()).containsEntry("email", "user@banka2.rs")
+                .containsEntry("firstName", "Marko")
+                .containsEntry("title", "Naslov")
+                .containsEntry("body", "Vase placanje je izvrseno.");
+    }
+
+    @Test
+    void inAppGeneric_nullFirstNameBecomesEmptyString() {
+        publisher.sendInAppGenericMail("user@banka2.rs", null, "Naslov", "Telo");
+
+        ArgumentCaptor<NotificationMessage> captor = ArgumentCaptor.forClass(NotificationMessage.class);
+        verify(rabbitTemplate).convertAndSend(eqEx(), eqRk(), captor.capture());
+        assertThat(captor.getValue().data())
+                .containsEntry("firstName", "")
+                .containsEntry("title", "Naslov")
+                .containsEntry("body", "Telo");
+    }
+
     // Mockito: kad jedan argument koristi matcher (captor.capture()), SVI argumenti
     // moraju biti matcher-i — zato eq(...) a ne sirov string.
     private static String eqEx() {

@@ -162,4 +162,27 @@ public class NotificationPublisher {
         d.put("nextRetryDate", nextRetryDate.toString());
         publish(NotificationKind.INSTALLMENT_FAILED, d);
     }
+
+    /**
+     * [B1 — In-app notifications] Publishes a generic in-app email message
+     * which {@code notification-service} renders via the branded
+     * {@code InAppGenericEmailTemplate}. Subject is the notification title.
+     *
+     * <p>Caller is {@code NotificationServiceImpl.notify(...)} when the
+     * {@code NotificationType} has {@code sendsEmail=true}. The in-app row is
+     * already persisted before this method is invoked; failure here is
+     * swallowed by the underlying {@link #publish} (best-effort).
+     *
+     * <p>{@code firstName} may be {@code null} (anonymous greeting will be used
+     * on the consumer side); we publish an empty string in that case so the
+     * data map has a stable shape.
+     */
+    public void sendInAppGenericMail(String toEmail, String firstName, String title, String body) {
+        Map<String, String> d = new HashMap<>();
+        d.put("email", toEmail);
+        d.put("firstName", firstName == null ? "" : firstName);
+        d.put("title", title == null ? "" : title);
+        d.put("body", body == null ? "" : body);
+        publish(NotificationKind.IN_APP_GENERIC, d);
+    }
 }

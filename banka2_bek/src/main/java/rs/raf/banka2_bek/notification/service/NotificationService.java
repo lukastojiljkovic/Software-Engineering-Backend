@@ -1,63 +1,50 @@
 package rs.raf.banka2_bek.notification.service;
 
-import org.springframework.stereotype.Service;
+import org.springframework.data.domain.Page;
+import rs.raf.banka2_bek.notification.dto.NotificationDto;
 import rs.raf.banka2_bek.notification.model.NotificationType;
 
-// ============================================================
-// TODO [B1 - Notifikacioni sistem | Nosilac: Mina Kovacevic, Tadija]
-//
-// Servis koji upravlja in-app notifikacijama i prosledjuje ih
-// na postojeci email kanal (NotificationPublisher).
-// Injektovati: NotificationRepository i NotificationPublisher.
-//
-// IMPLEMENTIRATI (sve metode):
-//
-//   1. notify(Long recipientId, String recipientType,
-//             NotificationType type, String title, String body,
-//             String referenceType, Long referenceId) : void
-//      — kreira i cuva Notification entitet u bazi
-//        (recipientId, recipientType, type, title, body,
-//         read = false, createdAt = LocalDateTime.now(),
-//         referenceType, referenceId)
-//      — ZATIM poziva email kanal (NotificationPublisher)
-//        da posalje email primaocu ako je to relevantno za dati type;
-//        email kanal se ne sme menjati — samo pozvati odgovarajucu
-//        postojecu metodu (npr. sendPaymentConfirmationMail, itd.)
-//      — anotirati sa @Transactional
-//
-//   2. getMyNotifications(String principalEmail, String recipientType,
-//                         Boolean onlyUnread, int page, int size)
-//      : Page<NotificationDto>
-//      — vraca paginiranu listu notifikacija za primaoca
-//      — ako je onlyUnread = true, filtrira samo neprocitane
-//      — resolovati recipientId iz principalEmail tako sto se
-//        upita ClientRepository ili EmployeeRepository na osnovu
-//        recipientType ("CLIENT" ili "EMPLOYEE")
-//
-//   3. getUnreadCount(String principalEmail, String recipientType)
-//      : long
-//      — vraca broj neprocitanih notifikacija pozivom
-//        NotificationRepository.countByRecipientIdAndRecipientTypeAndRead
-//
-//   4. markOneRead(Long notificationId, String principalEmail,
-//                  String recipientType) : NotificationDto
-//      — pronaci notifikaciju po ID-u
-//      — proveriti da notifikacija zaista pripada tom primaocu
-//        (baciti IllegalArgumentException ako ne)
-//      — setovati read = true i sacuvati
-//      — vratiti azurirani NotificationDto
-//      — anotirati sa @Transactional
-//
-//   5. markAllRead(String principalEmail, String recipientType) : void
-//      — pozvati NotificationRepository.markAllReadForRecipient
-//      — anotirati sa @Transactional
-//
-//   6. (privatna) toDto(Notification n) : NotificationDto
-//      — mapira Notification entitet u NotificationDto
-//
-// Konvencija: pratiti paket `savings` kao sablon.
-// Spec: Zadaci_Backend.pdf, zadatak B1.
-// ============================================================
-@Service
-public class NotificationService {
+public interface NotificationService {
+
+    /**
+     * [B1 — Foundation] Single entry point for raising a notification: persists
+     * the in-app record and, when the type has {@code sendsEmail = true}, also
+     * dispatches an email via the RabbitMQ pipeline to {@code notification-service}.
+     * All other modules must call only this method.
+     *
+     * <p>Task integration points:
+     * <ul>
+     *   <li>[B2 — Andjela] Call from {@code AccountLockoutService} on account
+     *       lock: {@code notify(userId, "CLIENT", ACCOUNT_LOCKED, ...)}</li>
+     *   <li>[B4 — Petar] Call from payment, transfers, card, loan, order and
+     *       otc services on each event listed in {@link NotificationType}.</li>
+     *   <li>[B5 — Aleksa] Call from the price-alert scheduler when a threshold
+     *       is crossed: {@code notify(ownerId, recipientType, PRICE_ALERT, ...)}</li>
+     *   <li>[B8 — Nikola Djurovic] Call from {@code RecurringOrderScheduler}
+     *       when an order is skipped:
+     *       {@code notify(ownerId, recipientType, RECURRING_ORDER_SKIPPED, ...)}</li>
+     * </ul>
+     *
+     * <p>{@code referenceType} and {@code referenceId} are optional but strongly
+     * recommended — they allow the frontend to deep-link to the related resource
+     * and allow B4 to load domain-specific data when rendering type-tailored
+     * email templates.
+     */
+    void notify(
+            Long recipientId,
+            String recipientType,
+            NotificationType notificationType,
+            String title,
+            String body,
+            String referenceType,
+            Long referenceId
+    );
+
+    Page<NotificationDto> getMyNotifications(Long recipientId, String recipientType, boolean onlyUnread, int page, int size);
+
+    Long getUnreadCount(Long recipientId, String recipientType);
+
+    NotificationDto markOneRead(Long notificationId, Long recipientId, String recipientType);
+
+    void markAllRead(Long recipientId, String recipientType);
 }

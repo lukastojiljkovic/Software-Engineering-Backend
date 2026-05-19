@@ -1,41 +1,31 @@
 package rs.raf.banka2_bek.notification.model;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.ColumnDefault;
 
-// ============================================================
-// TODO [B1 - Notifikacioni sistem | Nosilac: Mina Kovacevic, Tadija]
+import java.time.LocalDateTime;
+
+// [B1 — DONE] In-app notification entity persisted in table "notifications".
+// All B1-specified fields are implemented: recipientId, recipientType,
+// notificationType (STRING enum), title, body, read (@ColumnDefault("0")),
+// createdAt (@PrePersist auto-set), referenceType (nullable), referenceId (nullable).
 //
-// JPA entitet koji predstavlja jednu in-app notifikaciju
-// persistiranu u tabeli "notifications".
+// [B4 — Petar] referenceType / referenceId are the primary mechanism for the
+// frontend to deep-link to the originating resource (e.g., referenceType="PAYMENT",
+// referenceId=paymentId). B4 should populate these fields in every notify() call
+// so that both the UI and B4 email templates can navigate to / enrich from the resource.
 //
-// IMPLEMENTIRATI (sva polja dodati uz odgovarajuce JPA anotacije):
-//   - recipientId     : Long,          @Column(nullable = false)
-//   - recipientType   : String,        @Column(nullable = false)
-//                       vrednosti: "CLIENT" ili "EMPLOYEE"
-//   - type            : NotificationType, @Enumerated(EnumType.STRING),
-//                       @Column(nullable = false)
-//   - title           : String,        @Column(nullable = false)
-//   - body            : String,        @Column(nullable = false, length = 2000)
-//   - read            : boolean,       @Column(nullable = false),
-//                       @ColumnDefault("0"), default vrednost false
-//   - createdAt       : LocalDateTime, @Column(nullable = false)
-//                       postaviti u @PrePersist ako nije eksplicitno setovano
-//   - referenceType   : String,        @Column nullable (opciono — tip resursa,
-//                       npr. "ORDER", "PAYMENT", "OTC_CONTRACT")
-//   - referenceId     : Long,          @Column nullable (opciono — ID resursa)
+// [B5 — Aleksa] When adding PRICE_ALERT notifications, pass referenceType="PRICE_ALERT",
+// referenceId=alertId so the frontend can open the alert detail.
 //
-// Konvencija: pratiti paket `savings` kao sablon.
-// Spec: Zadaci_Backend.pdf, zadatak B1.
-// ============================================================
+// [B8 — Nikola Djurovic] When adding RECURRING_ORDER_SKIPPED notifications, pass
+// referenceType="RECURRING_ORDER", referenceId=recurringOrderId.
+
 @Entity
 @Table(name = "notifications")
 @Getter
@@ -48,4 +38,40 @@ public class Notification {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Column(nullable = false)
+    private Long recipientId;
+
+    @Column(nullable = false)
+    private String recipientType;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private NotificationType notificationType;
+
+    @Column(nullable = false)
+    private String title;
+
+    @Column(nullable = false, length = 2000)
+    private String body;
+
+    @Column(nullable = false)
+    @ColumnDefault("0")
+    private boolean read;
+
+    @Column(nullable = false)
+    private LocalDateTime createdAt;
+
+    @Column
+    private String referenceType;
+
+    @Column
+    private Long referenceId;
+
+    @PrePersist
+    private void prePersist() {
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
+    }
 }

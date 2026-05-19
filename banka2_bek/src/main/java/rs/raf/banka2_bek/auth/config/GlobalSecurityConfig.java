@@ -73,7 +73,6 @@ public class GlobalSecurityConfig  {
                         // Pri implementaciji novih feature-a dodati requestMatchers za sledece rute
                         // (pratiti postojeci obrazac u ovom fajlu — npr. /actuaries/** za role-based,
                         // /otc/** za authenticated):
-                        //   - /notifications/**            -> authenticated()                 [B1 - Notifikacioni sistem]
                         //   - /audit/**                    -> ADMIN + SUPERVISOR samo         [B7 - Audit log]
                         //   - /otc/negotiation-history/**  -> authenticated()                 [B10 - Istorija OTC pregovora]
                         // Specificne rute moraju doci PRE generickih matcher-a.
@@ -84,6 +83,10 @@ public class GlobalSecurityConfig  {
                         // u `trading-service` (Faza 2e); rute /price-alerts, /watchlists,
                         // /recurring-orders, /dividends konfigurisu se u TradingSecurityConfig.
                         // ============================================================
+                        // [B1] In-app notifications: svi autentifikovani korisnici (klijenti +
+                        // zaposleni) mogu citati, oznacavati kao procitano i listati svoje
+                        // notifikacije. Vlasnistvo se proverava na service sloju.
+                        .requestMatchers("/notifications/**").authenticated()
                         .requestMatchers(
                                 "/error",
                                 "/auth/register",
