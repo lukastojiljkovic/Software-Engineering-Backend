@@ -71,7 +71,7 @@ class ActuaryServiceImplTest {
     }
 
     private InternalUserDto employee(Long id, String firstName, String lastName, String email) {
-        return new InternalUserDto(id, "EMPLOYEE", email, firstName, lastName, true);
+        return new InternalUserDto(id, "EMPLOYEE", email, firstName, lastName, true, "Agent");
     }
 
     private ActuaryInfo createAgentInfo(Long id, Long employeeId,

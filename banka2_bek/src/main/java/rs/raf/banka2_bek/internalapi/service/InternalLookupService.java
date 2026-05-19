@@ -98,7 +98,7 @@ public class InternalLookupService {
                 .map(e -> new InternalUserDto(
                         e.getId(), "EMPLOYEE", e.getEmail(),
                         e.getFirstName(), e.getLastName(),
-                        Boolean.TRUE.equals(e.getActive())))
+                        Boolean.TRUE.equals(e.getActive()), e.getPosition()))
                 .toList();
     }
 
@@ -123,17 +123,18 @@ public class InternalLookupService {
     public InternalUserDto getUserByEmail(String email) {
         Client client = clientRepository.findByEmail(email).orElse(null);
         if (client != null) {
+            // Klijent nema radno mesto — position je null.
             return new InternalUserDto(
                     client.getId(), "CLIENT", email,
                     client.getFirstName(), client.getLastName(),
-                    Boolean.TRUE.equals(client.getActive()));
+                    Boolean.TRUE.equals(client.getActive()), null);
         }
         Employee employee = employeeRepository.findByEmail(email).orElse(null);
         if (employee != null) {
             return new InternalUserDto(
                     employee.getId(), "EMPLOYEE", email,
                     employee.getFirstName(), employee.getLastName(),
-                    Boolean.TRUE.equals(employee.getActive()));
+                    Boolean.TRUE.equals(employee.getActive()), employee.getPosition());
         }
         throw new IllegalArgumentException("User not found: " + email);
     }
@@ -148,10 +149,11 @@ public class InternalLookupService {
         if ("CLIENT".equalsIgnoreCase(userRole)) {
             Client client = clientRepository.findById(id)
                     .orElseThrow(() -> new IllegalArgumentException("Client not found: " + id));
+            // Klijent nema radno mesto — position je null.
             return new InternalUserDto(
                     client.getId(), "CLIENT", client.getEmail(),
                     client.getFirstName(), client.getLastName(),
-                    Boolean.TRUE.equals(client.getActive()));
+                    Boolean.TRUE.equals(client.getActive()), null);
         }
         if ("EMPLOYEE".equalsIgnoreCase(userRole) || "ADMIN".equalsIgnoreCase(userRole)) {
             Employee employee = employeeRepository.findById(id)
@@ -159,7 +161,7 @@ public class InternalLookupService {
             return new InternalUserDto(
                     employee.getId(), "EMPLOYEE", employee.getEmail(),
                     employee.getFirstName(), employee.getLastName(),
-                    Boolean.TRUE.equals(employee.getActive()));
+                    Boolean.TRUE.equals(employee.getActive()), employee.getPosition());
         }
         throw new IllegalArgumentException("Unknown user role: " + userRole);
     }

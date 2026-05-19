@@ -1,6 +1,8 @@
 package rs.raf.trading.stock.controller.exception_handler;
 
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -8,7 +10,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import rs.raf.trading.common.dto.MessageResponseDto;
 import rs.raf.trading.stock.controller.ListingController;
 
+/**
+ * Scoped exception handler za {@link ListingController}.
+ * {@code @Order(HIGHEST_PRECEDENCE)} garantuje prednost nad app-wide
+ * {@code TradingGlobalExceptionHandler}-om za izuzetke koje OBA hvataju.
+ */
 @RestControllerAdvice(assignableTypes = ListingController.class)
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class ListingExceptionHandler {
 
     @ExceptionHandler(EntityNotFoundException.class)

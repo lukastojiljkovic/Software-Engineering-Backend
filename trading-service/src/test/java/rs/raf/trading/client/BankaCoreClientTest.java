@@ -183,8 +183,9 @@ class BankaCoreClientTest {
 
     @Test
     void getUserByEmail_happyPath_returnsDeserializedInternalUserDto() throws Exception {
+        // Klijent — position je null.
         InternalUserDto stub = new InternalUserDto(
-                7L, "CLIENT", "stefan.jovanovic@gmail.com", "Stefan", "Jovanovic", true);
+                7L, "CLIENT", "stefan.jovanovic@gmail.com", "Stefan", "Jovanovic", true, null);
         String responseJson = objectMapper.writeValueAsString(stub);
 
         // RestClient URL-enkoduje '@' u path varijabli u %40 (RFC 3986).
@@ -201,6 +202,7 @@ class BankaCoreClientTest {
         assertThat(result.firstName()).isEqualTo("Stefan");
         assertThat(result.lastName()).isEqualTo("Jovanovic");
         assertThat(result.active()).isTrue();
+        assertThat(result.position()).isNull();
 
         mockServer.verify();
     }
@@ -224,7 +226,7 @@ class BankaCoreClientTest {
     @Test
     void getUserById_happyPath_returnsDeserializedInternalUserDto() throws Exception {
         InternalUserDto stub = new InternalUserDto(
-                3L, "EMPLOYEE", "tamara.pavlovic@banka.rs", "Tamara", "Pavlovic", true);
+                3L, "EMPLOYEE", "tamara.pavlovic@banka.rs", "Tamara", "Pavlovic", true, "Agent");
         String responseJson = objectMapper.writeValueAsString(stub);
 
         mockServer.expect(requestTo(BASE_URL + "/internal/users/EMPLOYEE/3"))
@@ -238,6 +240,7 @@ class BankaCoreClientTest {
         assertThat(result.userRole()).isEqualTo("EMPLOYEE");
         assertThat(result.firstName()).isEqualTo("Tamara");
         assertThat(result.lastName()).isEqualTo("Pavlovic");
+        assertThat(result.position()).isEqualTo("Agent");
 
         mockServer.verify();
     }
@@ -326,7 +329,7 @@ class BankaCoreClientTest {
     void findEmployees_withQueryParams_sendsFiltersAndReturnsList() throws Exception {
         List<InternalUserDto> stub = List.of(
                 new InternalUserDto(3L, "EMPLOYEE", "tamara.pavlovic@banka.rs",
-                        "Tamara", "Pavlovic", true));
+                        "Tamara", "Pavlovic", true, "Agent"));
         String responseJson = objectMapper.writeValueAsString(stub);
 
         // Blank email/position se izostavljaju; firstName/lastName postaju query params.
@@ -341,6 +344,7 @@ class BankaCoreClientTest {
         assertThat(result).hasSize(1);
         assertThat(result.get(0).userId()).isEqualTo(3L);
         assertThat(result.get(0).firstName()).isEqualTo("Tamara");
+        assertThat(result.get(0).position()).isEqualTo("Agent");
 
         mockServer.verify();
     }
@@ -348,8 +352,8 @@ class BankaCoreClientTest {
     @Test
     void findEmployees_noFilters_sendsBarePathAndReturnsList() throws Exception {
         List<InternalUserDto> stub = List.of(
-                new InternalUserDto(3L, "EMPLOYEE", "a@banka.rs", "A", "B", true),
-                new InternalUserDto(4L, "EMPLOYEE", "c@banka.rs", "C", "D", true));
+                new InternalUserDto(3L, "EMPLOYEE", "a@banka.rs", "A", "B", true, "Agent"),
+                new InternalUserDto(4L, "EMPLOYEE", "c@banka.rs", "C", "D", true, "Supervizor"));
         String responseJson = objectMapper.writeValueAsString(stub);
 
         mockServer.expect(requestTo(BASE_URL + "/internal/employees"))

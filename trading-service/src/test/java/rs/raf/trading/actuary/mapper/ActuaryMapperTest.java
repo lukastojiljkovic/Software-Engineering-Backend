@@ -13,13 +13,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * NAPOMENA (copy-first ekstrakcija, faza 2c): mapper sad prima pre-razreseni
  * {@link InternalUserDto} (umesto da cita {@code @OneToOne Employee} vezu).
- * {@code employeePosition} se ne testira jer {@code InternalUserDto} ne nosi
- * {@code position} — vidi STATUS izvestaj 2c-C1.
+ * {@code position} nosi {@code InternalUserDto} (banka-core ga puni za zaposlenog),
+ * pa se {@code employeePosition} popunjava — paritet sa monolitnim mapperom.
  */
 class ActuaryMapperTest {
 
-    private static InternalUserDto employee(Long id, String firstName, String lastName, String email) {
-        return new InternalUserDto(id, "EMPLOYEE", email, firstName, lastName, true);
+    private static InternalUserDto employee(Long id, String firstName, String lastName,
+                                            String email, String position) {
+        return new InternalUserDto(id, "EMPLOYEE", email, firstName, lastName, true, position);
     }
 
     @Test
@@ -29,7 +30,7 @@ class ActuaryMapperTest {
 
     @Test
     void toDto_withEmployee_mapsAllFields() {
-        InternalUserDto employee = employee(10L, "Marko", "Petrovic", "marko@banka.rs");
+        InternalUserDto employee = employee(10L, "Marko", "Petrovic", "marko@banka.rs", "Direktor");
 
         ActuaryInfo info = new ActuaryInfo();
         info.setId(1L);
@@ -45,6 +46,7 @@ class ActuaryMapperTest {
         assertThat(dto.getEmployeeId()).isEqualTo(10L);
         assertThat(dto.getEmployeeName()).isEqualTo("Marko Petrovic");
         assertThat(dto.getEmployeeEmail()).isEqualTo("marko@banka.rs");
+        assertThat(dto.getEmployeePosition()).isEqualTo("Direktor");
         assertThat(dto.getActuaryType()).isEqualTo("AGENT");
         assertThat(dto.getDailyLimit()).isEqualByComparingTo(BigDecimal.valueOf(50000));
         assertThat(dto.getUsedLimit()).isEqualByComparingTo(BigDecimal.valueOf(10000));
@@ -69,6 +71,7 @@ class ActuaryMapperTest {
         assertThat(dto.getEmployeeId()).isEqualTo(20L);
         assertThat(dto.getEmployeeName()).isNull();
         assertThat(dto.getEmployeeEmail()).isNull();
+        assertThat(dto.getEmployeePosition()).isNull();
         assertThat(dto.getActuaryType()).isEqualTo("SUPERVISOR");
         assertThat(dto.isNeedApproval()).isFalse();
     }

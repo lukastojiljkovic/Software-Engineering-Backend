@@ -53,7 +53,7 @@ class TradingUserResolverTest {
         authenticateAs("stefan.jovanovic@gmail.com");
         when(bankaCoreClient.getUserByEmail("stefan.jovanovic@gmail.com"))
                 .thenReturn(new InternalUserDto(7L, "CLIENT", "stefan.jovanovic@gmail.com",
-                        "Stefan", "Jovanovic", true));
+                        "Stefan", "Jovanovic", true, null));
 
         UserContext result = resolver.resolveCurrent();
 
@@ -68,7 +68,7 @@ class TradingUserResolverTest {
         authenticateAs("tamara.pavlovic@banka.rs");
         when(bankaCoreClient.getUserByEmail("tamara.pavlovic@banka.rs"))
                 .thenReturn(new InternalUserDto(3L, "EMPLOYEE", "tamara.pavlovic@banka.rs",
-                        "Tamara", "Pavlovic", true));
+                        "Tamara", "Pavlovic", true, "Agent"));
 
         UserContext result = resolver.resolveCurrent();
 
@@ -83,7 +83,7 @@ class TradingUserResolverTest {
         authenticateAs("stefan.jovanovic@gmail.com");
         when(bankaCoreClient.getUserByEmail("stefan.jovanovic@gmail.com"))
                 .thenReturn(new InternalUserDto(7L, "CLIENT", "stefan.jovanovic@gmail.com",
-                        "Stefan", "Jovanovic", true));
+                        "Stefan", "Jovanovic", true, null));
 
         UserContext first = resolver.resolveCurrent();
         UserContext second = resolver.resolveCurrent();
@@ -116,7 +116,7 @@ class TradingUserResolverTest {
     void resolveName_happyPath_returnsFirstAndLastName() {
         when(bankaCoreClient.getUserById("CLIENT", 7L))
                 .thenReturn(new InternalUserDto(7L, "CLIENT", "stefan.jovanovic@gmail.com",
-                        "Stefan", "Jovanovic", true));
+                        "Stefan", "Jovanovic", true, null));
 
         String name = resolver.resolveName(7L, "CLIENT");
 
@@ -145,7 +145,7 @@ class TradingUserResolverTest {
     void resolveName_cachesByRoleAndId_secondCallDoesNotReHitClient() {
         when(bankaCoreClient.getUserById("EMPLOYEE", 3L))
                 .thenReturn(new InternalUserDto(3L, "EMPLOYEE", "tamara.pavlovic@banka.rs",
-                        "Tamara", "Pavlovic", true));
+                        "Tamara", "Pavlovic", true, "Agent"));
 
         String first = resolver.resolveName(3L, "EMPLOYEE");
         String second = resolver.resolveName(3L, "EMPLOYEE");

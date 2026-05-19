@@ -74,7 +74,7 @@ class ActuaryServiceImplIntegrationTest {
                 .thenAnswer(inv -> {
                     Long id = inv.getArgument(1);
                     return new InternalUserDto(id, "EMPLOYEE", "user" + id + "@banka.rs",
-                            "Ime" + id, "Prezime" + id, true);
+                            "Ime" + id, "Prezime" + id, true, "Agent");
                 });
     }
 

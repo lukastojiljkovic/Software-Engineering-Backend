@@ -83,6 +83,8 @@ class InternalUsersOtpControllerIntegrationTest {
         assertThat(json.path("userRole").asText()).isEqualTo("CLIENT");
         assertThat(json.path("email").asText()).isEqualTo("user-byemail-client@test.com");
         assertThat(json.path("active").asBoolean()).isTrue();
+        // Klijent nema radno mesto — position je JSON null.
+        assertThat(json.path("position").isNull()).isTrue();
     }
 
     // ─── getUserByEmail: employee ────────────────────────────────────────────
@@ -100,6 +102,8 @@ class InternalUsersOtpControllerIntegrationTest {
         assertThat(json.path("userId").asLong()).isEqualTo(employee.getId());
         assertThat(json.path("userRole").asText()).isEqualTo("EMPLOYEE");
         assertThat(json.path("active").asBoolean()).isTrue();
+        // Radno mesto se prenosi za zaposlenog (persistEmployee koristi "QA").
+        assertThat(json.path("position").asText()).isEqualTo("QA");
     }
 
     // ─── getUserByEmail: not found → 404 ─────────────────────────────────────

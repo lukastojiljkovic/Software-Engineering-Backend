@@ -14,9 +14,10 @@ import rs.raf.trading.actuary.model.ActuaryInfo;
  * prosledjuje pre-razreseni {@link InternalUserDto} ovom mapperu.
  *
  * {@code employeeId} se uvek puni iz {@code ActuaryInfo} (lokalna kolona);
- * {@code employeeName} i {@code employeeEmail} samo ako je {@code employee != null}.
- * {@link InternalUserDto} ne nosi {@code position} — pa se {@code employeePosition}
- * ne moze popuniti iz internog identiteta (vidi STATUS izvestaj 2c-C1).
+ * {@code employeeName}, {@code employeeEmail} i {@code employeePosition} samo ako je
+ * {@code employee != null}. {@code position} nosi {@link InternalUserDto} (banka-core
+ * ga puni za zaposlenog) — tako se zadrzava paritet sa monolitnim mapperom koji je
+ * citao {@code Employee.getPosition()} kroz {@code @OneToOne} vezu.
  */
 public final class ActuaryMapper {
 
@@ -41,6 +42,7 @@ public final class ActuaryMapper {
         if (employee != null) {
             dto.setEmployeeName(employee.firstName() + " " + employee.lastName());
             dto.setEmployeeEmail(employee.email());
+            dto.setEmployeePosition(employee.position());
         }
 
         return dto;

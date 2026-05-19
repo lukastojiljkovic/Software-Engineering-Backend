@@ -48,10 +48,9 @@ import static org.mockito.Mockito.when;
  * mockovani ({@code @MockitoBean}), a {@code ActuaryInfo} se seeduje direktno
  * preko repozitorijuma sa soft {@code employeeId}-evima.
  *
- * Domenska greska "cilj nije agent" se u monolitu mapirala kroz globalni
- * exception handler (400/409); trading-service ima samo scoped
- * {@code ActuaryExceptionHandler} koji ne hvata {@code RuntimeException}, pa je
- * to 5xx — i dalje validna potvrda da zahtev biva odbijen.
+ * Domenska greska "cilj nije agent" (bare {@code RuntimeException}) se mapira
+ * kroz app-wide {@code TradingGlobalExceptionHandler} u 400 Bad Request — verno
+ * preslikavanje monolitnog {@code GlobalExceptionHandler}-a.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -118,7 +117,7 @@ class ActuaryControllerIntegrationTest {
                 .thenAnswer(inv -> {
                     Long id = inv.getArgument(1);
                     return new InternalUserDto(id, "EMPLOYEE", "user" + id + "@banka.rs",
-                            "Ime" + id, "Prezime" + id, true);
+                            "Ime" + id, "Prezime" + id, true, "Agent");
                 });
     }
 
@@ -280,11 +279,12 @@ class ActuaryControllerIntegrationTest {
     }
 
     @Test
-    @DisplayName("PATCH /limit kada cilj nije agent -> domenska greska (non-2xx)")
-    void updateAgentLimitReturnsDomainErrorWhenTargetIsSupervisor() {
-        // Cilj je supervizor — service baca RuntimeException("...only be updated
-        // for agents."). trading-service nema globalni handler za RuntimeException
-        // (samo scoped ActuaryExceptionHandler), pa je 5xx; bitno je da je odbijeno.
+    @DisplayName("PATCH /limit kada cilj nije agent -> 400 Bad Request")
+    void updateAgentLimitReturnsBadRequestWhenTargetIsSupervisor() {
+        // Cilj je supervizor — service baca bare RuntimeException("...only be
+        // updated for agents."). App-wide TradingGlobalExceptionHandler mapira
+        // RuntimeException -> 400 (paritet sa monolitnim GlobalExceptionHandler-om,
+        // empirijski potvrdjeno na monolitu).
         Long otherSupervisorId = 3009L;
         actuaryInfoRepository.save(createActuaryInfo(otherSupervisorId, ActuaryType.SUPERVISOR,
                 null, null, false));
@@ -298,7 +298,7 @@ class ActuaryControllerIntegrationTest {
                 String.class
         );
 
-        assertThat(response.getStatusCode().is2xxSuccessful()).isFalse();
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         // Cilj NIJE izmenjen — i dalje SUPERVISOR bez limita.
         ActuaryInfo unchanged = actuaryInfoRepository.findByEmployeeId(otherSupervisorId).orElseThrow();
         assertThat(unchanged.getActuaryType()).isEqualTo(ActuaryType.SUPERVISOR);
