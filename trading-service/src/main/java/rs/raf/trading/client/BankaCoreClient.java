@@ -8,6 +8,8 @@ import rs.raf.banka2.contracts.internal.CommitFundsRequest;
 import rs.raf.banka2.contracts.internal.CommitFundsResponse;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.banka2.contracts.internal.CreditFundsResponse;
+import rs.raf.banka2.contracts.internal.DebitFundsRequest;
+import rs.raf.banka2.contracts.internal.DebitFundsResponse;
 import rs.raf.banka2.contracts.internal.InternalAccountDto;
 import rs.raf.banka2.contracts.internal.InternalOtpVerifyRequest;
 import rs.raf.banka2.contracts.internal.InternalOtpVerifyResponse;
@@ -211,6 +213,15 @@ public class BankaCoreClient {
      */
     public CreditFundsResponse creditFunds(String idempotencyKey, CreditFundsRequest req) {
         return post("/internal/funds/credit", idempotencyKey, req, CreditFundsResponse.class);
+    }
+
+    /**
+     * Jednostrani debit racuna bez credit kontra-strane (option exercise CALL,
+     * margin createForUser pocetna uplata). Idempotentni funds poziv — zahteva
+     * X-Idempotency-Key.
+     */
+    public DebitFundsResponse debitFunds(String idempotencyKey, DebitFundsRequest req) {
+        return post("/internal/funds/debit", idempotencyKey, req, DebitFundsResponse.class);
     }
 
     /**

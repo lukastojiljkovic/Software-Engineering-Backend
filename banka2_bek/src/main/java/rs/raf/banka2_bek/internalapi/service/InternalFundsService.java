@@ -11,6 +11,8 @@ import rs.raf.banka2.contracts.internal.CommitFundsRequest;
 import rs.raf.banka2.contracts.internal.CommitFundsResponse;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.banka2.contracts.internal.CreditFundsResponse;
+import rs.raf.banka2.contracts.internal.DebitFundsRequest;
+import rs.raf.banka2.contracts.internal.DebitFundsResponse;
 import rs.raf.banka2.contracts.internal.ReleaseFundsRequest;
 import rs.raf.banka2.contracts.internal.ReleaseFundsResponse;
 import rs.raf.banka2.contracts.internal.ReserveFundsRequest;
@@ -168,6 +170,25 @@ public class InternalFundsService {
         }
         CreditFundsResponse result = credit(req);
         storeIdempotency(idempotencyKey, "/internal/funds/credit", result);
+        return result;
+    }
+
+    /**
+     * Idempotent wrapper: debit + idempotency store u jednoj transakciji.
+     */
+    @Transactional
+    public DebitFundsResponse debitIdempotent(String idempotencyKey, DebitFundsRequest req) {
+        Optional<rs.raf.banka2_bek.internalapi.model.InternalRequest> cached =
+                idempotencyService.findCached(idempotencyKey);
+        if (cached.isPresent()) {
+            try {
+                return objectMapper.readValue(cached.get().getResponseBody(), DebitFundsResponse.class);
+            } catch (Exception e) {
+                log.warn("Idempotency deserialization failed for key {}: {}", idempotencyKey, e.getMessage());
+            }
+        }
+        DebitFundsResponse result = debit(req);
+        storeIdempotency(idempotencyKey, "/internal/funds/debit", result);
         return result;
     }
 
@@ -476,6 +497,59 @@ public class InternalFundsService {
         creditBankCommission(req.currencyCode(), commission);
 
         return new CreditFundsResponse(account.getId(), req.amount(), account.getBalance());
+    }
+
+    /**
+     * Jednostrani debit racuna bez credit kontra-strane (simetricno {@link #credit}).
+     * Verno modelu monolita: trziste je apstraktan ponor novca — option exercise
+     * CALL i pocetna uplata marginskog racuna zaduzuju racun bez ijednog credit-a.
+     * Opciona provizija ide bankinom BANK_TRADING racunu u {@code currencyCode}.
+     * Nedovoljna raspoloziva sredstva na racunu → {@link IllegalStateException}
+     * (→ HTTP 409), isto kao {@link #reserve}/{@link #transfer}/{@link #commit}.
+     */
+    @Transactional
+    public DebitFundsResponse debit(DebitFundsRequest req) {
+        // 1. Validacija iznosa
+        if (req.amount() == null || req.amount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Iznos mora biti pozitivan");
+        }
+        BigDecimal commission = req.commission() != null ? req.commission() : BigDecimal.ZERO;
+        if (commission.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("Provizija ne sme biti negativna");
+        }
+
+        // 2. Pesimisticki lock racuna
+        Account account = accountRepository.findForUpdateById(req.accountId())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Racun ne postoji: " + req.accountId()));
+
+        // 3. Validacija valute
+        if (!account.getCurrency().getCode().equals(req.currencyCode())) {
+            throw new IllegalArgumentException(
+                    "Valuta racuna (" + account.getCurrency().getCode()
+                            + ") ne odgovara zahtevanoj (" + req.currencyCode() + ")");
+        }
+
+        // 4. Provjera raspolozivih sredstava (nedovoljno → 409, kao reserve/transfer)
+        if (account.getAvailableBalance().compareTo(req.amount()) < 0) {
+            throw new IllegalStateException(
+                    "Nedovoljno raspolozivih sredstava na racunu " + req.accountId()
+                            + ": raspolozivo " + account.getAvailableBalance()
+                            + ", potrebno " + req.amount());
+        }
+
+        // 5. Zaduzivanje racuna
+        account.setBalance(account.getBalance().subtract(req.amount()));
+        account.setAvailableBalance(account.getAvailableBalance().subtract(req.amount()));
+        accountRepository.save(account);
+
+        // 6. Audit: debit na racun (novac napusta racun ka trzistu/margin ledger-u)
+        saveDebitTransaction(account, req.amount(), req.description());
+
+        // 7. Provizija se kreditira bankinom BANK_TRADING racunu.
+        creditBankCommission(req.currencyCode(), commission);
+
+        return new DebitFundsResponse(account.getId(), req.amount(), account.getBalance());
     }
 
     /**

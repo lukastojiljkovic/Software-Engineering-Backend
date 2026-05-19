@@ -9,6 +9,8 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.banka2.contracts.internal.CreditFundsResponse;
+import rs.raf.banka2.contracts.internal.DebitFundsRequest;
+import rs.raf.banka2.contracts.internal.DebitFundsResponse;
 import rs.raf.banka2.contracts.internal.FxRateDto;
 import rs.raf.banka2.contracts.internal.InternalAccountDto;
 import rs.raf.banka2.contracts.internal.InternalOtpVerifyResponse;
@@ -395,6 +397,54 @@ class BankaCoreClientTest {
         assertThat(result.accountId()).isEqualTo(42L);
         assertThat(result.creditedAmount()).isEqualByComparingTo(new BigDecimal("750.00"));
         assertThat(result.balanceAfter()).isEqualByComparingTo(new BigDecimal("4250.00"));
+
+        mockServer.verify();
+    }
+
+    @Test
+    void debitFunds_happyPath_sendsXIdempotencyKeyHeader_andReturnsResponse() throws Exception {
+        DebitFundsResponse stub = new DebitFundsResponse(
+                42L, new BigDecimal("650.00"), new BigDecimal("4350.00"));
+        String responseJson = objectMapper.writeValueAsString(stub);
+
+        mockServer.expect(requestTo(BASE_URL + "/internal/funds/debit"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Key", INTERNAL_API_KEY))
+                .andExpect(header("X-Idempotency-Key", "debit-key-001"))
+                .andExpect(jsonPath("$.accountId").value(42))
+                .andExpect(jsonPath("$.amount").value(650.00))
+                .andExpect(jsonPath("$.commission").value(7.00))
+                .andExpect(jsonPath("$.currencyCode").value("RSD"))
+                .andRespond(withSuccess(responseJson, MediaType.APPLICATION_JSON));
+
+        DebitFundsRequest request = new DebitFundsRequest(
+                42L, new BigDecimal("650.00"), new BigDecimal("7.00"), "RSD", "Option exercise CALL");
+
+        DebitFundsResponse result = bankaCoreClient.debitFunds("debit-key-001", request);
+
+        assertThat(result.accountId()).isEqualTo(42L);
+        assertThat(result.debitedAmount()).isEqualByComparingTo(new BigDecimal("650.00"));
+        assertThat(result.balanceAfter()).isEqualByComparingTo(new BigDecimal("4350.00"));
+
+        mockServer.verify();
+    }
+
+    @Test
+    void debitFunds_insufficientFunds_throwsBankaCoreClientExceptionWith409() {
+        mockServer.expect(requestTo(BASE_URL + "/internal/funds/debit"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Idempotency-Key", "debit-key-conflict"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.CONFLICT));
+
+        DebitFundsRequest request = new DebitFundsRequest(
+                42L, new BigDecimal("99999.00"), BigDecimal.ZERO, "RSD", "Option exercise");
+
+        assertThatThrownBy(() -> bankaCoreClient.debitFunds("debit-key-conflict", request))
+                .isInstanceOf(BankaCoreClientException.class)
+                .satisfies(ex -> {
+                    BankaCoreClientException bcEx = (BankaCoreClientException) ex;
+                    assertThat(bcEx.getHttpStatus()).isEqualTo(409);
+                });
 
         mockServer.verify();
     }

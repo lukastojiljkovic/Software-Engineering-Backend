@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import rs.raf.banka2.contracts.internal.CommitFundsRequest;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
+import rs.raf.banka2.contracts.internal.DebitFundsRequest;
 import rs.raf.banka2.contracts.internal.InternalErrorDto;
 import rs.raf.banka2.contracts.internal.ProvisionFundAccountRequest;
 import rs.raf.banka2.contracts.internal.ReleaseFundsRequest;
@@ -124,6 +125,23 @@ public class InternalFundsController {
                     .body(new InternalErrorDto("MISSING_IDEMPOTENCY_KEY", "X-Idempotency-Key je obavezan"));
         }
         return ResponseEntity.ok(fundsService.creditIdempotent(idempotencyKey, body));
+    }
+
+    /**
+     * Jednostrani debit racuna bez credit kontra-strane — option exercise CALL,
+     * pocetna uplata marginskog racuna. Trziste je apstraktan ponor novca
+     * (simetricno {@code /funds/credit}).
+     */
+    @PostMapping("/funds/debit")
+    public ResponseEntity<?> debit(
+            @RequestBody DebitFundsRequest body,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey) {
+
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(new InternalErrorDto("MISSING_IDEMPOTENCY_KEY", "X-Idempotency-Key je obavezan"));
+        }
+        return ResponseEntity.ok(fundsService.debitIdempotent(idempotencyKey, body));
     }
 
     /**

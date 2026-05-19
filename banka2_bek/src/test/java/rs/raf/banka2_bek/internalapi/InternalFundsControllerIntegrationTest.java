@@ -289,6 +289,132 @@ class InternalFundsControllerIntegrationTest {
         assertThat(json.path("code").asText()).isEqualTo("MISSING_IDEMPOTENCY_KEY");
     }
 
+    // ─── Debit: happy path bez provizije ─────────────────────────────────────
+
+    @Test
+    void debit_noCommission_returns200AndDebitsAccount() throws Exception {
+        Account account = persistAccount("222000000000000040", "RSD", new BigDecimal("5000.00"));
+        String idempotencyKey = "it-debit-001";
+
+        String body = """
+                { "accountId": %d, "amount": 650.00, "commission": 0,
+                  "currencyCode": "RSD", "description": "Option exercise CALL" }
+                """.formatted(account.getId());
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/debit"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)),
+                String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode json = objectMapper.readTree(resp.getBody());
+        assertThat(json.path("accountId").asLong()).isEqualTo(account.getId());
+        assertThat(new BigDecimal(json.path("debitedAmount").asText()))
+                .isEqualByComparingTo("650.00");
+        assertThat(new BigDecimal(json.path("balanceAfter").asText()))
+                .isEqualByComparingTo("4350.00");
+
+        Account reloaded = accountRepository.findById(account.getId()).orElseThrow();
+        assertThat(reloaded.getBalance()).isEqualByComparingTo("4350.00");
+        assertThat(reloaded.getAvailableBalance()).isEqualByComparingTo("4350.00");
+        assertThat(internalRequestRepository.findByIdempotencyKey(idempotencyKey)).isPresent();
+    }
+
+    // ─── Debit: sa provizijom — banka kreditovana ────────────────────────────
+
+    @Test
+    void debit_withCommission_debitsAccountAndCreditsBankTradingAccount() throws Exception {
+        Account account = persistAccount("222000000000000041", "RSD", new BigDecimal("5000.00"));
+        Account bankAccount = persistBankTradingAccount("RSD", new BigDecimal("100000.00"));
+        String idempotencyKey = "it-debit-comm-001";
+
+        String body = """
+                { "accountId": %d, "amount": 1000.00, "commission": 30.00,
+                  "currencyCode": "RSD", "description": "Margin uplata" }
+                """.formatted(account.getId());
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/debit"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)),
+                String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        Account reloadedAccount = accountRepository.findById(account.getId()).orElseThrow();
+        assertThat(reloadedAccount.getBalance()).isEqualByComparingTo("4000.00");
+        Account reloadedBank = accountRepository.findById(bankAccount.getId()).orElseThrow();
+        assertThat(reloadedBank.getBalance()).isEqualByComparingTo("100030.00");
+        assertThat(reloadedBank.getAvailableBalance()).isEqualByComparingTo("100030.00");
+    }
+
+    // ─── Debit: nedovoljno sredstava → 409 ───────────────────────────────────
+
+    @Test
+    void debit_insufficientFunds_returns409() throws Exception {
+        Account account = persistAccount("222000000000000042", "RSD", new BigDecimal("100.00"));
+        String idempotencyKey = "it-debit-insufficient-001";
+
+        String body = """
+                { "accountId": %d, "amount": 99999.00, "commission": 0,
+                  "currencyCode": "RSD", "description": "Option exercise" }
+                """.formatted(account.getId());
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/debit"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)),
+                String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+
+        // Nista nije skinuto
+        Account reloaded = accountRepository.findById(account.getId()).orElseThrow();
+        assertThat(reloaded.getBalance()).isEqualByComparingTo("100.00");
+        assertThat(reloaded.getAvailableBalance()).isEqualByComparingTo("100.00");
+    }
+
+    // ─── Debit: idempotency replay ───────────────────────────────────────────
+
+    @Test
+    void debit_repeatedIdempotencyKey_appliesOnlyOnce() throws Exception {
+        Account account = persistAccount("222000000000000043", "RSD", new BigDecimal("5000.00"));
+        String idempotencyKey = "it-debit-idem-001";
+
+        String body = """
+                { "accountId": %d, "amount": 200.00, "commission": 0,
+                  "currencyCode": "RSD", "description": "Option exercise CALL" }
+                """.formatted(account.getId());
+
+        restTemplate.postForEntity(url("/internal/funds/debit"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)), String.class);
+        restTemplate.postForEntity(url("/internal/funds/debit"),
+                new HttpEntity<>(body, internalHeaders(idempotencyKey)), String.class);
+
+        // Drugi poziv je idempotentan — balans umanjen SAMO jednom (5000 - 200)
+        Account reloaded = accountRepository.findById(account.getId()).orElseThrow();
+        assertThat(reloaded.getBalance()).isEqualByComparingTo("4800.00");
+    }
+
+    // ─── Debit: missing X-Idempotency-Key → 400 ──────────────────────────────
+
+    @Test
+    void debit_missingIdempotencyKey_returns400() throws Exception {
+        String body = """
+                { "accountId": 1, "amount": 100.00, "commission": 0,
+                  "currencyCode": "RSD", "description": "x" }
+                """;
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("X-Internal-Key", internalKey);
+
+        ResponseEntity<String> resp = restTemplate.postForEntity(
+                url("/internal/funds/debit"),
+                new HttpEntity<>(body, headers), String.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        JsonNode json = objectMapper.readTree(resp.getBody());
+        assertThat(json.path("code").asText()).isEqualTo("MISSING_IDEMPOTENCY_KEY");
+    }
+
     // ─── Tax-collect: happy path — klijent debitovan, drzava kreditovana ─────
 
     @Test

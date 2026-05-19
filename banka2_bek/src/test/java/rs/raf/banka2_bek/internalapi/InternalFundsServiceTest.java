@@ -11,6 +11,8 @@ import rs.raf.banka2.contracts.internal.CommitFundsRequest;
 import rs.raf.banka2.contracts.internal.CommitFundsResponse;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.banka2.contracts.internal.CreditFundsResponse;
+import rs.raf.banka2.contracts.internal.DebitFundsRequest;
+import rs.raf.banka2.contracts.internal.DebitFundsResponse;
 import rs.raf.banka2.contracts.internal.ReleaseFundsRequest;
 import rs.raf.banka2.contracts.internal.ReleaseFundsResponse;
 import rs.raf.banka2.contracts.internal.ReserveFundsRequest;
@@ -572,6 +574,117 @@ class InternalFundsServiceTest {
         CreditFundsResponse response = service.creditIdempotent("idem-credit-1", req);
 
         assertThat(response.creditedAmount()).isEqualByComparingTo("500.00");
+        // Cached path — nijedna mutirajuca operacija
+        verify(accountRepository, never()).findForUpdateById(any());
+        verify(accountRepository, never()).save(any());
+    }
+
+    // ─── debit tests ──────────────────────────────────────────────────────────
+
+    @Test
+    void debit_noCommission_debitsAccountOneSided() {
+        when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+        when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, new BigDecimal("650.00"), BigDecimal.ZERO, "RSD", "Option exercise CALL");
+        DebitFundsResponse response = service.debit(req);
+
+        assertThat(response.accountId()).isEqualTo(1L);
+        assertThat(response.debitedAmount()).isEqualByComparingTo("650.00");
+        // balance 10000 - 650 = 9350 — bez ijednog credit-a (trziste je apstraktan ponor)
+        assertThat(response.balanceAfter()).isEqualByComparingTo("9350.00");
+        assertThat(account.getBalance()).isEqualByComparingTo("9350.00");
+        assertThat(account.getAvailableBalance()).isEqualByComparingTo("9350.00");
+        verify(accountRepository, never())
+                .findFirstByAccountCategoryAndCurrency_Code(any(), anyString());
+    }
+
+    @Test
+    void debit_withCommission_debitsAccountAndCreditsBank() {
+        when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+        when(accountRepository.findFirstByAccountCategoryAndCurrency_Code(
+                AccountCategory.BANK_TRADING, "RSD")).thenReturn(Optional.of(bankTradingAccount));
+        when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, new BigDecimal("1000.00"), new BigDecimal("30.00"), "RSD", "Margin uplata");
+        DebitFundsResponse response = service.debit(req);
+
+        assertThat(response.debitedAmount()).isEqualByComparingTo("1000.00");
+        // racun: 10000 - 1000 = 9000 (provizija ne dira debit-ovani racun)
+        assertThat(account.getBalance()).isEqualByComparingTo("9000.00");
+        // banka dobija proviziju (30)
+        assertThat(bankTradingAccount.getBalance()).isEqualByComparingTo("100030.00");
+        assertThat(bankTradingAccount.getAvailableBalance()).isEqualByComparingTo("100030.00");
+        verify(accountRepository).save(bankTradingAccount);
+    }
+
+    @Test
+    void debit_insufficientFunds_throwsIllegalStateException() {
+        when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, new BigDecimal("99999.00"), BigDecimal.ZERO, "RSD", "Option exercise");
+        assertThatThrownBy(() -> service.debit(req))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Nedovoljno raspolozivih sredstava");
+
+        verify(accountRepository, never()).save(any());
+    }
+
+    @Test
+    void debit_wrongCurrency_throwsIllegalArgumentException() {
+        when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, new BigDecimal("100.00"), BigDecimal.ZERO, "EUR", "test");
+        assertThatThrownBy(() -> service.debit(req))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Valuta");
+    }
+
+    @Test
+    void debit_nonPositiveAmount_throwsIllegalArgumentException() {
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, BigDecimal.ZERO, BigDecimal.ZERO, "RSD", "test");
+        assertThatThrownBy(() -> service.debit(req))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("pozitivan");
+    }
+
+    @Test
+    void debit_nonExistentAccount_throwsIllegalArgumentException() {
+        when(accountRepository.findForUpdateById(99L)).thenReturn(Optional.empty());
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                99L, new BigDecimal("100.00"), BigDecimal.ZERO, "RSD", "test");
+        assertThatThrownBy(() -> service.debit(req))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Racun ne postoji");
+    }
+
+    @Test
+    void debitIdempotent_cachedKey_returnsCachedResponseWithoutReExecuting() throws Exception {
+        String cachedJson = "{\"accountId\":1,\"debitedAmount\":400.00,\"balanceAfter\":9600.00}";
+        InternalRequest cachedRequest = new InternalRequest();
+        cachedRequest.setIdempotencyKey("idem-debit-1");
+        cachedRequest.setEndpoint("/internal/funds/debit");
+        cachedRequest.setHttpStatus(200);
+        cachedRequest.setResponseBody(cachedJson);
+
+        when(idempotencyService.findCached("idem-debit-1")).thenReturn(Optional.of(cachedRequest));
+        DebitFundsResponse expected = new DebitFundsResponse(
+                1L, new BigDecimal("400.00"), new BigDecimal("9600.00"));
+        when(objectMapper.readValue(cachedJson, DebitFundsResponse.class)).thenReturn(expected);
+
+        DebitFundsRequest req = new DebitFundsRequest(
+                1L, new BigDecimal("400.00"), BigDecimal.ZERO, "RSD", "Option exercise CALL");
+        DebitFundsResponse response = service.debitIdempotent("idem-debit-1", req);
+
+        assertThat(response.debitedAmount()).isEqualByComparingTo("400.00");
         // Cached path — nijedna mutirajuca operacija
         verify(accountRepository, never()).findForUpdateById(any());
         verify(accountRepository, never()).save(any());
