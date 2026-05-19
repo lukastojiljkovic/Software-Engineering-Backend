@@ -106,6 +106,12 @@
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
         </dependency>
+        <!-- Spring cache abstrakcija (@EnableCaching/@Cacheable/CaffeineCacheManager) -
+             profitbank actuary-profit cache (faza 2d-E). Povlaci spring-context-support. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
     </dependencies>
 
     <build>
