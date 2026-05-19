@@ -117,6 +117,12 @@ public class TransferServiceTest {
     @AfterEach
     void tearDown() {
         SecurityContextHolder.clearContext();
+        // setUp() prebacuje globalnu SecurityContextHolder strategiju na
+        // MODE_GLOBAL — staticko stanje JVM-a. Mora se vratiti na default
+        // (MODE_THREADLOCAL) posle svakog testa, inace MODE_GLOBAL "curi" u
+        // ostale test klase u istom surefire fork-u i kvari njihovu
+        // per-thread SecurityContext izolaciju.
+        SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_THREADLOCAL);
     }
 
     @Test

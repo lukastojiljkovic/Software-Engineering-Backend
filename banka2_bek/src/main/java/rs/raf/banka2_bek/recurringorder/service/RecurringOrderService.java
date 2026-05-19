@@ -12,11 +12,11 @@ import org.springframework.stereotype.Service;
 // IMPLEMENTIRATI — injectovati sledece bean-ove kao final polja:
 //   - RecurringOrderRepository recurringOrderRepo
 //   - rs.raf.banka2_bek.auth.util.UserResolver userResolver
-//   - rs.raf.banka2_bek.order.service.OrderServiceImpl orderService
-//       (ili odgovarajuci interfejs iz order paketa)
+//   - kreiranje order-a / dohvatanje listing podataka -> HTTP klijent ka
+//       trading-service-u (trgovinski domen je iseljen iz monolita —
+//       pod-faza 2f cutover; videti TradingServiceClient obrazac u
+//       paketu `assistant`)
 //   - rs.raf.banka2_bek.account.repository.AccountRepository accountRepo
-//   - rs.raf.banka2_bek.listing.repository.ListingRepository listingRepo
-//       (za dohvatanje ticker-a pri mapiranju u RecurringOrderDto)
 //
 // IMPLEMENTIRATI — metode (sve u @Transactional osim listMy):
 //

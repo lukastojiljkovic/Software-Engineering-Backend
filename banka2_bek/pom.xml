@@ -33,7 +33,6 @@
              Default skip=true so `mvn verify` stays fast for dev loop;
              CI nightly job runs with -DskipDepCheck=false. -->
         <skipDepCheck>true</skipDepCheck>
-        <influxdb-client.version>7.3.0</influxdb-client.version>
     </properties>
 
     <dependencies>
@@ -154,13 +153,6 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-        </dependency>
-
-        <!-- InfluxDB klijent za time-series berzanske OHLCV podatke. -->
-        <dependency>
-            <groupId>com.influxdb</groupId>
-            <artifactId>influxdb-client-java</artifactId>
-            <version>${influxdb-client.version}</version>
         </dependency>
 
         <!-- Lombok -->
@@ -309,12 +301,10 @@
                         <exclude>rs/raf/banka2_bek/otp/model/TotpSecret*</exclude>
                         <exclude>rs/raf/banka2_bek/otp/repository/TotpSecretRepository*</exclude>
                         <exclude>rs/raf/banka2_bek/otp/service/TotpService*</exclude>
-                        <exclude>rs/raf/banka2_bek/otc/model/OtcNegotiationHistory*</exclude>
-                        <exclude>rs/raf/banka2_bek/otc/repository/OtcNegotiationHistoryRepository*</exclude>
-                        <exclude>rs/raf/banka2_bek/otc/service/OtcNegotiationHistoryService*</exclude>
-                        <exclude>rs/raf/banka2_bek/otc/controller/OtcNegotiationHistoryController*</exclude>
-                        <exclude>rs/raf/banka2_bek/investmentfund/service/FundDividendService*</exclude>
-                        <exclude>rs/raf/banka2_bek/investmentfund/service/FundStatisticsService*</exclude>
+                        <!-- B10/B11/B12 skeleton-i (OtcNegotiationHistory*, FundDividendService*,
+                             FundStatisticsService*) su uklonjeni iz ovog exclude liste —
+                             otc/investmentfund paketi su iseljeni u trading-service
+                             (pod-faza 2f cutover). -->
                     </excludes>
                 </configuration>
                 <executions>

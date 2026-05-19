@@ -9,11 +9,16 @@ import org.springframework.stereotype.Service;
 //
 // Servis koji sadrzi svu poslovnu logiku za kvartalnu isplatu dividendi.
 //
+// NAPOMENA (pod-faza 2f cutover): trgovinski domen (portfolio/stock/berza/...)
+// je iseljen u `trading-service`. Portfolio/Listing podaci se vise NE citaju
+// in-process iz monolita — B9 implementacija mora ici preko HTTP klijenta ka
+// trading-service-u (videti TradingServiceClient obrazac u paketu `assistant`).
+//
 // ZAVISNOSTI ZA INJEKTOVANJE (@RequiredArgsConstructor):
 //   - DividendPayoutRepository dividendPayoutRepository
-//   - PortfolioRepository portfolioRepository          (iz paketa rs.raf.banka2_bek.portfolio)
-//   - AccountRepository accountRepository              (iz paketa rs.raf.banka2_bek.account)
-//   - UserResolver userResolver                        (iz paketa rs.raf.banka2_bek.auth.util)
+//   - portfolio/listing podaci -> HTTP klijent ka trading-service-u
+//   - AccountRepository accountRepository              (iz paketa banka-core account)
+//   - UserResolver userResolver                        (iz paketa banka-core auth.util)
 //   - CurrencyConversionService currencyConversionService (za fallback konverziju u RSD)
 //   - @Value("${bank.registration-number}") String bankRegistrationNumber
 //

@@ -124,37 +124,15 @@ public class GlobalSecurityConfig  {
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/loans/*/early-repayment").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/loans/my").authenticated()
                         .requestMatchers("/loans/requests/**").hasAnyRole("ADMIN", "EMPLOYEE")
-                        .requestMatchers(org.springframework.http.HttpMethod.GET,"/orders").hasAnyRole("ADMIN", "EMPLOYEE")
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/listings/refresh").hasAnyRole("ADMIN", "EMPLOYEE")
-                        .requestMatchers("/actuaries/**").hasAnyAuthority("ROLE_ADMIN", "ADMIN", "SUPERVISOR")
-                        .requestMatchers(HttpMethod.POST, "/orders").authenticated()
-                        .requestMatchers(HttpMethod.GET, "/orders/my").authenticated()
-                        .requestMatchers(HttpMethod.GET, "/orders/{id}").authenticated()
-                        .requestMatchers("/orders/*/approve", "/orders/*/decline").hasAnyRole("ADMIN", "EMPLOYEE")
-                        .requestMatchers("/portfolio/**").authenticated()
-                        .requestMatchers(HttpMethod.GET, "/tax/my", "/tax/my/breakdown").authenticated()
-                        .requestMatchers("/tax/**").hasAnyAuthority("ROLE_ADMIN", "ADMIN", "SUPERVISOR")
-                        .requestMatchers(HttpMethod.GET, "/exchanges", "/exchanges/**").permitAll()
-                        .requestMatchers(HttpMethod.PATCH, "/exchanges/*/test-mode").hasAnyRole("ADMIN", "EMPLOYEE")
-                        .requestMatchers(HttpMethod.GET, "/options", "/options/**").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/options/*/exercise").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/options/generate").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/margin-accounts/*/withdraw").hasRole("CLIENT")
-                        .requestMatchers(HttpMethod.POST, "/margin-accounts/*/deposit").hasRole("CLIENT")
-                        .requestMatchers("/margin-accounts/**").authenticated()
-                        // OTC: po Celini 4 (Nova) §145-148, samo SUPERVIZORI (od zaposlenih)
-                        // i KLIJENTI sa permisijom TRADE_STOCKS smeju pristupiti.
-                        // Agenti su EKSPLICITNO iskljuceni — finalna provera role
-                        // (klijent vs zaposleni vs agent) i dodatne validacije rade
-                        // se u OtcService (vidi ensureOtcAccess helper).
-                        .requestMatchers("/otc/**").hasAnyAuthority(
-                                "ROLE_ADMIN", "ROLE_CLIENT", "ADMIN", "SUPERVISOR", "CLIENT")
-                        // Investicioni fondovi: po Celini 4 (Nova), supervizori vide
-                        // discovery/details/create/portfolio + klijenti samo discovery+details.
-                        .requestMatchers("/funds/**").authenticated()
-                        // Profit Banke: samo supervizori (Celina 4 (Nova) §4393-4408).
-                        .requestMatchers("/profit-bank/**").hasAnyAuthority(
-                                "ROLE_ADMIN", "ADMIN", "SUPERVISOR")
+                        // ============================================================
+                        // Trgovinske rute (/orders /portfolio /tax /funds /actuaries
+                        // /listings /exchanges /options /margin-accounts /otc /profit-bank)
+                        // su iseljene u `trading-service` (pod-faza 2f cutover) — monolit
+                        // vise nema te kontrolere. Gateway (nginx api-gateway) rutira te
+                        // prefikse na trading-service:8082; trading-service ima sopstvenu
+                        // route-guard konfiguraciju. /interbank/** (ukljucujuci
+                        // /interbank/otc/**) OSTAJE na monolitu — inter-bank protokol.
+                        // ============================================================
                         // FE-facing wrapper za inter-bank OTC: /interbank/otc/** je
                         // JWT-authenticated (klijent/supervizor pristupaju iz svog
                         // browser-a), NE X-Api-Key. MORA biti DEKLARISAN PRE generic

@@ -19,6 +19,7 @@ import rs.raf.banka2_bek.employee.model.Employee;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.account.dto.CreateAccountDto;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -68,6 +69,16 @@ class AccountServiceImplementationTest {
                 companyRepository, employeeRepository, userRepository,
                 cardService, notificationPublisher, "22200011"
         );
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        // mockAuthenticatedUser() postavlja Mockito-mock SecurityContext u
+        // staticki SecurityContextHolder. Bez ovog ciscenja, mock "curi" u
+        // surefire thread (deljen izmedju test klasa u istom fork-u) — naredna
+        // test klasa koja zove SecurityContextHolder.getContext().setAuthentication(...)
+        // bi to radila nad mock-om (no-op), pa bi joj autentifikacija nestala.
+        SecurityContextHolder.clearContext();
     }
 
     private void mockAuthenticatedUser(String email) {

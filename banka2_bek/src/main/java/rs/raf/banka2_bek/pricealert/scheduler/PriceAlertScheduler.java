@@ -19,8 +19,9 @@ import org.springframework.stereotype.Component;
 //       Za dohvatanje aktivnih alarma koji jos nisu okidani.
 //   - PriceAlertService priceAlertService
 //       Za poziv checkAlerts(listingId, currentPrice) po listingu.
-//   - rs.raf.banka2_bek.stock.repository.ListingRepository listingRepository
-//       (ili ekvivalentni repozitorijum u projektu)
+//   - trenutne cene hartija -> HTTP klijent ka trading-service-u
+//       (trgovinski domen je iseljen u trading-service — pod-faza 2f cutover;
+//        videti TradingServiceClient obrazac u paketu `assistant`)
 //       Za dohvatanje trenutnih cena svih hartija na kojima postoje
 //       aktivni alarmi.
 //

@@ -50,9 +50,6 @@ class AuthPasswordResetIntegrationTest {
     private PasswordEncoder passwordEncoder;
 
     @Autowired
-    private rs.raf.banka2_bek.actuary.repository.ActuaryInfoRepository actuaryInfoRepository;
-
-    @Autowired
     private rs.raf.banka2_bek.employee.repository.ActivationTokenRepository activationTokenRepository;
 
     @Autowired

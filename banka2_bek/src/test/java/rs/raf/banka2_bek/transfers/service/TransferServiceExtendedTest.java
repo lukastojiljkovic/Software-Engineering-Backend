@@ -113,6 +113,10 @@ class TransferServiceExtendedTest {
     @AfterEach
     void tearDown() {
         SecurityContextHolder.clearContext();
+        // setUp() prebacuje globalnu SecurityContextHolder strategiju na
+        // MODE_GLOBAL — staticko JVM stanje. Vraca se na default da MODE_GLOBAL
+        // ne "curi" u ostale test klase u istom surefire fork-u.
+        SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_THREADLOCAL);
     }
 
     // ===== Auto-detect FX when currencies differ =====

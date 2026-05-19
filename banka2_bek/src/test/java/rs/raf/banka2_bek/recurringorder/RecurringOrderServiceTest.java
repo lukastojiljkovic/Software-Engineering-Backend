@@ -12,9 +12,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 // IMPLEMENTIRATI — dodati @Mock polja i @InjectMocks:
 //   @Mock RecurringOrderRepository recurringOrderRepo
 //   @Mock rs.raf.banka2_bek.auth.util.UserResolver userResolver
-//   @Mock rs.raf.banka2_bek.order.service.OrderServiceImpl orderService
+//   @Mock  -- HTTP klijent ka trading-service-u (kreiranje order-a /
+//          dohvatanje listing podataka); trgovinski domen je iseljen iz
+//          monolita u pod-fazi 2f cutover-a
 //   @Mock rs.raf.banka2_bek.account.repository.AccountRepository accountRepo
-//   @Mock rs.raf.banka2_bek.listing.repository.ListingRepository listingRepo
 //   @InjectMocks RecurringOrderService recurringOrderService
 //
 // IMPLEMENTIRATI — dodati sledece @Test metode (jedan @Test po scenariju,
