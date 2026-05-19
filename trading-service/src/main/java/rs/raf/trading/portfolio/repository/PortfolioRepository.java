@@ -48,4 +48,11 @@ public interface PortfolioRepository extends JpaRepository<Portfolio, Long> {
     @Query("SELECT p FROM Portfolio p WHERE p.userId = :userId AND p.listingId = :listingId")
     Optional<Portfolio> findByUserIdAndListingIdForUpdate(@Param("userId") Long userId,
                                                           @Param("listingId") Long listingId);
+
+    /**
+     * Vraca sve Portfolio pozicije tipa STOCK sa quantity > 0.
+     * Koristi ga DividendService za kvartalnu isplatu dividendi (B9).
+     */
+    @Query("SELECT p FROM Portfolio p WHERE p.quantity > 0 AND p.listingType = 'STOCK'")
+    List<Portfolio> findAllStockPositionsWithQuantity();
 }

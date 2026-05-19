@@ -2,88 +2,368 @@ package rs.raf.trading.dividend.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import rs.raf.banka2.contracts.internal.CreditFundsRequest;
+import rs.raf.banka2.contracts.internal.InternalAccountDto;
+import rs.raf.trading.client.BankaCoreClient;
+import rs.raf.trading.client.BankaCoreClientException;
+import rs.raf.trading.common.UserContext;
+import rs.raf.trading.dividend.dto.DividendPayoutDto;
+import rs.raf.trading.dividend.model.DividendPayout;
+import rs.raf.trading.dividend.repository.DividendPayoutRepository;
+import rs.raf.trading.order.service.CurrencyConversionService;
+import rs.raf.trading.portfolio.model.Portfolio;
+import rs.raf.trading.portfolio.repository.PortfolioRepository;
+import rs.raf.trading.security.TradingUserResolver;
+import rs.raf.trading.stock.model.Listing;
+import rs.raf.trading.stock.repository.ListingRepository;
+import rs.raf.trading.stock.util.ListingCurrencyResolver;
 
-// ============================================================
-// TODO [B9 - Isplata dividendi na akcije | Nosilac: Djordje Zlatanovic]
-//
-// Servis koji sadrzi svu poslovnu logiku za kvartalnu isplatu dividendi.
-//
-// NAPOMENA (mikroservisi): ovaj paket zivi u `trading-service`. Trgovinski domen
-// (portfolio/stock/berza) je LOKALAN — Portfolio i Listing se citaju in-process
-// iz lokalnih repozitorijuma. Bankarski domen (racun, knjizenje sredstava) NIJE
-// lokalan — dividenda se knjizi na racun preko BankaCoreClient-a (HTTP klijent
-// ka banka-core internom /internal API-ju; paket rs.raf.trading.client).
-//
-// ZAVISNOSTI ZA INJEKTOVANJE (@RequiredArgsConstructor):
-//   - DividendPayoutRepository dividendPayoutRepository
-//   - PortfolioRepository portfolioRepository  (paket rs.raf.trading.portfolio.repository — LOKALNO)
-//   - ListingRepository listingRepository      (paket rs.raf.trading.stock.repository — LOKALNO)
-//   - BankaCoreClient bankaCoreClient          (paket rs.raf.trading.client) —
-//       knjizenje neto iznosa na racun (creditFunds) + razresavanje ciljnog
-//       racuna (getPreferredAccount / getBankTradingAccount); racun NIJE lokalan
-//   - TradingUserResolver userResolver         (paket rs.raf.trading.security)
-//   - CurrencyConversionService currencyConversionService
-//       (paket rs.raf.trading.order.service — LOKALNO, za fallback konverziju u RSD)
-//
-// IMPLEMENTIRATI (metode koje klasa treba da ima):
-//
-//   public void processQuarterlyDividends(LocalDate paymentDate)
-//       — Glavna metoda koju poziva DividendScheduler.
-//         Algoritam:
-//         1. Ucitaj sve Portfolio zapise gde quantity > 0 i listingType == STOCK.
-//         2. Grupisaj po (ownerId, ownerType, stockListingId).
-//         3. Za svaku grupu:
-//            a. Idempotentnost: pozovi dividendPayoutRepository.findByStockListingIdAndPaymentDate
-//               — ako zapis vec postoji, preskoci (restart-safe scheduler).
-//            b. Ucitaj tekucu cenu iz listing.price (Listing entitet, paket `stock` / `berza`).
-//               Listing.dividendYield je godisnji prinos (npr. 0.02 = 2%).
-//               kvartalniPrinos = listing.getDividendYield() / 4
-//            c. grossAmount = quantity * price * kvartalniPrinos
-//            d. Odredi da li je vlasnik EMPLOYEE (aktuar koji drzi u ime banke):
-//               ownerType.equals("EMPLOYEE") => taxExempt = true, tax = 0
-//               inace => tax = grossAmount * 0.15 (15% porez na kapitalnu dobit)
-//            e. netAmount = grossAmount - tax
-//            f. Odredi ciljni racun (u valuti listinga) preko BankaCoreClient-a:
-//               i.  za CLIENT: bankaCoreClient.getPreferredAccount("CLIENT", ownerId, currency);
-//                   za EMPLOYEE: bankaCoreClient.getBankTradingAccount(currency)
-//               ii. Fallback: ako racun u valuti listinga ne postoji, konvertuj iznos
-//                   u RSD (CurrencyConversionService — LOKALNO) i knjizi na RSD racun
-//                   (getPreferredAccount(..., "RSD")).
-//            g. Knjizi neto iznos na racun preko bankaCoreClient.creditFunds(
-//               idempotencyKey, CreditFundsRequest) — racun NIJE lokalan entitet,
-//               banka-core izvodi balance/availableBalance knjizenje. Idempotency
-//               kljuc gradi deterministicki (npr. "dividend-{ownerType}-{ownerId}-
-//               {listingId}-{paymentDate}") da restart scheduler-a ne knjizi duplo.
-//            h. Sacuvaj DividendPayout entitet (lokalna trading_db tabela).
-//         4. Logovati svaku isplacenu i svaku preskocenu isplatu.
-//
-//   @Transactional
-//   public DividendPayout payDividendForOwner(Portfolio portfolio, LocalDate paymentDate)
-//       — Transakciona metoda za jednu isplatu (poziva je processQuarterlyDividends per-portfolio).
-//         Odvajanjem od processQuarterlyDividends osiguravamo da @Transactional prode kroz
-//         Spring AOP proxy (intra-class pozivi bi bili ignorisani — scheduler/service
-//         razdvajanje kao kod trgovinskih schedulera u trading-service-u).
-//
-//   @Transactional(readOnly = true)
-//   public List<DividendPayoutDto> getMyDividendHistory()
-//       — Vraca istoriju dividendi za ulogovanog klijenta ili zaposlenog.
-//         Koristiti userResolver.resolveCurrent() za ownerId i ownerType.
-//         Mapirati DividendPayout -> DividendPayoutDto.
-//
-//   @Transactional(readOnly = true)
-//   public List<DividendPayoutDto> getDividendHistoryByPosition(Long portfolioId)
-//       — Vraca istoriju dividendi za konkretnu Portfolio poziciju.
-//         Proveriti da li ulogovani korisnik poseduje tu Portfolio poziciju
-//         (AccessDeniedException ako ne).
-//         Koristiti dividendPayoutRepository.findByOwnerIdAndOwnerTypeAndStockListingId.
-//
-// Konvencija: pratiti trgovinski paket `investmentfund` (InvestmentFundService + FundValueSnapshotScheduler) kao sablon.
-// Spec: Zadaci_Backend.pdf, zadatak B9.
-// ============================================================
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
+/**
+ * Servis za kvartalnu isplatu dividendi na akcije (B9).
+ *
+ * <p>Domenski split:
+ * <ul>
+ *   <li>Portfolio + Listing su LOKALNI — citaju se iz trading_db.</li>
+ *   <li>Racun + knjizenje su BANKARSKI — idu preko {@link BankaCoreClient}.</li>
+ * </ul>
+ *
+ * <p>Poziva ga {@code DividendScheduler} jednom kvartalno. Svaka pojedinacna
+ * isplata je izolovana u {@link #payDividendForOwner} koji nosi
+ * {@code @Transactional}, cime se osigurava da Spring AOP proxy prode
+ * kroz odgovarajuci bean (intra-class self-invoke bi bio zaobidjen).
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class DividendService {
+
+    private static final BigDecimal TAX_RATE = new BigDecimal("0.15");
+    private static final BigDecimal FOUR = new BigDecimal("4");
+
+    private final DividendPayoutRepository dividendPayoutRepository;
+    private final PortfolioRepository portfolioRepository;
+    private final ListingRepository listingRepository;
+    private final BankaCoreClient bankaCoreClient;
+    private final TradingUserResolver userResolver;
+    private final CurrencyConversionService currencyConversionService;
+
+    // ── Kvartalna obrada ──────────────────────────────────────────────────────
+
+    /**
+     * Glavna metoda – poziva je {@code DividendScheduler}.
+     * <p>
+     * Algoritam:
+     * <ol>
+     *   <li>Ucitaj sve Portfolio pozicije tipa STOCK sa quantity &gt; 0.</li>
+     *   <li>Za svaku poziciju provjeri idempotentnost (ne isplacuj duplo).</li>
+     *   <li>Pozovi {@link #payDividendForOwner} koji radi stvarno knjizenje.</li>
+     * </ol>
+     *
+     * @param paymentDate datum isplate (vec adjustovan na radni dan u scheduler-u)
+     */
+    public void processQuarterlyDividends(LocalDate paymentDate) {
+        List<Portfolio> positions = portfolioRepository.findAllStockPositionsWithQuantity();
+        log.info("DividendService: pocinje kvartalna isplata za {} — {} STOCK pozicija",
+                paymentDate, positions.size());
+
+        // Grupisemo po (ownerId, ownerType, listingId) — jedan payout po vlasniku per hartiji,
+        // cak i ako vlasnik ima vise Portfolio redova za istu hartiju (parcijalni fillovi).
+        Map<String, List<Portfolio>> grouped = positions.stream()
+                .collect(Collectors.groupingBy(
+                        p -> p.getUserId() + "_" + p.getUserRole() + "_" + p.getListingId()));
+
+        int paid = 0;
+        int skipped = 0;
+
+        for (Map.Entry<String, List<Portfolio>> entry : grouped.entrySet()) {
+            Portfolio position = entry.getValue().get(0);
+            Long listingId = position.getListingId();
+            Long ownerId = position.getUserId();
+            String ownerType = position.getUserRole();
+
+            // Idempotentnost per-vlasnik: proveravamo da li je ovaj (owner, listing, date)
+            // vec isplacen, a ne samo da li postoji bilo koji payout za taj listing+datum.
+            List<DividendPayout> existing =
+                    dividendPayoutRepository.findByStockListingIdAndPaymentDate(listingId, paymentDate);
+            boolean alreadyPaid = existing.stream()
+                    .anyMatch(ep -> ep.getOwnerId().equals(ownerId)
+                            && ep.getOwnerType().equalsIgnoreCase(ownerType));
+            if (alreadyPaid) {
+                log.debug("DividendService: preskacam listing={} owner={}/{} — dividenda za {} vec postoji",
+                        listingId, ownerType, ownerId, paymentDate);
+                skipped++;
+                continue;
+            }
+
+            try {
+                DividendPayout result = payDividendForOwner(position, paymentDate);
+                if (result != null) paid++;
+            } catch (Exception ex) {
+                log.error("DividendService: greska pri isplati dividende listing={} owner={}/{}: {}",
+                        listingId, ownerType, ownerId, ex.getMessage(), ex);
+                // Nastavljamo — jedna greska ne sme da blokira ostatak isplate.
+            }
+        }
+
+        log.info("DividendService: kvartalna isplata zavrsena — isplaceno={}, preskoceno={}",
+                paid, skipped);
+    }
+
+    // ── Jedna transakciona isplata ────────────────────────────────────────────
+
+    /**
+     * Izvrsava kvartalnu isplatu dividende za jednu Portfolio poziciju.
+     * <p>
+     * Mora biti pozvan iz drugog Spring bean-a (ne intra-class self-invoke) da bi
+     * {@code @Transactional} prosao kroz AOP proxy.
+     *
+     * @param portfolio   pozicija vlasnika (ownerId + ownerType + listingId)
+     * @param paymentDate datum isplate
+     * @return perzistirani {@link DividendPayout}
+     */
+    @Transactional
+    public DividendPayout payDividendForOwner(Portfolio portfolio, LocalDate paymentDate) {
+        Long ownerId = portfolio.getUserId();
+        String ownerType = portfolio.getUserRole();
+        Long listingId = portfolio.getListingId();
+        int quantity = portfolio.getQuantity();
+
+        // 1. Ucitaj Listing da dobijemo cenu i godisnji prinos.
+        Listing listing = listingRepository.findById(listingId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Listing " + listingId + " nije pronadjen"));
+
+        BigDecimal price = listing.getPrice();
+        BigDecimal annualYield = listing.getDividendYield();
+
+        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalStateException(
+                    "Listing " + listingId + " nema vazece price polje — ne mogu obracunati dividendu");
+        }
+        if (annualYield == null || annualYield.compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("DividendService: preskacam listing={} ticker={} — dividendYield={} (nema dividende, silent skip)",
+                    listingId, listing.getTicker(), annualYield);
+            return null;
+        }
+
+        // 2. Izracunaj iznose.
+        BigDecimal quarterlyYield = annualYield
+                .divide(FOUR, 6, RoundingMode.HALF_UP);
+        BigDecimal grossAmount = BigDecimal.valueOf(quantity)
+                .multiply(price)
+                .multiply(quarterlyYield)
+                .setScale(4, RoundingMode.HALF_UP);
+
+        boolean taxExempt = "EMPLOYEE".equals(ownerType);
+        BigDecimal tax = taxExempt
+                ? BigDecimal.ZERO
+                : grossAmount.multiply(TAX_RATE).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal netAmount = grossAmount.subtract(tax).setScale(4, RoundingMode.HALF_UP);
+
+        // 3. Odredi valutu listinga.
+        String listingCurrency = ListingCurrencyResolver.resolve(listing);
+
+        // 4. Razresi ciljni racun + eventualni RSD fallback.
+        boolean usedRsdFallback = false;
+        BigDecimal amountToCredit = netAmount;
+        String creditedCurrency = listingCurrency;
+        InternalAccountDto targetAccount;
+
+        if (taxExempt) {
+            // EMPLOYEE (aktuar) — bankin trading racun.
+            targetAccount = resolveBankTradingAccount(listingCurrency);
+            if (targetAccount == null) {
+                usedRsdFallback = true;
+                amountToCredit = currencyConversionService.convert(netAmount, listingCurrency, "RSD");
+                creditedCurrency = "RSD";
+                targetAccount = bankaCoreClient.getBankTradingAccount("RSD");
+            }
+        } else {
+            // CLIENT — preferiran klijentov aktivan racun u valuti listinga.
+            try {
+                targetAccount = bankaCoreClient.getPreferredAccount("CLIENT", ownerId, listingCurrency);
+            } catch (BankaCoreClientException ex) {
+                if (ex.getHttpStatus() >= 500) {
+                    throw ex; // 5xx: banka-core je dole — ne gutati, propagovati
+                }
+                log.warn("DividendService: preferiran {} racun ne postoji za klijenta {} — prelazim na RSD fallback",
+                        listingCurrency, ownerId);
+                usedRsdFallback = true;
+                amountToCredit = currencyConversionService.convert(netAmount, listingCurrency, "RSD");
+                creditedCurrency = "RSD";
+                targetAccount = bankaCoreClient.getPreferredAccount("CLIENT", ownerId, "RSD");
+            }
+        }
+
+        if (usedRsdFallback) {
+            log.info("DividendService: RSD fallback za owner={}/{} listing={} — {} {} -> {} RSD",
+                    ownerType, ownerId, listingId, netAmount, listingCurrency, amountToCredit);
+        }
+
+        // 5. Knjizi neto iznos na racun (deterministicki idempotency kljuc).
+        String idempotencyKey = "dividend-" + ownerType + "-" + ownerId + "-"
+                + listingId + "-" + paymentDate;
+        String description = "Kvartalna dividenda: " + portfolio.getListingTicker()
+                + " x" + quantity + " @ " + paymentDate;
+
+        bankaCoreClient.creditFunds(
+                idempotencyKey,
+                new CreditFundsRequest(
+                        targetAccount.id(),
+                        amountToCredit,
+                        BigDecimal.ZERO,
+                        creditedCurrency,
+                        description));
+
+        // 6. Sacuvaj DividendPayout u trading_db.
+        DividendPayout payout = DividendPayout.builder()
+                .ownerId(ownerId)
+                .ownerType(ownerType)
+                .stockListingId(listingId)
+                .stockTicker(portfolio.getListingTicker() != null
+                        ? portfolio.getListingTicker()
+                        : listing.getTicker())
+                .quantity(quantity)
+                .priceOnDate(price)
+                .dividendYieldRate(quarterlyYield)
+                .grossAmount(grossAmount)
+                .tax(tax)
+                .netAmount(netAmount)
+                .creditedAccountId(targetAccount.id())
+                .currencyCode(creditedCurrency)
+                .paymentDate(paymentDate)
+                .taxExempt(taxExempt)
+                .build();
+
+        DividendPayout saved = dividendPayoutRepository.save(payout);
+        log.info("DividendService: isplaceno — owner={}/{} listing={} ticker={} gross={} tax={} net={} {}",
+                ownerType, ownerId, listingId, saved.getStockTicker(),
+                grossAmount, tax, amountToCredit, creditedCurrency);
+        return saved;
+    }
+
+    // ── Query metode za korisnike ─────────────────────────────────────────────
+
+    /**
+     * Vraca istoriju dividendi za trenutno ulogovanog klijenta ili zaposlenog.
+     */
+    @Transactional(readOnly = true)
+    public List<DividendPayoutDto> getMyDividendHistory() {
+        UserContext ctx = userResolver.resolveCurrent();
+        return dividendPayoutRepository
+                .findByOwnerIdAndOwnerTypeOrderByPaymentDateDesc(ctx.userId(), ctx.userRole())
+                .stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    /**
+     * Vraca istoriju dividendi za konkretnu Portfolio poziciju.
+     * <p>
+     * Ulogovani korisnik mora biti vlasnik te Portfolio pozicije.
+     *
+     * @param portfolioId id Portfolio entiteta
+     * @throws AccessDeniedException ako pozivac nije vlasnik portfolio pozicije
+     */
+    @Transactional(readOnly = true)
+    public List<DividendPayoutDto> getDividendHistoryByPosition(Long portfolioId) {
+        UserContext ctx = userResolver.resolveCurrent();
+
+        Portfolio portfolio = portfolioRepository.findById(portfolioId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Portfolio pozicija " + portfolioId + " nije pronadjena"));
+
+        if (!portfolio.getUserId().equals(ctx.userId())
+                || !portfolio.getUserRole().equals(ctx.userRole())) {
+            throw new AccessDeniedException(
+                    "Nemate pravo na dividendu pozicije " + portfolioId);
+        }
+
+        return dividendPayoutRepository
+                .findByOwnerIdAndOwnerTypeAndStockListingId(
+                        ctx.userId(), ctx.userRole(), portfolio.getListingId())
+                .stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    /**
+     * Admin pregled svih isplata dividendi, paginiran, sa opcionim filterom datuma.
+     *
+     * <p>Ako je zadan samo {@code from}, {@code to} se defaultuje na danasnji datum.
+     * Ako je zadan samo {@code to}, {@code from} se defaultuje na 1970-01-01.
+     * Ako nijedan nije zadat, vraca se kompletna istorija sortirano po datumu DESC.
+     *
+     * @param from opcionalni pocetni datum (inclusive); null = bez donje granice
+     * @param to   opcionalni krajnji datum (inclusive); null = bez gornje granice
+     */
+    @Transactional(readOnly = true)
+    public Page<DividendPayoutDto> getAdminDividendHistory(LocalDate from, LocalDate to,
+                                                           Pageable pageable) {
+        Page<DividendPayout> page;
+        if (from != null) {
+            LocalDate effectiveTo = (to != null) ? to : LocalDate.now(ZoneOffset.UTC);
+            page = dividendPayoutRepository.findByPaymentDateBetween(from, effectiveTo, pageable);
+        } else if (to != null) {
+            LocalDate effectiveFrom = LocalDate.of(1970, 1, 1);
+            page = dividendPayoutRepository.findByPaymentDateBetween(effectiveFrom, to, pageable);
+        } else {
+            page = dividendPayoutRepository.findAllByOrderByPaymentDateDesc(pageable);
+        }
+        return page.map(this::toDto);
+    }
+
+    // ── Pomocne metode ────────────────────────────────────────────────────────
+
+    /**
+     * Pokusava da dobavi bankin trading racun za datu valutu.
+     * Vraca {@code null} za 4xx (signal za RSD fallback).
+     * Propaguje izuzetak za 5xx (banka-core je nedostupna — ne gutati).
+     */
+    private InternalAccountDto resolveBankTradingAccount(String currencyCode) {
+        try {
+            return bankaCoreClient.getBankTradingAccount(currencyCode);
+        } catch (BankaCoreClientException ex) {
+            if (ex.getHttpStatus() >= 500) {
+                throw ex; // 5xx: propagovati, ne gutati
+            }
+            log.warn("DividendService: bankin trading racun za {} nije pronadjen — prelazim na RSD fallback ({})",
+                    currencyCode, ex.getMessage());
+            return null;
+        }
+    }
+
+    private DividendPayoutDto toDto(DividendPayout p) {
+        return DividendPayoutDto.builder()
+                .id(p.getId())
+                .ownerId(p.getOwnerId())
+                .ownerType(p.getOwnerType())
+                .stockListingId(p.getStockListingId())
+                .stockTicker(p.getStockTicker())
+                .quantity(p.getQuantity())
+                .priceOnDate(p.getPriceOnDate())
+                .dividendYieldRate(p.getDividendYieldRate())
+                .grossAmount(p.getGrossAmount())
+                .tax(p.getTax())
+                .netAmount(p.getNetAmount())
+                .creditedAccountId(p.getCreditedAccountId())
+                .currencyCode(p.getCurrencyCode())
+                .paymentDate(p.getPaymentDate())
+                .taxExempt(p.getTaxExempt())
+                .createdAt(p.getCreatedAt())
+                .build();
+    }
 }
