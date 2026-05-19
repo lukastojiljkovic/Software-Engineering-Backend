@@ -168,6 +168,14 @@ services:
       # Faza 2f — interbank paket zove trading-service /internal/portfolio/**
       # (portfolios/listings tabele zive u trading_db posle cutover-a).
       TRADINGSERVICE_BASE_URL: http://trading-service:8082
+      # Interni seam X-Internal-Key — MORA biti isti string kao na
+      # trading-service-u (oba smera /internal/** komunikacije). Monolit je
+      # posle 2f-2 i pozivalac (interbank -> trading-service) i primalac
+      # (trading-service -> banka-core), pa env mora biti simetrican: ako se
+      # eksportuje pravi INTERNAL_API_KEY, mora stici i ovde, ne samo na
+      # trading-service — inace TradingServiceClientConfig pada na dev default
+      # i svaki interni poziv 401-uje.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key-rotate-in-prod}
     # host.docker.internal alias za pristup host portovima (Linux native Docker
     # zahteva eksplicitan host-gateway alias; Docker Desktop ima nativno).
     # Koristi se SAMO za opcioni Arbitro stack u Banka-2-Tools/docker-compose.yml

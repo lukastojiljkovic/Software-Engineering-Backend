@@ -232,7 +232,9 @@ public class TransactionExecutorService {
                     "Failed to parse transaction body: " + e.getMessage());
         }
 
-        for (Posting p : tx.postings()) {
+        List<Posting> postings = tx.postings();
+        for (int i = 0; i < postings.size(); i++) {
+            Posting p = postings.get(i);
             if (isPostingRemote(p)) continue;
             boolean isDebit = p.amount().compareTo(BigDecimal.ZERO) > 0;
             BigDecimal abs = p.amount().abs();
@@ -249,7 +251,7 @@ public class TransactionExecutorService {
                 }
                 Long userId = Long.parseLong(pe.id().id());
                 reservationApplier.commitStock(
-                        stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker),
+                        stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
                         userId, "CLIENT", ticker, abs.intValueExact(), isDebit);
 
             } else if (p.asset() instanceof Asset.OptionAsset oa && p.account() instanceof TxAccount.Option) {
@@ -291,7 +293,9 @@ public class TransactionExecutorService {
                     "Failed to parse transaction body: " + e.getMessage());
         }
 
-        for (Posting p : tx.postings()) {
+        List<Posting> postings = tx.postings();
+        for (int i = 0; i < postings.size(); i++) {
+            Posting p = postings.get(i);
             if (isPostingRemote(p)) continue;
             if (p.amount().compareTo(BigDecimal.ZERO) >= 0) continue; // only credits were reserved
 
@@ -309,7 +313,7 @@ public class TransactionExecutorService {
                 }
                 Long userId = Long.parseLong(pe.id().id());
                 reservationApplier.releaseStock(
-                        stockIdempotencyKey(transactionId, "release", userId, "CLIENT", ticker),
+                        stockIdempotencyKey(transactionId, "release", userId, "CLIENT", ticker, i),
                         userId, "CLIENT", ticker, abs.intValueExact());
 
             } else if (p.asset() instanceof Asset.OptionAsset) {
@@ -670,7 +674,9 @@ public class TransactionExecutorService {
         if (!violations.isEmpty()) return violations;
 
         // Pass 2 — reservations (credit postings only, amount < 0)
-        for (Posting p : tx.postings()) {
+        List<Posting> postings = tx.postings();
+        for (int i = 0; i < postings.size(); i++) {
+            Posting p = postings.get(i);
             if (isPostingRemote(p)) continue;
             if (p.amount().compareTo(BigDecimal.ZERO) >= 0) continue;
 
@@ -685,7 +691,7 @@ public class TransactionExecutorService {
                 Long userId = Long.parseLong(pe.id().id());
                 String ticker = s.asset().ticker();
                 reservationApplier.reserveStock(
-                        stockIdempotencyKey(tx.transactionId(), "reserve", userId, "CLIENT", ticker),
+                        stockIdempotencyKey(tx.transactionId(), "reserve", userId, "CLIENT", ticker, i),
                         userId, "CLIENT", ticker, abs.intValueExact());
             }
         }
@@ -695,13 +701,20 @@ public class TransactionExecutorService {
 
     /**
      * Determinisitcki idempotency kljuc za hartijsku nogu inter-bank transakcije.
-     * Kombinuje {@code transactionId}, fazu ({@code reserve}/{@code commit}/{@code release})
-     * i posting identitet ({@code userId}, {@code role}, {@code ticker}) — retry
-     * iste transakcije gadja isti kljuc, pa trading-service vraca kesiran odgovor.
+     * Kombinuje {@code transactionId}, fazu ({@code reserve}/{@code commit}/{@code release}),
+     * posting identitet ({@code userId}, {@code role}, {@code ticker}) i indeks
+     * posting-a u transakciji ({@code postingIndex}) — retry iste transakcije
+     * gadja isti kljuc, pa trading-service vraca kesiran odgovor.
+     *
+     * <p>{@code postingIndex} cini svaki posting zaseban idempotentan poziv:
+     * ako bi transakcija nosila dva hartijska posting-a sa istim
+     * {@code (userId, role, ticker)}, bez indeksa bi se sudarili na istom kljucu
+     * i drugo kretanje bi trading-service-ov idempotency kes tiho progutao.
      */
     private static String stockIdempotencyKey(ForeignBankId txId, String phase,
-                                              Long userId, String role, String ticker) {
+                                              Long userId, String role, String ticker,
+                                              int postingIndex) {
         return "ib-" + txId.routingNumber() + "-" + txId.id() + ":stock-" + phase
-                + ":" + userId + ":" + role + ":" + ticker;
+                + ":" + userId + ":" + role + ":" + ticker + ":" + postingIndex;
     }
 }

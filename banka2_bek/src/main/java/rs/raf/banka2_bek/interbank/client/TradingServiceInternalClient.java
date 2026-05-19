@@ -21,6 +21,7 @@ import rs.raf.banka2.contracts.internal.ReserveStockResponse;
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * HTTP klijent ka trading-service internom {@code /internal/**} seam-u
@@ -80,15 +81,21 @@ public class TradingServiceInternalClient {
      * menadzera. Poziva ga {@code employee} paket kada admin oduzme SUPERVISOR
      * permisiju supervizoru.
      *
-     * <p>Idempotency kljuc je deterministican ({@code reassign-mgr-{old}-{new}}):
-     * operacija je apsolutan JPA {@code update} keyed na {@code oldManagerEmployeeId},
-     * pa ponovljen poziv vraca kesiran broj iz prvog poziva.
+     * <p>Idempotency kljuc je per-poziv {@code UUID} ({@code reassign-mgr-{uuid}}):
+     * sama bulk operacija ({@code UPDATE investment_funds SET manager=new
+     * WHERE manager=old}) je prirodno idempotentna na nivou podataka — drugi
+     * prolaz ne pogadja nista. Deterministican kljuc bi se vratio kao stale-cache
+     * regresija: ako supervizor izgubi SUPERVISOR, kasnije ga ponovo dobije +
+     * stekne nove fondove, pa ga opet izgubi ka ISTOM adminu, identican
+     * {old}-{new} kljuc bi replay-ovao kesiran odgovor i novi fondovi NE bi
+     * bili prebaceni. Per-poziv UUID svaki poziv tretira kao zaseban dogadjaj;
+     * pravi retry (isti UUID) i dalje vraca kesiran odgovor.
      *
      * @return broj fondova kojima je promenjen menadzer
      */
     public ReassignFundManagerResponse reassignFundManager(Long oldManagerEmployeeId,
                                                            Long newManagerEmployeeId) {
-        String idempotencyKey = "reassign-mgr-" + oldManagerEmployeeId + "-" + newManagerEmployeeId;
+        String idempotencyKey = "reassign-mgr-" + UUID.randomUUID();
         return postIdempotent("/internal/funds/reassign-manager", idempotencyKey,
                 new ReassignFundManagerRequest(oldManagerEmployeeId, newManagerEmployeeId),
                 ReassignFundManagerResponse.class);

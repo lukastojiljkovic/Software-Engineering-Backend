@@ -30,7 +30,11 @@ import java.util.List;
  *
  * <p>Rezilijentno: ako banka-core lookup padne (mreza, 5xx, 404), vraca praznu
  * listu — {@link TradingJwtAuthenticationFilter} tada pada na samo {@code ROLE_<role>}
- * i ne rusi request.
+ * i ne rusi request. <b>Neuspesan lookup se NE kesira</b>: kad bi se prazna lista
+ * iz neuspeha kesirala 5 min, tranzijentni banka-core ispad bi supervizoru
+ * uskratio {@code SUPERVISOR} autoritet (403 na supervizorske rute) i posle
+ * oporavka banka-core. Zato se kesira samo uspesan rezultat — sledeci request
+ * posle neuspeha ponovo pokusava banka-core.
  */
 @Component
 public class TradingPermissionResolver {
@@ -50,21 +54,26 @@ public class TradingPermissionResolver {
     }
 
     /**
-     * Vraca listu permisija zaposlenog sa datim email-om. Rezultat se kesira;
-     * na bilo kakvu banka-core gresku vraca praznu listu (rezilijentno).
+     * Vraca listu permisija zaposlenog sa datim email-om. Uspesan rezultat se
+     * kesira (5 min TTL); na banka-core gresku vraca praznu listu (rezilijentno)
+     * ali je NE kesira — sledeci poziv ponovo gadja banka-core.
      */
     public List<String> resolvePermissions(String email) {
         if (email == null || email.isBlank()) {
             return List.of();
         }
-        return permissionCache.get(email, this::lookupPermissions);
-    }
-
-    private List<String> lookupPermissions(String email) {
+        List<String> cached = permissionCache.getIfPresent(email);
+        if (cached != null) {
+            return cached;
+        }
         try {
-            return bankaCoreClient.getUserPermissions(email);
+            List<String> permissions = bankaCoreClient.getUserPermissions(email);
+            // kesira se SAMO uspeh — neuspeh ostaje nekesiran da bi se sledeci
+            // request ponovo obratio banka-core (vidi I3 obrazlozenje u javadoc-u)
+            permissionCache.put(email, permissions);
+            return permissions;
         } catch (RuntimeException ex) {
-            log.warn("Razresavanje permisija za {} nije uspelo (pad na ROLE-only): {}",
+            log.warn("Razresavanje permisija za {} nije uspelo (pad na ROLE-only, ne kesira se): {}",
                     email, ex.getMessage());
             return List.of();
         }

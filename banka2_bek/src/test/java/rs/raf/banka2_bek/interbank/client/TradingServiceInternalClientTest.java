@@ -24,9 +24,11 @@ import rs.raf.banka2.contracts.internal.ReserveStockResponse;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.*;
 
@@ -111,13 +113,13 @@ class TradingServiceInternalClientTest {
     }
 
     @Test
-    @DisplayName("reassignFundManager: salje deterministican X-Idempotency-Key, vraca count")
-    void reassignFundManager_sendsDeterministicKey_andReturnsCount() throws Exception {
+    @DisplayName("reassignFundManager: salje per-poziv UUID X-Idempotency-Key, vraca count")
+    void reassignFundManager_sendsPerCallUuidKey_andReturnsCount() throws Exception {
         ReassignFundManagerResponse stub = new ReassignFundManagerResponse(3);
         mockServer.expect(requestTo(BASE_URL + "/internal/funds/reassign-manager"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("X-Internal-Key", INTERNAL_API_KEY))
-                .andExpect(header("X-Idempotency-Key", "reassign-mgr-100-200"))
+                .andExpect(header("X-Idempotency-Key", startsWith("reassign-mgr-")))
                 .andExpect(jsonPath("$.oldManagerEmployeeId").value(100))
                 .andExpect(jsonPath("$.newManagerEmployeeId").value(200))
                 .andRespond(withSuccess(objectMapper.writeValueAsString(stub),
@@ -126,6 +128,38 @@ class TradingServiceInternalClientTest {
         ReassignFundManagerResponse resp = client.reassignFundManager(100L, 200L);
 
         assertThat(resp.reassignedCount()).isEqualTo(3);
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("reassignFundManager: dva poziva sa istim parovima koriste RAZLICITE kljuceve "
+            + "(nema stale-cache regresije)")
+    void reassignFundManager_distinctKeysAcrossInvocations() throws Exception {
+        AtomicReference<String> firstKey = new AtomicReference<>();
+        AtomicReference<String> secondKey = new AtomicReference<>();
+        ReassignFundManagerResponse stub = new ReassignFundManagerResponse(2);
+        String body = objectMapper.writeValueAsString(stub);
+
+        mockServer.expect(requestTo(BASE_URL + "/internal/funds/reassign-manager"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Idempotency-Key", startsWith("reassign-mgr-")))
+                .andExpect(request ->
+                        firstKey.set(request.getHeaders().getFirst("X-Idempotency-Key")))
+                .andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+        mockServer.expect(requestTo(BASE_URL + "/internal/funds/reassign-manager"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Idempotency-Key", startsWith("reassign-mgr-")))
+                .andExpect(request ->
+                        secondKey.set(request.getHeaders().getFirst("X-Idempotency-Key")))
+                .andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+
+        // identicni (old, new) par u oba poziva — kljuc i dalje mora biti razlicit
+        client.reassignFundManager(100L, 200L);
+        client.reassignFundManager(100L, 200L);
+
+        assertThat(firstKey.get()).isNotBlank();
+        assertThat(secondKey.get()).isNotBlank();
+        assertThat(firstKey.get()).isNotEqualTo(secondKey.get());
         mockServer.verify();
     }
 

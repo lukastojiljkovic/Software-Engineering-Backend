@@ -630,6 +630,35 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
+    @DisplayName("commitLocal: stock idempotency kljuc nosi posting indeks — svaki posting "
+            + "transakcije je zaseban idempotentan poziv (M1)")
+    void commitLocal_stockIdempotencyKeyIncludesPostingIndex() throws Exception {
+        Transaction tx = localStockTx();
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        when(tradingServiceClient.findListingByTicker("AAPL"))
+                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        stubTxSave();
+
+        service.commitLocal(tx.transactionId());
+
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(reservationApplier, times(2)).commitStock(keyCaptor.capture(),
+                anyLong(), anyString(), anyString(), anyInt(), anyBoolean());
+
+        // localStockTx ima 2 posting-a (indeks 0 i 1) — kljucevi moraju biti
+        // razliciti i nositi tacan ":<index>" sufiks.
+        assertThat(keyCaptor.getAllValues()).hasSize(2);
+        assertThat(keyCaptor.getAllValues()).doesNotHaveDuplicates();
+        assertThat(keyCaptor.getAllValues())
+                .anySatisfy(k -> assertThat(k).endsWith(":0"))
+                .anySatisfy(k -> assertThat(k).endsWith(":1"));
+        assertThat(keyCaptor.getAllValues())
+                .allSatisfy(k -> assertThat(k).startsWith("ib-").contains(":stock-commit:"));
+    }
+
+    @Test
     @DisplayName("commitLocal: STOCK listing not found → throws InterbankProtocolException")
     void commitLocal_stockListingNotFound_throws() throws Exception {
         Transaction tx = localStockTx();
