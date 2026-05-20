@@ -33,6 +33,7 @@ import rs.raf.banka2_bek.interbank.repository.InterbankTransactionRepository;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1121,18 +1122,28 @@ class TransactionExecutorServiceTest {
     }
 
     // =========================================================================
-    // commitLocal — option (§2.8.6 commit marks contract EXERCISED)
+    // commitLocal — option (C-1 fix po Celini 5 audit-u: EXERCISED se flip-uje
+    // SAMO za exercise-shape transakcije, ne za sve OptionAsset+Option postings.
+    // Accept tx (po §3.6 PERSON-only) NE sme da flip-uje EXERCISED.)
     // =========================================================================
 
     @Test
-    @DisplayName("commitLocal: option posting → contract marked EXERCISED with exercisedAt timestamp")
-    void commitLocal_optionPosting_contractMarkedExercised() throws Exception {
-        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-commit");
-        OptionDescription opt = buildOptionDescription(negId, "AAPL", BigDecimal.valueOf(10), "USD", BigDecimal.valueOf(150));
+    @DisplayName("commitLocal: exercise-shape tx (Stock+Option posting) → contract marked EXERCISED")
+    void commitLocal_exerciseShape_contractMarkedExercised() throws Exception {
+        // §2.7.2 exercise tx ima (Stock, Option) posting — to je nas EXERCISED marker.
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-exercise");
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500); // 10 × 150
         Transaction tx = new Transaction(List.of(
-                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(10), new Asset.OptionAsset(opt)),
-                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(-10), new Asset.OptionAsset(opt))
-        ), new ForeignBankId(MY_RN, "tx-opt-commit"), null, null, null, null);
+                // (Stock, Option) posting — exercise marker
+                new Posting(new TxAccount.Option(negId), qty.negate(), new Asset.Stock(new StockDescription("AAPL"))),
+                // (Stock, Person) posting — receiving buyer (REMOTE, skipped lokalno)
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), qty, new Asset.Stock(new StockDescription("AAPL"))),
+                // (Monas, Option) — option ac receives money
+                new Posting(new TxAccount.Option(negId), money, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                // (Monas, Account) — buyer's account REMOTE
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD)))
+        ), new ForeignBankId(MY_RN, "tx-exercise"), null, null, null, null);
 
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
@@ -1142,7 +1153,7 @@ class TransactionExecutorServiceTest {
         InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
         neg.setId(55L);
         when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
-                eq(MY_RN), eq("neg-commit"))).thenReturn(Optional.of(neg));
+                eq(MY_RN), eq("neg-exercise"))).thenReturn(Optional.of(neg));
 
         InterbankOtcContract contract = new InterbankOtcContract();
         contract.setStatus(InterbankOtcContractStatus.ACTIVE);
@@ -1157,13 +1168,56 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("commitLocal: already COMMITTED → no contract lookup (idempotent)")
-    void commitLocal_optionPosting_alreadyCommitted_noContractLookup() throws Exception {
-        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-idem");
-        OptionDescription opt = buildOptionDescription(negId, "AAPL", BigDecimal.valueOf(10), "USD", BigDecimal.valueOf(150));
+    @DisplayName("commitLocal: accept-shape tx (OptionAsset+Person only) → contract NOT flipped to EXERCISED")
+    void commitLocal_acceptShape_doesNotFlipExercised() throws Exception {
+        // §3.6 accept-shape: 4 PERSON-only postings, NO TxAccount.Option, NO Stock+Option.
+        // Pre C-1 fix-a, ovakav tx je krsio §3.6 (Option umesto Person) i komitovao
+        // bi se kao "EXERCISED" — sto je bilo greska (accept != exercise). Sad sa
+        // ispravnim postings-ima, contract status MORA da ostane ACTIVE.
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-accept");
+        OptionDescription opt = buildOptionDescription(negId, "AAPL", BigDecimal.ONE, "USD", BigDecimal.valueOf(150));
+        BigDecimal premium = BigDecimal.valueOf(700);
         Transaction tx = new Transaction(List.of(
-                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(10), new Asset.OptionAsset(opt)),
-                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(-10), new Asset.OptionAsset(opt))
+                // Buyer credit premium (remote, skipped lokalno)
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "C-1")),
+                        premium.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                // Seller debit premium (local)
+                new Posting(new TxAccount.Account(MY_RN + "000001"), premium, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                // Buyer debit option (remote, skipped lokalno)
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "C-1")),
+                        BigDecimal.ONE, new Asset.OptionAsset(opt)),
+                // Seller credit option (local, PERSON ne OPTION — C-1 fix)
+                new Posting(new TxAccount.Person(new ForeignBankId(MY_RN, "C-7")),
+                        BigDecimal.ONE.negate(), new Asset.OptionAsset(opt))
+        ), new ForeignBankId(MY_RN, "tx-accept"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        // Note: commitMonas i razne reservation pozive ide kroz reservationApplier
+        // mock — accountRepository nije direktno dotaknuto.
+
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+
+        service.commitLocal(tx.transactionId());
+
+        // C-1 fix: accept-shape tx (NO Stock+Option posting) ne flip-uje EXERCISED.
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+        verify(otcContractRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("commitLocal: already COMMITTED → no contract lookup (idempotent)")
+    void commitLocal_alreadyCommitted_noContractLookup() throws Exception {
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-idem");
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(-10), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), BigDecimal.valueOf(10), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Option(negId), BigDecimal.valueOf(1500), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), BigDecimal.valueOf(-1500), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD)))
         ), new ForeignBankId(MY_RN, "tx-opt-idem"), null, null, null, null);
 
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.COMMITTED);
@@ -1379,7 +1433,8 @@ class TransactionExecutorServiceTest {
             String ticker, BigDecimal quantity, BigDecimal strikePrice, String strikeCurrency) {
         InterbankOtcContract c = new InterbankOtcContract();
         c.setStatus(status);
-        c.setSettlementDate(settlementDate);
+        // M-2: settlement_date je sad OffsetDateTime u entitetu.
+        c.setSettlementDate(settlementDate.atStartOfDay().atOffset(ZoneOffset.UTC));
         c.setTicker(ticker);
         c.setQuantity(quantity);
         c.setStrikePrice(strikePrice);

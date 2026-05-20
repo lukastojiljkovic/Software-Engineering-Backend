@@ -48,6 +48,8 @@ class OtcNegotiationServiceIntegrationTest {
     private EmployeeRepository employeeRepository;
     @Mock
     private TransactionExecutorService transactionExecutor;
+    @Mock
+    private InterbankReservationApplier reservationApplier;
 
     @Test
     @DisplayName("Pun OTC flow: kreiraj → procitaj (red kupca) → counter → accept")
@@ -57,7 +59,7 @@ class OtcNegotiationServiceIntegrationTest {
         properties.setMyBankDisplayName("Banka 2");
         OtcNegotiationService service = new OtcNegotiationService(client, properties,
                 negotiationRepository, contractRepository, tradingServiceClient,
-                clientRepository, employeeRepository, transactionExecutor);
+                clientRepository, employeeRepository, transactionExecutor, reservationApplier);
 
         ForeignBankId buyer = new ForeignBankId(OUR_RN, "buyer-1");
         ForeignBankId seller = new ForeignBankId(SELLER_RN, "seller-1");
@@ -124,7 +126,7 @@ class OtcNegotiationServiceIntegrationTest {
         properties.setMyRoutingNumber(OUR_RN);
         OtcNegotiationService service = new OtcNegotiationService(client, properties,
                 negotiationRepository, contractRepository, tradingServiceClient,
-                clientRepository, employeeRepository, transactionExecutor);
+                clientRepository, employeeRepository, transactionExecutor, reservationApplier);
 
         ForeignBankId negotiationId = new ForeignBankId(SELLER_RN, "neg-77");
         when(client.postNegotiation(eq(SELLER_RN), any()))

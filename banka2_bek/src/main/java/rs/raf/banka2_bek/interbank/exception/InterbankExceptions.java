@@ -87,6 +87,18 @@ public final class InterbankExceptions {
     }
 
     /**
+     * §2.7.2 — exercise opcije pozvan na ugovor koji nije ACTIVE, ili posle
+     * settlementDate-a, ili od strane koja nije kupac, ili na ugovoru koji ne
+     * pripada pozivacu. HTTP 409 Conflict (ne 400, jer su payload-i ispravni —
+     * stanje resursa konfliktuje).
+     */
+    public static class InterbankExerciseConflictException extends InterbankException {
+        public InterbankExerciseConflictException(String message) {
+            super(message);
+        }
+    }
+
+    /**
      * §2.2 — duplikat pri belezenju idempotence kljuca ili stale cached response.
      */
     public static class InterbankIdempotencyException extends InterbankException {

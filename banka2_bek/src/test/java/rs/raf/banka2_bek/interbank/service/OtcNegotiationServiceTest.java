@@ -56,6 +56,8 @@ class OtcNegotiationServiceTest {
     private EmployeeRepository employeeRepository;
     @Mock
     private TransactionExecutorService transactionExecutor;
+    @Mock
+    private InterbankReservationApplier reservationApplier;
 
     private InterbankProperties properties;
     private OtcNegotiationService service;
@@ -68,7 +70,7 @@ class OtcNegotiationServiceTest {
         service = new OtcNegotiationService(client, properties,
                 negotiationRepository, contractRepository,
                 tradingServiceClient, clientRepository, employeeRepository,
-                transactionExecutor);
+                transactionExecutor, reservationApplier);
     }
 
     // ───────────────────── §3.1 fetchRemotePublicStocks ─────────────────────
@@ -305,6 +307,49 @@ class OtcNegotiationServiceTest {
         UserInformation result = service.resolveUserName(userId);
 
         assertThat(result).isSameAs(info);
+    }
+
+    // ───────────────────── M-3: integer amount validation (§2.7.2) ─────────────────────
+
+    @Test
+    @DisplayName("M-3 (§2.7.2): createNegotiation odbija frakcioni amount sa 400")
+    void createNegotiation_rejectsFractionalAmount() {
+        ForeignBankId buyer = new ForeignBankId(OUR_RN, "buyer-1");
+        ForeignBankId seller = new ForeignBankId(SELLER_RN, "seller-1");
+        OtcOffer fractional = new OtcOffer(
+                new StockDescription("AAPL"),
+                OffsetDateTime.now().plusDays(7),
+                new MonetaryValue(CurrencyCode.USD, new BigDecimal("200")),
+                new MonetaryValue(CurrencyCode.USD, new BigDecimal("700")),
+                buyer, seller,
+                new BigDecimal("1.5"), // frakcioni — odbacuje §2.7.2
+                buyer);
+
+        assertThatThrownBy(() -> service.createNegotiation(fractional))
+                .isInstanceOf(rs.raf.banka2_bek.interbank.exception.InterbankExceptions.InterbankProtocolException.class)
+                .hasMessageContaining("ceo broj");
+
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
+    @Test
+    @DisplayName("M-3 (§2.7.2): celobrojni amount sa decimalnim nulama (10.00) prolazi")
+    void createNegotiation_acceptsIntegerWithTrailingZeros() {
+        ForeignBankId buyer = new ForeignBankId(OUR_RN, "buyer-1");
+        ForeignBankId seller = new ForeignBankId(SELLER_RN, "seller-1");
+        OtcOffer integerLike = new OtcOffer(
+                new StockDescription("AAPL"),
+                OffsetDateTime.now().plusDays(7),
+                new MonetaryValue(CurrencyCode.USD, new BigDecimal("200")),
+                new MonetaryValue(CurrencyCode.USD, new BigDecimal("700")),
+                buyer, seller,
+                new BigDecimal("10.00"), // celobrojno + trailing zeros — OK
+                buyer);
+        ForeignBankId returnedId = new ForeignBankId(SELLER_RN, "neg-ok");
+        when(client.postNegotiation(eq(SELLER_RN), eq(integerLike))).thenReturn(returnedId);
+
+        ForeignBankId result = service.createNegotiation(integerLike);
+        assertThat(result).isEqualTo(returnedId);
     }
 
     // ───────────────────── helpers ─────────────────────

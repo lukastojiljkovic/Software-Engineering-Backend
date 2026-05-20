@@ -7,8 +7,8 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.ColumnDefault;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 /**
  * T12 — Inter-bank OTC pregovor (kupac i prodavac u razlicitim bankama).
@@ -142,9 +142,13 @@ public class InterbankOtcNegotiation {
     @Column(name = "premium_currency", nullable = false, length = 3)
     private String premiumCurrency;
 
-    /** Datum dospeca opcije — posle ovoga ugovor istice ako nije iskoriscen (§2.7.2). */
-    @Column(name = "settlement_date", nullable = false)
-    private LocalDate settlementDate;
+    /**
+     * Datum dospeca opcije sa TZ — posle ovoga ugovor istice ako nije iskoriscen (§2.7.2).
+     * M-2 fix po Celini 5 audit-u: §2.4 zahteva ISO 8601 sa zonom; nismo smeli da
+     * drop-ujemo TZ na .toLocalDate() pri persistovanju.
+     */
+    @Column(name = "settlement_date", nullable = false, columnDefinition = "timestamp with time zone")
+    private OffsetDateTime settlementDate;
 
     // ─── Pravilo turne (§3.3) ─────────────────────────────────────────────
     /**

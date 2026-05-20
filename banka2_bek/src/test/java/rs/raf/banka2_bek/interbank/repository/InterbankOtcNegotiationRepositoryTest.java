@@ -13,6 +13,8 @@ import rs.raf.banka2_bek.interbank.model.InterbankPartyType;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -59,7 +61,8 @@ class InterbankOtcNegotiationRepositoryTest {
         n.setPriceCurrency("USD");
         n.setPremium(new BigDecimal("700.00"));
         n.setPremiumCurrency("USD");
-        n.setSettlementDate(LocalDate.now().plusDays(30));
+        // M-2: settlement_date je sad OffsetDateTime u entitetu.
+        n.setSettlementDate(LocalDate.now().plusDays(30).atStartOfDay().atOffset(ZoneOffset.UTC));
         // Kupac je poslednji izmenio (inicirao pregovor) — turn je sad nas (seller).
         n.setLastModifiedByRoutingNumber(111);
         n.setLastModifiedByIdString("partner-buyer-001");

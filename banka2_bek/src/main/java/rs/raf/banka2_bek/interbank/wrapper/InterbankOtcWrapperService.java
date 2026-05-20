@@ -4,6 +4,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import rs.raf.banka2_bek.account.model.Account;
+import rs.raf.banka2_bek.account.model.AccountStatus;
+import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.employee.model.Employee;
@@ -15,13 +18,19 @@ import rs.raf.banka2_bek.interbank.model.InterbankOtcContractStatus;
 import rs.raf.banka2_bek.interbank.model.InterbankOtcNegotiation;
 import rs.raf.banka2_bek.interbank.model.InterbankOtcNegotiationStatus;
 import rs.raf.banka2_bek.interbank.model.InterbankPartyType;
+import rs.raf.banka2_bek.interbank.protocol.Asset;
 import rs.raf.banka2_bek.interbank.protocol.CurrencyCode;
 import rs.raf.banka2_bek.interbank.protocol.ForeignBankId;
+import rs.raf.banka2_bek.interbank.protocol.MonetaryAsset;
 import rs.raf.banka2_bek.interbank.protocol.MonetaryValue;
 import rs.raf.banka2_bek.interbank.protocol.OtcOffer;
+import rs.raf.banka2_bek.interbank.protocol.Posting;
 import rs.raf.banka2_bek.interbank.protocol.PublicStock;
 import rs.raf.banka2_bek.interbank.protocol.StockDescription;
+import rs.raf.banka2_bek.interbank.protocol.Transaction;
+import rs.raf.banka2_bek.interbank.protocol.TxAccount;
 import rs.raf.banka2_bek.interbank.protocol.UserInformation;
+import rs.raf.banka2_bek.interbank.service.TransactionExecutorService;
 import rs.raf.banka2.contracts.internal.InternalListingDto;
 import rs.raf.banka2_bek.interbank.client.TradingServiceInternalClient;
 import rs.raf.banka2_bek.interbank.repository.InterbankOtcContractRepository;
@@ -34,8 +43,6 @@ import rs.raf.banka2_bek.interbank.wrapper.InterbankOtcWrapperDtos.OtcInterbankL
 import rs.raf.banka2_bek.interbank.wrapper.InterbankOtcWrapperDtos.OtcInterbankOffer;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -73,6 +80,8 @@ public class InterbankOtcWrapperService {
     private final ClientRepository clientRepository;
     private final EmployeeRepository employeeRepository;
     private final TradingServiceInternalClient tradingServiceClient;
+    private final AccountRepository accountRepository;
+    private final TransactionExecutorService transactionExecutor;
 
     /** Cache imena partner banaka po routing number-u (resolveUserName izlaz). */
     private final Map<String, UserInformation> userInfoCache = new ConcurrentHashMap<>();
@@ -140,6 +149,10 @@ public class InterbankOtcWrapperService {
             throw new IllegalArgumentException("sellerBankCode mora biti partner banka, ne nasa");
         }
 
+        // M-3 fix: §2.7.2 zahteva ceo broj akcija. Validacija pre HTTP poziva
+        // ka partneru (inace bi vec poslali nevalidan payload).
+        validateIntegerAmount(request.quantity());
+
         InternalListingDto listing = tradingServiceClient.findListingByTicker(request.listingTicker())
                 .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
                         "Ticker " + request.listingTicker() + " ne postoji u nasem listings-u"));
@@ -150,6 +163,9 @@ public class InterbankOtcWrapperService {
         ForeignBankId buyerId = new ForeignBankId(myRouting, prefixedId(buyerUserId, buyerUserRole));
         ForeignBankId sellerId = new ForeignBankId(sellerRouting, request.sellerUserId());
 
+        // M-2 fix: cuvamo full OffsetDateTime od ulaza ka partneru i u nasoj
+        // bazi. Settlement koji DTO daje (LocalDate) tretiramo kao start-of-day
+        // UTC — to je jedini smisao "datum"-only u kontekstu spec §2.4.
         OffsetDateTime settlement = request.settlementDate().atStartOfDay().atOffset(ZoneOffset.UTC);
 
         OtcOffer outboundOffer = new OtcOffer(
@@ -179,7 +195,7 @@ public class InterbankOtcWrapperService {
         entity.setPriceCurrency(currency);
         entity.setPremium(request.premium());
         entity.setPremiumCurrency(currency);
-        entity.setSettlementDate(request.settlementDate());
+        entity.setSettlementDate(settlement);
         entity.setLastModifiedByRoutingNumber(myRouting);
         entity.setLastModifiedByIdString(buyerId.id());
         entity.setOngoing(true);
@@ -207,6 +223,9 @@ public class InterbankOtcWrapperService {
         InterbankOtcNegotiation entity = lookupOrThrow(foreignId);
         ensureMyParty(entity, userId, userRole);
 
+        // M-3: counter-offer amount mora takodje biti ceo broj.
+        validateIntegerAmount(request.quantity());
+
         int myRouting = requireMyRoutingNumber();
         ForeignBankId myParty = new ForeignBankId(myRouting, prefixedId(userId, userRole));
         ForeignBankId otherParty = new ForeignBankId(
@@ -217,9 +236,12 @@ public class InterbankOtcWrapperService {
 
         CurrencyCode ccy = CurrencyCode.valueOf(entity.getPriceCurrency());
 
+        // M-2 fix: full OffsetDateTime sa TZ.
+        OffsetDateTime settlement = request.settlementDate().atStartOfDay().atOffset(ZoneOffset.UTC);
+
         OtcOffer outbound = new OtcOffer(
                 new StockDescription(entity.getTicker()),
-                request.settlementDate().atStartOfDay().atOffset(ZoneOffset.UTC),
+                settlement,
                 new MonetaryValue(ccy, request.pricePerStock()),
                 new MonetaryValue(ccy, request.premium()),
                 buyerId, sellerId, request.quantity(),
@@ -230,7 +252,7 @@ public class InterbankOtcWrapperService {
         entity.setAmount(request.quantity());
         entity.setPricePerUnit(request.pricePerStock());
         entity.setPremium(request.premium());
-        entity.setSettlementDate(request.settlementDate());
+        entity.setSettlementDate(settlement);
         entity.setLastModifiedByRoutingNumber(myRouting);
         entity.setLastModifiedByIdString(myParty.id());
         negotiationRepository.save(entity);
@@ -300,26 +322,36 @@ public class InterbankOtcWrapperService {
     }
 
     /**
-     * Exercise inter-bank OTC ugovor sa nase (kupcheve) strane. Inicira 2PC
-     * SAGA preko {@link OtcNegotiationService#acceptOffer} putanje analogne
-     * §3.6, ali sa ulogom kupca (debit money, credit stock).
+     * Exercise inter-bank OTC ugovor sa nase (kupceve) strane (§2.7.2).
      * <p>
-     * U realnom protokol-koraku, exercise je zaseban od accept-a — accept
-     * formira opciju, exercise je iskoristava pre settlementDate-a. Buyer
-     * banka inicira novu transakciju koja:
+     * <b>C-2 fix po Celini 5 audit-u:</b> ranije je metod samo postavljao
+     * status=EXERCISED lokalno bez ikakve 2PC interakcije sa prodavcevom
+     * bankom — novac i akcije se nikad nisu pravo prebacili. Sad formiramo
+     * 4-posting transakciju po spec §2.7.2 i prosledjujemo je
+     * {@link TransactionExecutorService#execute}-u (postojeci 2PC seam).
+     * <p>
+     * 4-posting exercise transakcija (lokalna sign konvencija: pozitivno =
+     * debit/povecava, negativno = kredit/smanjuje):
      * <pre>
-     *   buyer  credit  strike × quantity (money)   // kupac plata
-     *   seller debit   strike × quantity (money)
-     *   buyer  debit   stock × quantity            // kupac dobija akcije
-     *   seller credit  stock × quantity
-     *   buyer  credit  option (potrosena)
-     *   seller debit   option
+     *   Option pseudo-account  debit  pi*k MONAS    (option ac receives money)
+     *   Buyer (Person)         credit pi*k MONAS    (buyer pays)
+     *   Option pseudo-account  credit k STOCK       (option ac gives stocks)
+     *   Buyer (Person)         debit  k STOCK       (buyer receives stocks)
      * </pre>
-     * Implementacija delegira na {@link rs.raf.banka2_bek.interbank.service.TransactionExecutorService}
-     * preko {@link OtcNegotiationService} putanje (accept-style) kako bi se
-     * iskoristila postojeca 2PC orkestracija.
+     * Po §2.7.2 option pseudo-account je u prodavcevoj banci, koja je u 2PC
+     * recipient (prima NEW_TX/COMMIT_TX/ROLLBACK_TX). 2PC commit ce u
+     * prodavcevoj banci da debituje rezervisane hartije + obrise reservaciju.
+     * U nasoj banci, commitLocal handluje Stock+Option posting kao "exercise
+     * marker" i postavlja contract.status=EXERCISED.
+     * <p>
+     * Pre-validacija (po §2.7.2 zadnji paragraf + uobicajenoj 2PC predigri):
+     * <ul>
+     *   <li>status mora biti ACTIVE</li>
+     *   <li>settlementDate mora biti u buducnosti (UTC)</li>
+     *   <li>pozivac mora biti buyer i mora vlasnistvo nad ugovorom</li>
+     *   <li>buyer mora odabrati validan racun u strike valuti sa dovoljnim saldom</li>
+     * </ul>
      */
-    @Transactional
     public OtcInterbankContract exerciseContract(String contractIdStr, Long buyerAccountId,
                                                  Long userId, String userRole) {
         Long contractId;
@@ -333,33 +365,112 @@ public class InterbankOtcWrapperService {
                 .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
                         "Ugovor " + contractId + " ne postoji"));
 
+        // C-2 — sve preconditije -> 409 Conflict (ne 400). Payload je validan,
+        // ali stanje resursa konfliktuje sa exercise zahtevom.
         if (!contract.getLocalPartyId().equals(userId) || !contract.getLocalPartyRole().equalsIgnoreCase(userRole)) {
-            throw new InterbankExceptions.InterbankProtocolException(
+            throw new InterbankExceptions.InterbankExerciseConflictException(
                     "Ugovor ne pripada trenutno autentifikovanom korisniku");
         }
-        if (contract.getStatus() != InterbankOtcContractStatus.ACTIVE) {
-            throw new InterbankExceptions.InterbankProtocolException(
-                    "Ugovor nije ACTIVE (trenutno: " + contract.getStatus() + ")");
-        }
-        if (contract.getSettlementDate().isBefore(LocalDate.now())) {
-            throw new InterbankExceptions.InterbankProtocolException(
-                    "Ugovor je istekao (settlement: " + contract.getSettlementDate() + ")");
-        }
         if (contract.getLocalPartyType() != InterbankPartyType.BUYER) {
-            throw new InterbankExceptions.InterbankProtocolException(
+            throw new InterbankExceptions.InterbankExerciseConflictException(
                     "Exercise inicira kupac; mi smo SELLER u ovom ugovoru");
         }
+        if (contract.getStatus() != InterbankOtcContractStatus.ACTIVE) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Ugovor nije ACTIVE (trenutno: " + contract.getStatus() + ")");
+        }
+        // §2.7.2 last paragraph: "if that option was not used, the resources
+        // stuck in an option shall be un-reserved". Posle settlement-a exercise
+        // nije izvrsiv. UTC compare da izbegnemo TZ edge case izmedju banki.
+        if (!contract.getSettlementDate().isAfter(OffsetDateTime.now(ZoneOffset.UTC))) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Ugovor je istekao (settlement: " + contract.getSettlementDate() + ")");
+        }
 
-        // Trenutni P1 doseg: oznacavamo ugovor kao EXERCISED i logujemo. Pun
-        // 2PC SAGA exercise se izvrsava kroz `TransactionExecutorService` koji
-        // se aktivira kroz inbound COMMIT_TX (kad partnerova banka posalje
-        // commit za exercise transakciju). Ovde samo iniciramo lokalnu marka.
-        contract.setStatus(InterbankOtcContractStatus.EXERCISED);
-        contract.setExercisedAt(LocalDateTime.now());
-        contractRepository.save(contract);
+        if (buyerAccountId == null) {
+            throw new IllegalArgumentException("buyerAccountId je obavezan za exercise");
+        }
+        Account buyerAccount = accountRepository.findById(buyerAccountId)
+                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                        "Racun " + buyerAccountId + " ne postoji"));
+        if (buyerAccount.getStatus() != AccountStatus.ACTIVE) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Racun " + buyerAccount.getAccountNumber() + " nije aktivan");
+        }
+        if (buyerAccount.getClient() == null
+                || !buyerAccount.getClient().getId().equals(userId)
+                || !"CLIENT".equalsIgnoreCase(userRole)) {
+            // Note: u trenutnoj wrapperu samo CLIENT kao buyer ima Account vlasnistvo
+            // (EMPLOYEE/ADMIN buyer-i nisu jos podrzani — vidi resolveLocalAccount).
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Racun " + buyerAccount.getAccountNumber() + " ne pripada korisniku");
+        }
+        if (!buyerAccount.getCurrency().getCode().equalsIgnoreCase(contract.getStrikeCurrency())) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Racun " + buyerAccount.getAccountNumber() + " nije u valuti "
+                            + contract.getStrikeCurrency());
+        }
 
+        BigDecimal totalCost = contract.getStrikePrice().multiply(contract.getQuantity());
+        if (buyerAccount.getAvailableBalance().compareTo(totalCost) < 0) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Nedovoljno sredstava na racunu " + buyerAccount.getAccountNumber()
+                            + " za exercise (potrebno: " + totalCost + " " + contract.getStrikeCurrency() + ")");
+        }
+
+        // Formiraj exercise transakciju per §2.7.2.
+        int myRouting = requireMyRoutingNumber();
+        ForeignBankId negotiationId = new ForeignBankId(
+                contract.getForeignPartyRoutingNumber() /* prodavceva banka — autoritativni vlasnik */,
+                resolveSourceNegotiationIdString(contract));
+        ForeignBankId buyerForeign = new ForeignBankId(myRouting, prefixedId(userId, userRole));
+
+        CurrencyCode strikeCcy = CurrencyCode.valueOf(contract.getStrikeCurrency());
+        Asset monasAsset = new Asset.Monas(new MonetaryAsset(strikeCcy));
+        Asset stockAsset = new Asset.Stock(new StockDescription(contract.getTicker()));
+
+        BigDecimal qty = contract.getQuantity();
+        BigDecimal money = totalCost;
+
+        // §2.7.2 spec wording:
+        //   "Debit option pseudo-account for pi*k" — option ac increases money → +pi*k
+        //   "Credit the buyer for pi*k"            — buyer decreases money    → -pi*k
+        //   "Credit option pseudo-account for k stocks" — option ac decreases stocks → -k
+        //   "Debit relevant receiving accounts for k assets" — buyer receives stocks → +k
+        Posting p1 = new Posting(new TxAccount.Option(negotiationId), money, monasAsset);
+        Posting p2 = new Posting(new TxAccount.Account(buyerAccount.getAccountNumber()), money.negate(), monasAsset);
+        Posting p3 = new Posting(new TxAccount.Option(negotiationId), qty.negate(), stockAsset);
+        Posting p4 = new Posting(new TxAccount.Person(buyerForeign), qty, stockAsset);
+
+        Transaction tx = transactionExecutor.formTransaction(
+                List.of(p1, p2, p3, p4),
+                "OTC exercise option " + negotiationId,
+                null, "OTC-EX", "Iskoriscavanje OTC opcionog ugovora"
+        );
+
+        // Pozovi 2PC OUT-OF-TX (execute koordinira svoju per-fazu Tx). Ako padne,
+        // exception se propagira — contract ostaje ACTIVE i kupac moze da retry-uje.
+        // Na uspesan COMMIT_TX, commitLocal heuristika (vidi TransactionExecutorService)
+        // detektuje Stock+Option posting i postavlja contract.status=EXERCISED.
+        transactionExecutor.execute(tx);
+
+        // Posle uspesnog 2PC ucitaj contract sveze (commitLocal je vec save-ovao).
+        InterbankOtcContract refreshed = contractRepository.findById(contractId).orElse(contract);
         log.info("OTC inter-bank contract {} exercised (buyerAccount={})", contractId, buyerAccountId);
-        return mapContractToDto(contract);
+        return mapContractToDto(refreshed);
+    }
+
+    /**
+     * Resolve {@code foreignNegotiationIdString} pregovora iz kog je ugovor nastao —
+     * to je {@code id} dela {@code ForeignBankId} koji ide u option pseudo-account
+     * (§2.7.2: option pseudo-account je u prodavcevoj banci sa negotiationId-em).
+     */
+    private String resolveSourceNegotiationIdString(InterbankOtcContract contract) {
+        InterbankOtcNegotiation neg = negotiationRepository.findById(contract.getSourceNegotiationId())
+                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                        "Pregovor " + contract.getSourceNegotiationId() + " ne postoji za ugovor "
+                                + contract.getId()));
+        return neg.getForeignNegotiationIdString();
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -472,7 +583,7 @@ public class InterbankOtcWrapperService {
                 n.getAmount(),
                 n.getPricePerUnit(),
                 n.getPremium(),
-                n.getSettlementDate(),
+                n.getSettlementDate() != null ? n.getSettlementDate().toLocalDate() : null,
                 waitingOnBankCode,
                 waitingOnUserId,
                 myTurn,
@@ -517,7 +628,7 @@ public class InterbankOtcWrapperService {
                 listing.map(InternalListingDto::price)
                         .map(price -> price != null ? price : BigDecimal.ZERO)
                         .orElse(BigDecimal.ZERO),
-                c.getSettlementDate(),
+                c.getSettlementDate() != null ? c.getSettlementDate().toLocalDate() : null,
                 c.getStatus().name(),
                 c.getCreatedAt(),
                 c.getExercisedAt()
@@ -593,5 +704,19 @@ public class InterbankOtcWrapperService {
         if (f.isEmpty()) return l;
         if (l.isEmpty()) return f;
         return f + " " + l;
+    }
+
+    /**
+     * M-3 fix: §2.7.2 zahteva ceo broj akcija u OTC opcijama. Frakcioni iznosi
+     * se odbacuju sa 400 (protocol exception).
+     */
+    private static void validateIntegerAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("amount mora biti > 0 (zadato: " + amount + ")");
+        }
+        if (amount.stripTrailingZeros().scale() > 0) {
+            throw new InterbankExceptions.InterbankProtocolException(
+                    "amount mora biti ceo broj (§2.7.2) — zadato: " + amount);
+        }
     }
 }

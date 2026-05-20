@@ -13,6 +13,8 @@ import rs.raf.banka2_bek.interbank.model.InterbankPartyType;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,7 +54,8 @@ class InterbankOtcContractRepositoryTest {
         c.setStrikeCurrency("USD");
         c.setPremium(new BigDecimal("1150.00"));
         c.setPremiumCurrency("USD");
-        c.setSettlementDate(settlement);
+        // M-2: settlement_date je sad OffsetDateTime u entitetu (§2.4 ISO 8601 + TZ).
+        c.setSettlementDate(settlement.atStartOfDay().atOffset(ZoneOffset.UTC));
         c.setStatus(status);
         return c;
     }
@@ -168,7 +171,8 @@ class InterbankOtcContractRepositoryTest {
                 today.minusDays(20), InterbankOtcContractStatus.EXPIRED));
 
         List<InterbankOtcContract> toExpire = repository
-                .findByStatusAndSettlementDateBefore(InterbankOtcContractStatus.ACTIVE, today);
+                .findByStatusAndSettlementDateBefore(InterbankOtcContractStatus.ACTIVE,
+                        today.atStartOfDay().atOffset(ZoneOffset.UTC));
 
         assertThat(toExpire).hasSize(2);
         assertThat(toExpire).extracting(InterbankOtcContract::getTicker)

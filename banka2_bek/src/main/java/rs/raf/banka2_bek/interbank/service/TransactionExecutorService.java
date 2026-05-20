@@ -3,6 +3,7 @@ package rs.raf.banka2_bek.interbank.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -26,10 +27,10 @@ import rs.raf.banka2_bek.interbank.repository.InterbankTransactionRepository;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class TransactionExecutorService {
@@ -233,6 +234,22 @@ public class TransactionExecutorService {
         }
 
         List<Posting> postings = tx.postings();
+        // C-1 compounding bug fix po Celini 5 audit-u:
+        //
+        // Ranija heuristika je obelezavala ugovor kao EXERCISED kad god je commit
+        // sadrzao (OptionAsset, Option) posting — sto je gadjalo i accept (koji
+        // je krsio §3.6 i imao OptionAsset+Option posting). Posle C-1 fix-a accept
+        // tx ima ISKLJUCIVO PERSON↔PERSON OptionAsset postings, pa ovaj uslov
+        // tamo nikad ne pali (sto je tacno).
+        //
+        // Spec §2.7.2 exercise tx ima Stock-asset posting NA Option pseudo-acc-u
+        // ("Credit option pseudo-account for k stocks" + "Debit relevant
+        // receiving accounts for k assets"). Detekcija EXERCISED se sad veze za
+        // taj signature: (Stock, Option) — jer to NIGDE drugde u protokolu se
+        // ne pojavljuje (§3.6 accept ima OptionAsset, ne Stock, na Option-u).
+        boolean isExercise = postings.stream().anyMatch(
+                pp -> pp.asset() instanceof Asset.Stock && pp.account() instanceof TxAccount.Option);
+
         for (int i = 0; i < postings.size(); i++) {
             Posting p = postings.get(i);
             if (isPostingRemote(p)) continue;
@@ -253,19 +270,37 @@ public class TransactionExecutorService {
                         stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
                         userId, "CLIENT", ticker, abs.intValueExact(), isDebit);
 
-            } else if (p.asset() instanceof Asset.OptionAsset oa && p.account() instanceof TxAccount.Option) {
-                ForeignBankId negId = oa.asset().negotiationId();
-                otcNegotiationRepository
-                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
-                                negId.routingNumber(), negId.id())
-                        .ifPresent(neg ->
-                                otcContractRepository.findBySourceNegotiationId(neg.getId())
-                                        .ifPresent(contract -> {
-                                            contract.setStatus(InterbankOtcContractStatus.EXERCISED);
-                                            contract.setExercisedAt(LocalDateTime.now());
-                                            otcContractRepository.save(contract);
-                                        }));
             }
+            // OptionAsset+Person posting (accept-shape) i Monas/Stock+Option posting
+            // (exercise-shape) ne barataju nikakvim portfolio/account state-om u nasoj
+            // banci ako smo seller (option pseudo-account je apstraktan); contract
+            // status flip se desava ispod, posle petlje.
+        }
+
+        // Posle iteracije: ako je exercise-shape tx, oznaci kontaminirani contract
+        // kao EXERCISED. Trazimo prvu (Stock, Option) posting i razresimo negotiationId
+        // iz nje (TxAccount.Option.id() je negotiation id po §2.7.2).
+        if (isExercise) {
+            postings.stream()
+                    .filter(pp -> pp.account() instanceof TxAccount.Option)
+                    .filter(pp -> pp.asset() instanceof Asset.Stock)
+                    .findFirst()
+                    .ifPresent(pp -> {
+                        TxAccount.Option opt = (TxAccount.Option) pp.account();
+                        ForeignBankId negId = opt.id();
+                        otcNegotiationRepository
+                                .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                                        negId.routingNumber(), negId.id())
+                                .ifPresent(neg -> otcContractRepository
+                                        .findBySourceNegotiationId(neg.getId())
+                                        .ifPresent(contract -> {
+                                            if (contract.getStatus() == InterbankOtcContractStatus.ACTIVE) {
+                                                contract.setStatus(InterbankOtcContractStatus.EXERCISED);
+                                                contract.setExercisedAt(LocalDateTime.now());
+                                                otcContractRepository.save(contract);
+                                            }
+                                        }));
+                    });
         }
 
         ibTx.setStatus(InterbankTransactionStatus.COMMITTED);
@@ -619,10 +654,12 @@ public class TransactionExecutorService {
                     }
                 }
 
-            } else if (asset instanceof Asset.OptionAsset opAsset && account instanceof TxAccount.Option) {
-                OptionDescription optionDescription = opAsset.asset();
-                ForeignBankId negotiationId = optionDescription.negotiationId();
-
+            } else if (account instanceof TxAccount.Option opt) {
+                // §2.8.6 rule 5+6: option pseudo-account validacija (TxAccount.Option).
+                // Triggered ne samo za OptionAsset (postojeci marker case) vec i
+                // za stock/monas postings ka Option pseudo-acc-u (§2.7.2 exercise
+                // tx ima Stock+Option i Monas+Option, ne OptionAsset+Option).
+                ForeignBankId negotiationId = opt.id();
                 Optional<InterbankOtcNegotiation> negotiationOptional =
                         otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
                                 negotiationId.routingNumber(), negotiationId.id());
@@ -640,14 +677,19 @@ public class TransactionExecutorService {
 
                 InterbankOtcContract contract = contractOptional.get();
 
-                // §2.8.6 rule 5: option must not be used or expired
+                // §2.8.6 rule 5: option must not be used or expired (UTC compare;
+                // M-2 fix: contract.settlementDate je sad OffsetDateTime).
                 if (contract.getStatus() != InterbankOtcContractStatus.ACTIVE
-                        || contract.getSettlementDate().isBefore(LocalDate.now())) {
+                        || !contract.getSettlementDate().isAfter(java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC))) {
                     violations.add(new NoVoteReason(NoVoteReason.Reason.OPTION_USED_OR_EXPIRED, p));
                     continue;
                 }
 
-                // §2.8.6 rule 6: companion postings must match contract terms exactly
+                // §2.8.6 rule 6: companion postings must match contract terms exactly.
+                // Validujemo samo jednom po transakciji (na prvom Option postingu).
+                // Heuristika: oba potencijalna trigger-a (Stock+Option i Monas+Option)
+                // ce gadjati istu validaciju — ali sve istraga radi anyMatch po celom
+                // tx-u, pa redundantnost ne pokvari ispravnost.
                 BigDecimal requiredMoney = contract.getQuantity().multiply(contract.getStrikePrice());
 
                 boolean stockOk = tx.postings().stream().anyMatch(sp ->
@@ -664,6 +706,19 @@ public class TransactionExecutorService {
                     violations.add(new NoVoteReason(NoVoteReason.Reason.OPTION_AMOUNT_INCORRECT, p));
                 }
 
+            } else if (asset instanceof Asset.OptionAsset && account instanceof TxAccount.Person) {
+                // §3.6 accept-shape: OptionAsset+Person je "contract creation"
+                // posting (Buyer — Debit one optionContract / Seller — Credit one
+                // optionContract). U validate fazi nema sta da rezervisemo na
+                // racunu (option-as-asset zivi van Account-a; stvarna rezervacija
+                // hartija ide kroz acceptReceivedNegotiation-ov reservationApplier.
+                // C-3 fix). Validan posting — no-op.
+                //
+                // NB: Monas+Person je NAMERNO neprihvacen (UNACCEPTABLE_ASSET) —
+                // §3.6 koristi Person samo za remote (foreign) buyer, koji nikad
+                // ne dolazi do nase validacije (skipped kroz isPostingRemote).
+                // Lokalni Monas+Person je nedvosmislena greska; ostavimo da
+                // padne u else branch ispod.
             } else {
                 violations.add(new NoVoteReason(NoVoteReason.Reason.UNACCEPTABLE_ASSET, p));
             }
@@ -671,31 +726,63 @@ public class TransactionExecutorService {
 
         if (!violations.isEmpty()) return violations;
 
-        // Pass 2 — reservations (credit postings only, amount < 0)
+        // Pass 2 — reservations (credit postings only, amount < 0).
+        // I-5 fix po Celini 5 audit-u: ako reserveStock (HTTP poziv ka
+        // trading-service-u) uspe za jedan posting a sledeci pukne, prvi je vec
+        // ulazio out-of-process u trading_db. @Transactional rollback nije pravi
+        // rollback — trading-service ima sopstvenu Tx granicu. Pratimo svaki
+        // uspeh i kompenzujemo immediate na mid-failure.
+        List<StockReservationRecord> stockReservations = new ArrayList<>();
         List<Posting> postings = tx.postings();
-        for (int i = 0; i < postings.size(); i++) {
-            Posting p = postings.get(i);
-            if (isPostingRemote(p)) continue;
-            if (p.amount().compareTo(BigDecimal.ZERO) >= 0) continue;
+        try {
+            for (int i = 0; i < postings.size(); i++) {
+                Posting p = postings.get(i);
+                if (isPostingRemote(p)) continue;
+                if (p.amount().compareTo(BigDecimal.ZERO) >= 0) continue;
 
-            BigDecimal abs = p.amount().abs();
-            Asset asset = p.asset();
-            TxAccount account = p.account();
+                BigDecimal abs = p.amount().abs();
+                Asset asset = p.asset();
+                TxAccount account = p.account();
 
-            if (asset instanceof Asset.Monas && account instanceof TxAccount.Account a) {
-                reservationApplier.reserveMonas(a.num(), abs);
+                if (asset instanceof Asset.Monas && account instanceof TxAccount.Account a) {
+                    reservationApplier.reserveMonas(a.num(), abs);
 
-            } else if (asset instanceof Asset.Stock s && account instanceof TxAccount.Person pe) {
-                Long userId = Long.parseLong(pe.id().id());
-                String ticker = s.asset().ticker();
-                reservationApplier.reserveStock(
-                        stockIdempotencyKey(tx.transactionId(), "reserve", userId, "CLIENT", ticker, i),
-                        userId, "CLIENT", ticker, abs.intValueExact());
+                } else if (asset instanceof Asset.Stock s && account instanceof TxAccount.Person pe) {
+                    Long userId = Long.parseLong(pe.id().id());
+                    String ticker = s.asset().ticker();
+                    reservationApplier.reserveStock(
+                            stockIdempotencyKey(tx.transactionId(), "reserve", userId, "CLIENT", ticker, i),
+                            userId, "CLIENT", ticker, abs.intValueExact());
+                    stockReservations.add(new StockReservationRecord(
+                            userId, "CLIENT", ticker, abs.intValueExact(), i));
+                }
             }
+        } catch (RuntimeException reservationFail) {
+            // Kompenzacija: oslobodi sve hartije koje smo vec rezervisali u ovom
+            // pass-u. releaseStock je idempotentan, kljuc ukljucuje fazu "release"
+            // da ne sudara sa reserve kljucem.
+            for (StockReservationRecord r : stockReservations) {
+                try {
+                    reservationApplier.releaseStock(
+                            stockIdempotencyKey(tx.transactionId(), "release-on-prepare-fail",
+                                    r.userId(), r.role(), r.ticker(), r.postingIndex()),
+                            r.userId(), r.role(), r.ticker(), r.quantity());
+                } catch (RuntimeException releaseFail) {
+                    // Best-effort — log + nastavi. Idempotency-driven retry
+                    // scheduler ce verovatno preuzeti, ali to je deferred concern.
+                    log.warn("Compensation releaseStock failed for tx={} posting={}: {}",
+                            tx.transactionId(), r.postingIndex(), releaseFail.getMessage());
+                }
+            }
+            throw reservationFail;
         }
 
         return violations;
     }
+
+    /** Trag uspesne rezervacije hartije u Pass 2 — koristi se za kompenzaciju. */
+    private record StockReservationRecord(Long userId, String role, String ticker,
+                                          int quantity, int postingIndex) {}
 
     /**
      * Determinisitcki idempotency kljuc za hartijsku nogu inter-bank transakcije.

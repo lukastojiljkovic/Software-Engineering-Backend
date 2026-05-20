@@ -5,7 +5,7 @@ import rs.raf.banka2_bek.interbank.model.InterbankOtcContract;
 import rs.raf.banka2_bek.interbank.model.InterbankOtcContractStatus;
 import rs.raf.banka2_bek.interbank.model.InterbankPartyType;
 
-import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -47,5 +47,5 @@ public interface InterbankOtcContractRepository extends JpaRepository<InterbankO
      * rezervaciju hartija po §2.7.2).
      */
     List<InterbankOtcContract> findByStatusAndSettlementDateBefore(
-            InterbankOtcContractStatus status, LocalDate settlementDateBefore);
+            InterbankOtcContractStatus status, OffsetDateTime settlementDateBefore);
 }

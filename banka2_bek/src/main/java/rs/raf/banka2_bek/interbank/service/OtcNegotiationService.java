@@ -2,6 +2,8 @@ package rs.raf.banka2_bek.interbank.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import rs.raf.banka2_bek.client.model.Client;
@@ -37,7 +39,6 @@ import rs.raf.banka2_bek.interbank.repository.InterbankOtcNegotiationRepository;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -89,6 +90,19 @@ public class OtcNegotiationService {
     private final ClientRepository clientRepository;
     private final EmployeeRepository employeeRepository;
     private final TransactionExecutorService transactionExecutor;
+    private final InterbankReservationApplier reservationApplier;
+
+    /**
+     * Self-proxy: I-3 fix po Celini 5 audit-u — {@code acceptReceivedNegotiation}
+     * vise nije jedan veliki @Transactional metod sa 2PC HTTP I/O u sebi. Posao
+     * je razdvojen na 3 male @Transactional faze (persist contract, izvrsi 2PC
+     * van Tx-a, compensate). Self-pozivi MORAJU ici kroz proxy da bi Spring AOP
+     * uhvatio @Transactional na svakoj fazi posebno (self-invocation kroz `this`
+     * preskace interceptor).
+     */
+    @Lazy
+    @Autowired
+    OtcNegotiationService self;
 
     /** Cache po routing number-u partnerske banke. ConcurrentHashMap (low contention). */
     private final Map<Integer, CachedPublicStocks> publicStockCache = new ConcurrentHashMap<>();
@@ -241,9 +255,7 @@ public class OtcNegotiationService {
         if (offer.stock() == null || offer.stock().ticker() == null) {
             throw new IllegalArgumentException("offer.stock.ticker je obavezan");
         }
-        if (offer.amount() == null || offer.amount().signum() <= 0) {
-            throw new IllegalArgumentException("amount mora biti > 0");
-        }
+        validateIntegerAmount(offer.amount());
         if (offer.pricePerUnit() == null || offer.pricePerUnit().amount() == null
                 || offer.pricePerUnit().amount().signum() <= 0) {
             throw new IllegalArgumentException("pricePerUnit mora biti > 0");
@@ -295,7 +307,8 @@ public class OtcNegotiationService {
         entity.setPriceCurrency(offer.pricePerUnit().currency().name());
         entity.setPremium(offer.premium().amount());
         entity.setPremiumCurrency(offer.premium().currency().name());
-        entity.setSettlementDate(offer.settlementDate().toLocalDate());
+        // M-2 fix: cuvamo full ISO 8601 sa TZ (§2.4), ne .toLocalDate().
+        entity.setSettlementDate(offer.settlementDate());
         entity.setLastModifiedByRoutingNumber(offer.lastModifiedBy().routingNumber());
         entity.setLastModifiedByIdString(offer.lastModifiedBy().id());
         entity.setOngoing(true);
@@ -357,7 +370,9 @@ public class OtcNegotiationService {
         }
 
         // Update polja koja mogu da se menjaju (po §3.3: amount, pricePerUnit, premium, settlementDate).
-        if (updated.amount() != null && updated.amount().signum() > 0) {
+        if (updated.amount() != null) {
+            // M-3: counter-offer amount mora takodje biti ceo broj.
+            validateIntegerAmount(updated.amount());
             entity.setAmount(updated.amount());
         }
         if (updated.pricePerUnit() != null && updated.pricePerUnit().amount() != null) {
@@ -369,7 +384,8 @@ public class OtcNegotiationService {
             entity.setPremiumCurrency(updated.premium().currency().name());
         }
         if (updated.settlementDate() != null) {
-            entity.setSettlementDate(updated.settlementDate().toLocalDate());
+            // M-2 fix: cuvamo full ISO 8601 sa TZ.
+            entity.setSettlementDate(updated.settlementDate());
         }
         entity.setLastModifiedByRoutingNumber(updated.lastModifiedBy().routingNumber());
         entity.setLastModifiedByIdString(updated.lastModifiedBy().id());
@@ -412,28 +428,77 @@ public class OtcNegotiationService {
 
     /**
      * §3.6 — kupac (foreign) prihvata ponudu. Mi smo seller (autoritativni).
-     * Forma transakciju (§3.6 4-posting tabela), ubaci je u
-     * {@link TransactionExecutorService}, sacekaj COMMITTED, kreiraj
-     * {@link InterbankOtcContract}, postavi pregovor na ACCEPTED + ongoing=false.
      * <p>
-     * Po §3.6 transakcija ima 4 postinga (BigDecimal sign konvencija u nasim
-     * postingima: pozitivno = debit; negativno = kredit):
+     * Po §3.6 transakcija ima 4 postinga (sve protiv PERSON racuna; lokalna sign
+     * konvencija: pozitivno = debit/povecava, negativno = kredit/smanjuje):
      * <pre>
-     *   buyer  debit  premium       (foreign account, pseudo)
-     *   seller credit premium       (lokalni racun seller-a u premium valuti)
-     *   buyer  debit  optionContract (foreign — buyer dobija opciju)
-     *   seller credit optionContract (Option pseudo-account kod nas)
+     *   buyer  credit O.premium             (foreign Person, premija ide od kupca)
+     *   seller debit  O.premium             (seller account, premija stize prodavcu)
+     *   buyer  debit  optionContract(1)     (foreign Person dobija 1 ugovor)
+     *   seller credit optionContract(1)     (local Person, prodavac daje 1 ugovor)
      * </pre>
      * <p>
-     * Premium se prebacuje sa kupca (foreign) na seller-ov racun u nasoj
-     * banci. Opcioni asset se kreira na pseudo-account-u Option kod nas
-     * (autoritativni vlasnik) i debituje kupcevoj strani — predstavlja njegovo
-     * pravo na exercise.
+     * Spec §3.6 zadnji paragraf: "Note that the debit of the Seller above should
+     * reserve their stocks as part of the contract." — pa MORAMO rezervisati
+     * sellerove hartije pri accept-u (C-3 fix). Rezervacija ide kroz
+     * {@link InterbankReservationApplier#reserveStock} sa idempotentnim kljucem
+     * po {@code negotiationId} — retry je bezbedan.
+     * <p>
+     * I-3 fix po Celini 5 audit-u: ranije je sav posao bio u jednom velikom
+     * {@code @Transactional} metodu, ukljucujuci 2PC HTTP I/O. To je pinned
+     * Hikari konekciju kroz mrezne pozive (60s read timeout × broj partnera).
+     * Sad je posao razdvojen:
+     * <ol>
+     *   <li>{@link #persistAcceptArtifacts(InterbankOtcNegotiation)} — kratak Tx:
+     *       kreira contract + flip negotiation na ACCEPTED.</li>
+     *   <li>Rezervacija hartija + 2PC izvrsenje OUT-OF-TX (mrezni I/O).</li>
+     *   <li>{@link #compensateAccept(Long, Long, Long, String, String, int)} —
+     *       kratak Tx za compensacijski rollback ako 2PC pukne.</li>
+     * </ol>
      */
-    @Transactional
     public void acceptReceivedNegotiation(ForeignBankId negotiationId) {
         if (negotiationId == null) throw new IllegalArgumentException("negotiationId ne sme biti null");
 
+        AcceptPrep prep = self.persistAcceptArtifacts(negotiationId);
+
+        // OUT-OF-TX: rezervacija hartija (§3.6 zadnji paragraf, C-3 fix).
+        // Idempotency kljuc deterministicki po negotiationId-u — partnerov retry,
+        // duplicate accept, ili nas mid-flight crash sve gadjaju isti kljuc i
+        // trading-service vraca kesiran odgovor (vidi ReservationApplier).
+        String reserveKey = stockReservationIdempotencyKey(negotiationId);
+        try {
+            reservationApplier.reserveStock(reserveKey,
+                    prep.sellerUserId(), prep.sellerRole(),
+                    prep.ticker(), prep.quantity());
+        } catch (RuntimeException reservationFail) {
+            // Compensate: vrati pregovor u ACTIVE + obrisi contract.
+            self.compensateAccept(prep.negotiationEntityId(), prep.contractEntityId(),
+                    prep.sellerUserId(), prep.sellerRole(), prep.ticker(), prep.quantity());
+            throw new InterbankExceptions.InterbankProtocolException(
+                    "Rezervacija hartija prodavca nije uspela: " + reservationFail.getMessage());
+        }
+
+        // OUT-OF-TX: izvrsi 2PC. Ako 2PC pukne (NO glas, mrezni fail), kompenzuj
+        // pregovor + contract + rezervaciju.
+        try {
+            transactionExecutor.execute(prep.tx());
+        } catch (RuntimeException twoPcFail) {
+            self.compensateAccept(prep.negotiationEntityId(), prep.contractEntityId(),
+                    prep.sellerUserId(), prep.sellerRole(), prep.ticker(), prep.quantity());
+            throw twoPcFail;
+        }
+
+        log.info("OTC inbound: accepted negotiation {} -> contract {}",
+                negotiationId, prep.contractEntityId());
+    }
+
+    /**
+     * §3.6 prvi korak — perzistira contract entitet + flip pregovora na ACCEPTED.
+     * Kratak {@code @Transactional} blok bez mreznih poziva — Hikari konekcija
+     * se odmah oslobadja (I-3 fix).
+     */
+    @Transactional
+    public AcceptPrep persistAcceptArtifacts(ForeignBankId negotiationId) {
         InterbankOtcNegotiation entity = lookupByNegotiationId(negotiationId);
         if (!entity.isOngoing() || entity.getStatus() != InterbankOtcNegotiationStatus.ACTIVE) {
             throw new InterbankExceptions.InterbankProtocolException(
@@ -443,10 +508,9 @@ public class OtcNegotiationService {
             throw new InterbankExceptions.InterbankProtocolException(
                     "Mi nismo seller u ovom pregovoru — accept moze samo na sellerovoj banci");
         }
-        // §3.6 — settlementDate validacija. Spec koristi OffsetDateTime; mi
-        // persistujemo kao LocalDate (start-of-day UTC). Poredimo UTC trenutni
-        // datum da izbegnemo edge case sa razlikom timezone-a izmedju banki.
-        if (entity.getSettlementDate().isBefore(LocalDate.now(ZoneOffset.UTC))) {
+        // §3.6 — settlementDate validacija. Spec koristi OffsetDateTime; sad i mi
+        // (M-2 fix). Poredimo UTC trenutni trenutak da izbegnemo TZ edge case.
+        if (!entity.getSettlementDate().isAfter(OffsetDateTime.now(ZoneOffset.UTC))) {
             throw new InterbankExceptions.InterbankNegotiationConflictException(
                     "settlementDate je prosao — pregovor je istekao");
         }
@@ -456,35 +520,37 @@ public class OtcNegotiationService {
         ForeignBankId buyerParty = new ForeignBankId(
                 entity.getForeignPartyRoutingNumber(), entity.getForeignPartyIdString());
 
-        // Forma 4-posting transakciju (§3.6).
-        // Premium: kupac (foreign) credit, seller (local) debit.
+        // Forma 4-posting transakciju (§3.6). C-1 fix: optionContract postings
+        // su PERSON↔PERSON, qty=1 (ne `k` — spec eksplicitno kaze "Buyer — Debit
+        // ONE optionContract(O)"; k je broj akcija u opciji, ne broj ugovora).
         CurrencyCode premiumCcy = CurrencyCode.valueOf(entity.getPremiumCurrency());
         Asset premiumAsset = new Asset.Monas(new MonetaryAsset(premiumCcy));
 
-        // Seller side — mora se odabrati seller-ov RSD/strani racun u premium valuti.
-        // Po Celini 5: prebacujemo u seller-ov racun matchovan po valuti.
         String sellerAccountNumber = resolveLocalAccount(entity.getLocalPartyId(),
                 entity.getLocalPartyRole(), premiumCcy.name())
                 .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
                         "Seller nema racun u valuti " + premiumCcy.name()));
 
-        // Option asset.
         OptionDescription optDesc = new OptionDescription(
                 negotiationId,
                 new StockDescription(entity.getTicker()),
                 new MonetaryValue(CurrencyCode.valueOf(entity.getPriceCurrency()), entity.getPricePerUnit()),
-                entity.getSettlementDate().atStartOfDay().atOffset(ZoneOffset.UTC),
+                entity.getSettlementDate(),
                 entity.getAmount()
         );
         Asset optionAsset = new Asset.OptionAsset(optDesc);
 
         BigDecimal premium = entity.getPremium();
 
-        // Postings: pozitivno = debit (povecava sredstva), negativno = kredit (smanjuje).
+        // §3.6:
+        //   p1: buyer credit premium       (Person buyer, -premium, Monas)
+        //   p2: seller debit premium       (Account seller, +premium, Monas)
+        //   p3: buyer debit 1 optionContract (Person buyer, +1, OptionAsset)
+        //   p4: seller credit 1 optionContract (Person seller, -1, OptionAsset)  ← C-1 fix
         Posting p1 = new Posting(new TxAccount.Person(buyerParty), premium.negate(), premiumAsset);
         Posting p2 = new Posting(new TxAccount.Account(sellerAccountNumber), premium, premiumAsset);
-        Posting p3 = new Posting(new TxAccount.Person(buyerParty), entity.getAmount(), optionAsset);
-        Posting p4 = new Posting(new TxAccount.Option(negotiationId), entity.getAmount().negate(), optionAsset);
+        Posting p3 = new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE, optionAsset);
+        Posting p4 = new Posting(new TxAccount.Person(myParty), BigDecimal.ONE.negate(), optionAsset);
 
         Transaction tx = transactionExecutor.formTransaction(
                 List.of(p1, p2, p3, p4),
@@ -492,8 +558,8 @@ public class OtcNegotiationService {
                 null, "OTC", "Premium za opcioni ugovor"
         );
 
-        // Pre execute: kreiraj contract entitet (pre 2PC tako da exercise post-commit
-        // moze da ga nadje preko sourceNegotiationId).
+        // Kreiraj contract pre 2PC tako da exercise (mozda u istom milisekundu)
+        // moze da ga nadje preko sourceNegotiationId.
         InterbankOtcContract contract = new InterbankOtcContract();
         contract.setSourceNegotiationId(entity.getId());
         contract.setLocalPartyType(InterbankPartyType.SELLER);
@@ -512,28 +578,84 @@ public class OtcNegotiationService {
         contract.setCreatedAt(LocalDateTime.now());
         contractRepository.save(contract);
 
-        // Pregovor markiraj kao ACCEPTED prvo (sinhrono, pre 2PC izvrsenja).
         entity.setStatus(InterbankOtcNegotiationStatus.ACCEPTED);
         entity.setOngoing(false);
         entity.setLastModifiedByRoutingNumber(myParty.routingNumber());
         entity.setLastModifiedByIdString(myParty.id());
         negotiationRepository.save(entity);
 
-        // Izvrsi 2PC. Ako se ne izvrsi (NO glas), izuzetak ce se propagirati gore
-        // i Spring rollback-uje ceo @Transactional — pregovor se vraca u ACTIVE.
-        try {
-            transactionExecutor.execute(tx);
-        } catch (RuntimeException e) {
-            // Defenzivno — bilo koja greska 2PC-a vraca stanje.
-            entity.setStatus(InterbankOtcNegotiationStatus.ACTIVE);
-            entity.setOngoing(true);
-            negotiationRepository.save(entity);
-            contractRepository.delete(contract);
-            throw e;
-        }
-
-        log.info("OTC inbound: accepted negotiation {} -> contract {}", negotiationId, contract.getId());
+        return new AcceptPrep(
+                entity.getId(), contract.getId(), tx,
+                entity.getLocalPartyId(), entity.getLocalPartyRole(),
+                entity.getTicker(), entity.getAmount().intValueExact()
+        );
     }
+
+    /**
+     * Compensacijski rollback kad rezervacija hartija ili 2PC pukne posle
+     * {@link #persistAcceptArtifacts}: vraca pregovor u ACTIVE, brise contract,
+     * pokusava da oslobodi hartije (best-effort). Kratak {@code @Transactional}.
+     */
+    @Transactional
+    public void compensateAccept(Long negotiationEntityId, Long contractEntityId,
+                                  Long sellerUserId, String sellerRole,
+                                  String ticker, int quantity) {
+        negotiationRepository.findById(negotiationEntityId).ifPresent(e -> {
+            e.setStatus(InterbankOtcNegotiationStatus.ACTIVE);
+            e.setOngoing(true);
+            negotiationRepository.save(e);
+        });
+        contractRepository.findById(contractEntityId)
+                .ifPresent(contractRepository::delete);
+
+        // Best-effort release — rezervacija mozda nije ni izvrsena (npr. kad
+        // 2PC pukne pre nego sto reserveStock uspe), ali idempotency je takav
+        // da bezopasan poziv ne pravi stetu (trading-service vraca kesiran
+        // odgovor ili 404). Logujemo gresku, ne propagiramo.
+        try {
+            reservationApplier.releaseStock(
+                    stockReservationReleaseKey(negotiationEntityId),
+                    sellerUserId, sellerRole, ticker, quantity);
+        } catch (RuntimeException releaseFail) {
+            log.warn("OTC accept compensate: releaseStock failed for neg={}, ticker={}, qty={}: {}",
+                    negotiationEntityId, ticker, quantity, releaseFail.getMessage());
+        }
+    }
+
+    /**
+     * Deterministicki idempotency kljuc za hartijsku rezervaciju pri accept-u.
+     * Format: {@code "otc-accept-{rn}-{idString}:stock-reserve"}. Sluzi za to
+     * da partnerov retry, duplikat-accept, ili nas mid-flight crash pogadjaju
+     * isti kljuc → trading-service vraca kesiran odgovor.
+     */
+    private static String stockReservationIdempotencyKey(ForeignBankId negotiationId) {
+        return "otc-accept-" + negotiationId.routingNumber() + "-" + negotiationId.id()
+                + ":stock-reserve";
+    }
+
+    /**
+     * Release kljuc je drugaciji od reserve-kljuca (kombinacija fazu + neg ID):
+     * ako bi bio isti, trading-service idempotency kes bi tretirao oba kao isti
+     * poziv. Zato koristimo lokalni entitetski id (sigurno != od inicijalnog
+     * routing+idString reserve-kljuca).
+     */
+    private static String stockReservationReleaseKey(Long negotiationEntityId) {
+        return "otc-accept-compensate-" + negotiationEntityId + ":stock-release";
+    }
+
+    /**
+     * Vrednost koja se prosledjuje iz prvog Tx u out-of-Tx 2PC + compensaciju.
+     * Samo immutable record da nema racing/aliasing.
+     */
+    public record AcceptPrep(
+            Long negotiationEntityId,
+            Long contractEntityId,
+            Transaction tx,
+            Long sellerUserId,
+            String sellerRole,
+            String ticker,
+            int quantity
+    ) {}
 
     /**
      * §3.7 — vrati friendly ime za nas lokalni id (prefix-encoded "C-" / "E-").
@@ -588,9 +710,7 @@ public class OtcNegotiationService {
         if (offer.pricePerUnit() == null) throw new IllegalArgumentException("offer.pricePerUnit ne sme biti null");
         if (offer.premium() == null) throw new IllegalArgumentException("offer.premium ne sme biti null");
         if (offer.amount() == null) throw new IllegalArgumentException("offer.amount ne sme biti null");
-        if (offer.amount().signum() <= 0) {
-            throw new IllegalArgumentException("amount mora biti > 0 (zadato: " + offer.amount() + ")");
-        }
+        validateIntegerAmount(offer.amount());
         if (offer.pricePerUnit().amount() == null || offer.pricePerUnit().amount().signum() <= 0) {
             throw new IllegalArgumentException("pricePerUnit mora biti > 0");
         }
@@ -604,6 +724,22 @@ public class OtcNegotiationService {
         }
         if (offer.buyerId().equals(offer.sellerId())) {
             throw new IllegalArgumentException("buyer i seller ne mogu biti isto lice");
+        }
+    }
+
+    /**
+     * M-3 fix po Celini 5 audit-u: §2.7.2 zahteva "amount of stocks exchanged
+     * must be an integer greater than zero". Sirovi {@code signum() > 0} provera
+     * nije dovoljna — frakcioni iznosi (npr. 1.5) bi prosli. Sad odbacujemo
+     * sve sto nije celobrojno.
+     */
+    private static void validateIntegerAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("amount mora biti > 0 (zadato: " + amount + ")");
+        }
+        if (amount.stripTrailingZeros().scale() > 0) {
+            throw new InterbankExceptions.InterbankProtocolException(
+                    "amount mora biti ceo broj (§2.7.2) — zadato: " + amount);
         }
     }
 
@@ -709,7 +845,7 @@ public class OtcNegotiationService {
 
         return new OtcNegotiation(
                 new StockDescription(e.getTicker()),
-                e.getSettlementDate().atStartOfDay().atOffset(ZoneOffset.UTC),
+                e.getSettlementDate(),
                 new MonetaryValue(CurrencyCode.valueOf(e.getPriceCurrency()), e.getPricePerUnit()),
                 new MonetaryValue(CurrencyCode.valueOf(e.getPremiumCurrency()), e.getPremium()),
                 buyerId,

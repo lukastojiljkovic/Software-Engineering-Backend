@@ -6,8 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 /**
  * T12 — Inter-bank OTC opcioni ugovor (sklopljen kroz pregovor izmedju
@@ -106,8 +106,13 @@ public class InterbankOtcContract {
     @Column(name = "premium_currency", nullable = false, length = 3)
     private String premiumCurrency;
 
-    @Column(name = "settlement_date", nullable = false)
-    private LocalDate settlementDate;
+    /**
+     * Datum dospeca opcije sa TZ (M-2 fix po Celini 5 audit-u: §2.4 zahteva
+     * ISO 8601 sa zonom; nismo smeli da drop-ujemo TZ na .toLocalDate() pri
+     * persistovanju). Posle expiry-ja ugovor istice po §2.7.2.
+     */
+    @Column(name = "settlement_date", nullable = false, columnDefinition = "timestamp with time zone")
+    private OffsetDateTime settlementDate;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
