@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * T8 — MockMvc test {@link InvestmentFundController} (invest / withdraw).
  *
- * NAPOMENA (faza 2c): monolitni test je koristio {@code UserResolver}; identitet
+ * NAPOMENA (faza 2c): monolitni test je koristio {@code TradingUserResolver}; identitet
  * u trading-service-u razresava {@link TradingUserResolver} (banka-core
  * identitet). Standalone setup + scoped {@link InvestmentFundExceptionHandler}
  * (IllegalArgumentException -&gt; 400) je doslovan. Servis je {@code @Mock} —

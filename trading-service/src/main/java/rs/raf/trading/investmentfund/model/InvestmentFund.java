@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
 
 /**
  * NAPOMENA (copy-first ekstrakcija, faza 2c): kopija monolitnog
- * {@code rs.raf.banka2_bek.investmentfund.model.InvestmentFund}. Sve
+ * {@code rs.raf.trading.investmentfund.model.InvestmentFund}. Sve
  * reference na banka-core entitete su vec soft id-evi
  * ({@code managerEmployeeId}, {@code accountId}, {@code ownerClientId}) —
  * nema JPA veza, kopija je doslovna.

@@ -15,6 +15,8 @@ import rs.raf.trading.common.UserContext;
 import rs.raf.trading.dividend.dto.DividendPayoutDto;
 import rs.raf.trading.dividend.model.DividendPayout;
 import rs.raf.trading.dividend.repository.DividendPayoutRepository;
+import rs.raf.trading.investmentfund.model.ClientFundTransaction;
+import rs.raf.trading.investmentfund.service.FundDividendService;
 import rs.raf.trading.order.service.CurrencyConversionService;
 import rs.raf.trading.portfolio.model.Portfolio;
 import rs.raf.trading.portfolio.repository.PortfolioRepository;
@@ -59,6 +61,7 @@ public class DividendService {
     private final BankaCoreClient bankaCoreClient;
     private final TradingUserResolver userResolver;
     private final CurrencyConversionService currencyConversionService;
+    private final FundDividendService fundDividendService;
 
     // ── Kvartalna obrada ──────────────────────────────────────────────────────
 
@@ -167,6 +170,14 @@ public class DividendService {
                 .multiply(quarterlyYield)
                 .setScale(4, RoundingMode.HALF_UP);
 
+        // 2.5. B11 — FUND-vlasnistvo dispatch: ne knjizimo direktno, vec
+        // delegiramo na FundDividendService koji kreditira fond racun (RSD)
+        // i dalje orkestrira reinvestiranje / raspodelu klijentima.
+        if ("FUND".equalsIgnoreCase(ownerType)) {
+            return payFundDividend(portfolio, listing, paymentDate, quantity, price,
+                    quarterlyYield, grossAmount);
+        }
+
         boolean taxExempt = "EMPLOYEE".equals(ownerType);
         BigDecimal tax = taxExempt
                 ? BigDecimal.ZERO
@@ -252,6 +263,53 @@ public class DividendService {
         log.info("DividendService: isplaceno — owner={}/{} listing={} ticker={} gross={} tax={} net={} {}",
                 ownerType, ownerId, listingId, saved.getStockTicker(),
                 grossAmount, tax, amountToCredit, creditedCurrency);
+        return saved;
+    }
+
+    /**
+     * B11 — Isplata dividende za FUND-vlasnistvo: delegira na
+     * {@link FundDividendService#creditDividendToFund} koji RSD-konvertuje
+     * iznos (ako je listing u stranoj valuti), kreditira fond racun preko
+     * banka-core seam-a, i upisuje {@link ClientFundTransaction} sa statusom
+     * {@code DIVIDEND_INFLOW}.
+     */
+    private DividendPayout payFundDividend(Portfolio portfolio, Listing listing,
+                                           LocalDate paymentDate, int quantity,
+                                           BigDecimal price, BigDecimal quarterlyYield,
+                                           BigDecimal grossAmount) {
+        String listingCurrency = ListingCurrencyResolver.resolve(listing);
+        BigDecimal amountForFund = "RSD".equalsIgnoreCase(listingCurrency)
+                ? grossAmount
+                : currencyConversionService.convert(grossAmount, listingCurrency, "RSD");
+
+        ClientFundTransaction fundTx = fundDividendService.creditDividendToFund(
+                portfolio.getUserId(),
+                portfolio.getListingId(),
+                amountForFund);
+
+        DividendPayout payout = DividendPayout.builder()
+                .ownerId(portfolio.getUserId())
+                .ownerType("FUND")
+                .stockListingId(portfolio.getListingId())
+                .stockTicker(portfolio.getListingTicker() != null
+                        ? portfolio.getListingTicker()
+                        : listing.getTicker())
+                .quantity(quantity)
+                .priceOnDate(price)
+                .dividendYieldRate(quarterlyYield)
+                .grossAmount(amountForFund)
+                .tax(BigDecimal.ZERO)
+                .netAmount(amountForFund)
+                .creditedAccountId(fundTx.getSourceAccountId())
+                .currencyCode("RSD")
+                .paymentDate(paymentDate)
+                .taxExempt(true)
+                .build();
+
+        DividendPayout saved = dividendPayoutRepository.save(payout);
+        log.info("B11: dividenda za ticker {} uplacena fondu #{} — iznos={} RSD (gross {} {})",
+                portfolio.getListingTicker(), portfolio.getUserId(), amountForFund,
+                grossAmount, listingCurrency);
         return saved;
     }
 
