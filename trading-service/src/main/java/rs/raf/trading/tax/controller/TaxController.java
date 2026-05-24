@@ -5,6 +5,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import rs.raf.banka2.contracts.internal.InternalUserDto;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.service.AuditLogService;
+import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.tax.dto.TaxBreakdownItemDto;
 import rs.raf.trading.tax.dto.TaxRecordDto;
 import rs.raf.trading.tax.service.TaxService;
@@ -31,6 +35,8 @@ import java.util.List;
 public class TaxController {
 
     private final TaxService taxService;
+    private final AuditLogService auditLogService;
+    private final BankaCoreClient bankaCoreClient;
 
     /**
      * GET /tax - Lista korisnika sa dugovanjima (supervizor portal).
@@ -63,8 +69,30 @@ public class TaxController {
      */
     @PostMapping("/calculate")
     @PreAuthorize("hasAnyRole('ADMIN', 'EMPLOYEE')")
-    public ResponseEntity<Void> triggerCalculation() {
+    public ResponseEntity<Void> triggerCalculation(Authentication authentication) {
         taxService.calculateTaxForAllUsers();
+
+        // B7 audit hook (port iz main PR #86, Stasa Dragovic)
+        // U mikroservisnoj arhitekturi banka-core ima Employee tabelu — pa actorId
+        // resolvujemo preko BankaCoreClient.getUserByEmail (umesto monolitovog
+        // EmployeeRepository).
+        String email = authentication != null ? authentication.getName() : "UNKNOWN";
+        Long actorId = 0L;
+        try {
+            InternalUserDto user = bankaCoreClient.getUserByEmail(email);
+            if (user != null) {
+                actorId = user.userId();
+            }
+        } catch (RuntimeException ignored) {
+            // banka-core lookup failed — koristimo fallback actorId=0
+        }
+        auditLogService.record(
+                actorId, "EMPLOYEE",
+                AuditActionType.TAX_RUN_TRIGGERED,
+                "Manual tax calculation triggered by " + email,
+                null, null
+        );
+
         return ResponseEntity.ok().build();
     }
 

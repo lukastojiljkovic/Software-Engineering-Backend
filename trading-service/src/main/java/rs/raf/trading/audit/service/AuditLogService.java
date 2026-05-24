@@ -1,4 +1,4 @@
-package rs.raf.banka2_bek.audit.service;
+package rs.raf.trading.audit.service;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -6,29 +6,33 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import rs.raf.banka2_bek.audit.dto.AuditLogDto;
-import rs.raf.banka2_bek.audit.model.AuditActionType;
-import rs.raf.banka2_bek.audit.model.AuditLog;
-import rs.raf.banka2_bek.audit.repository.AuditLogRepository;
-import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
+import rs.raf.banka2.contracts.internal.InternalUserDto;
+import rs.raf.trading.audit.dto.AuditLogDto;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.model.AuditLog;
+import rs.raf.trading.audit.repository.AuditLogRepository;
+import rs.raf.trading.client.BankaCoreClient;
+import rs.raf.trading.common.UserRole;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
 /**
- * B7 — Audit log servis (port iz main PR #86, Stasa Dragovic).
+ * B7 — Audit log servis u trading-service domenu
+ * (port iz main PR #86; identitet aktera (ime/prezime) resolve-uje preko
+ * {@link BankaCoreClient#getUserById} jer Employee/Client tabele zive u
+ * banka-core domenu — trading-service ih nema lokalno).
  *
  * {@code record()} koristi {@link Propagation#REQUIRES_NEW} da audit upis
- * ostane cak i ako pozivajuca transakcija bude rollback-ovana — bitno za
- * logovanje neuspelih akcija. Audit log je append-only — nema delete metoda.
+ * ostane cak i ako pozivajuca transakcija bude rollback-ovana.
  */
 @Service
 @RequiredArgsConstructor
 public class AuditLogService {
 
     private final AuditLogRepository auditLogRepository;
-    private final EmployeeRepository employeeRepository;
+    private final BankaCoreClient bankaCoreClient;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void record(Long actorId, String actorType, AuditActionType action,
@@ -93,10 +97,17 @@ public class AuditLogService {
     }
 
     private String resolveActorName(Long actorId, String actorType) {
-        if ("EMPLOYEE".equals(actorType)) {
-            return employeeRepository.findById(actorId)
-                    .map(e -> e.getFirstName() + " " + e.getLastName())
-                    .orElse("ID:" + actorId);
+        if (actorId == null || actorId == 0L) {
+            return "ID:" + actorId;
+        }
+        try {
+            String role = "EMPLOYEE".equals(actorType) ? UserRole.EMPLOYEE : UserRole.CLIENT;
+            InternalUserDto user = bankaCoreClient.getUserById(role, actorId);
+            if (user != null && user.firstName() != null && user.lastName() != null) {
+                return user.firstName() + " " + user.lastName();
+            }
+        } catch (RuntimeException ignored) {
+            // Banka-core lookup failed — fallback below.
         }
         return "ID:" + actorId;
     }

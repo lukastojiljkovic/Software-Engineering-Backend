@@ -83,6 +83,7 @@ class OrderServiceImplTest {
     @Mock private BankaCoreClient bankaCoreClient;
     @Mock private rs.raf.trading.security.TradingUserResolver tradingUserResolver;
     @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
+    @Mock private rs.raf.trading.audit.service.AuditLogService auditLogService;
 
     @InjectMocks
     private OrderServiceImpl orderService;

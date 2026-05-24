@@ -1,4 +1,4 @@
-package rs.raf.banka2_bek.audit.controller;
+package rs.raf.trading.audit.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -12,18 +12,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import rs.raf.banka2_bek.audit.dto.AuditLogDto;
-import rs.raf.banka2_bek.audit.model.AuditActionType;
-import rs.raf.banka2_bek.audit.service.AuditLogService;
+import rs.raf.trading.audit.dto.AuditLogDto;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.service.AuditLogService;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * B7 — REST kontroler za audit log (port iz main PR #86, Stasa Dragovic).
+ * B7 — REST kontroler za trading-service audit log (port iz main PR #86).
  *
- * Pristup ogranicen na ADMIN i SUPERVISOR — konfigurise se centralno u
- * {@code GlobalSecurityConfig}. Bez {@code @PreAuthorize} na metodama.
+ * Bazna putanja: /audit (isto kao u banka-core — gateway rutira /audit/**
+ * ka pravom servisu na osnovu konteksta).
  */
 @RestController
 @RequestMapping("/audit")

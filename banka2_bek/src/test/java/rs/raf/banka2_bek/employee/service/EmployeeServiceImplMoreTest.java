@@ -48,6 +48,9 @@ class EmployeeServiceImplMoreTest {
     @Mock
     private TradingServiceInternalClient tradingServiceInternalClient;
 
+    @Mock
+    private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
+
     @InjectMocks
     private EmployeeServiceImpl employeeService;
 

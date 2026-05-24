@@ -10,17 +10,19 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import rs.raf.trading.order.exception.InsufficientFundsException;
 import rs.raf.trading.otc.controller.OtcController;
+import rs.raf.trading.otc.controller.OtcNegotiationHistoryController;
 
 import java.util.Map;
 
 /**
- * Scoped exception handler za {@link OtcController}.
+ * Scoped exception handler za {@link OtcController} i
+ * {@link OtcNegotiationHistoryController} (B10).
  * {@code @Order(HIGHEST_PRECEDENCE)} garantuje prednost nad app-wide
  * {@code TradingGlobalExceptionHandler}-om za izuzetke koje OBA hvataju
  * (npr. {@code IllegalStateException} — ovde 409, globalni 403; konzistentno
  * sa {@code ActuaryExceptionHandler}/{@code InvestmentFundExceptionHandler} iz C1).
  */
-@RestControllerAdvice(assignableTypes = OtcController.class)
+@RestControllerAdvice(assignableTypes = {OtcController.class, OtcNegotiationHistoryController.class})
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class OtcExceptionHandler {
 

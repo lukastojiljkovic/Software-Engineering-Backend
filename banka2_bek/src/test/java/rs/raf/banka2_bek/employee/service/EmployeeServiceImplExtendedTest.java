@@ -36,6 +36,7 @@ class EmployeeServiceImplExtendedTest {
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private NotificationPublisher notificationPublisher;
     @Mock private TradingServiceInternalClient tradingServiceInternalClient;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
     @InjectMocks private EmployeeServiceImpl service;
 
     private CreateEmployeeRequestDto buildReq() {

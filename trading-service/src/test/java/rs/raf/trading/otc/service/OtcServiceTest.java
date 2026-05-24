@@ -91,13 +91,16 @@ class OtcServiceTest {
     @Mock private CurrencyConversionService currencyConversionService;
     @Mock private TradingUserResolver userResolver;
     @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
+    // B10 — istorija OTC pregovora (port iz main PR #89)
+    @Mock private OtcNegotiationHistoryService negotiationHistoryService;
 
     private OtcService service;
 
     @BeforeEach
     void setUp() {
         service = new OtcService(offerRepository, contractRepository, portfolioRepository,
-                listingRepository, bankaCoreClient, currencyConversionService, userResolver, notificationService);
+                listingRepository, bankaCoreClient, currencyConversionService, userResolver,
+                notificationService, negotiationHistoryService);
     }
 
     @AfterEach

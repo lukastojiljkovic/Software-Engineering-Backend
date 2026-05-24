@@ -56,6 +56,9 @@ class ActuaryServiceImplTest {
     @Mock
     private TradingUserResolver userResolver;
 
+    @Mock
+    private rs.raf.trading.audit.service.AuditLogService auditLogService;
+
     @InjectMocks
     private ActuaryServiceImpl actuaryService;
 

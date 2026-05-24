@@ -39,6 +39,12 @@ class TaxControllerTest {
     @Mock
     private TaxService taxService;
 
+    @Mock
+    private rs.raf.trading.audit.service.AuditLogService auditLogService;
+
+    @Mock
+    private rs.raf.trading.client.BankaCoreClient bankaCoreClient;
+
     @InjectMocks
     private TaxController taxController;
 

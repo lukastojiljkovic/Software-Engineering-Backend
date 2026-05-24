@@ -1,18 +1,18 @@
-package rs.raf.banka2_bek.audit.repository;
+package rs.raf.trading.audit.repository;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-import rs.raf.banka2_bek.audit.model.AuditActionType;
-import rs.raf.banka2_bek.audit.model.AuditLog;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.model.AuditLog;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * B7 — Audit log repozitorijum (port iz main PR #86, Stasa Dragovic).
+ * B7 — Audit log repozitorijum u trading-service domenu (port iz main PR #86).
  */
 public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
 

@@ -1,4 +1,4 @@
-package rs.raf.banka2_bek.audit.model;
+package rs.raf.trading.audit.model;
 
 import jakarta.persistence.*;
 import lombok.*;
@@ -7,12 +7,9 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 /**
- * B7 — Audit log entitet (port iz main PR #86, Stasa Dragovic).
- *
- * Svaka administrativna akcija cuva ko je izvrsio (actor), sta je uradjeno
- * (actionType, description), na kom resursu (targetType, targetId) i koje su
- * bile stare i nove vrednosti (oldValue, newValue). Append-only — nema
- * @Version niti @UpdateTimestamp jer su zapisi immutable.
+ * B7 — Audit log entitet u trading-service domenu
+ * (port iz main PR #86 — duplicirano u trading-service jer je audit cross-cutting
+ * i baza-po-servisu; banka-core i trading-service svaki ima svoju kopiju).
  */
 @Entity
 @Table(name = "audit_logs")

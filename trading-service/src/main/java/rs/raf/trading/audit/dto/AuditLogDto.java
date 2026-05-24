@@ -1,15 +1,12 @@
-package rs.raf.banka2_bek.audit.dto;
+package rs.raf.trading.audit.dto;
 
 import lombok.*;
 
 import java.time.LocalDateTime;
 
 /**
- * B7 — Audit log DTO (port iz main PR #86, Stasa Dragovic).
- *
- * Vraca se ADMIN/SUPERVISOR korisnicima pri pregledu audit log-a.
- * {@code actorName} popunjava {@code AuditLogService.toDto()} lookup-om
- * ka {@link rs.raf.banka2_bek.employee.repository.EmployeeRepository}-u.
+ * B7 — Audit log DTO u trading-service domenu
+ * (port iz main PR #86; resolve actorName ide preko {@code BankaCoreClient.getUserById}).
  */
 @Getter
 @Setter

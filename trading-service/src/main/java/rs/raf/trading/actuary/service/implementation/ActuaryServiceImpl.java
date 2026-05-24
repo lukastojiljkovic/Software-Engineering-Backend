@@ -12,6 +12,8 @@ import rs.raf.trading.actuary.model.ActuaryInfo;
 import rs.raf.trading.actuary.model.ActuaryType;
 import rs.raf.trading.actuary.repository.ActuaryInfoRepository;
 import rs.raf.trading.actuary.service.ActuaryService;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.service.AuditLogService;
 import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.common.UserContext;
 import rs.raf.trading.common.UserRole;
@@ -22,7 +24,17 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /*
- * TODO [B7 - Audit log | Nosilac: Stasa Draskovic]
+ * B7 — Audit log integration points (port iz main PR #86, Stasa Dragovic).
+ *
+ * Audit hooks dodati u:
+ *   - updateAgentLimit() -> AuditActionType.LIMIT_CHANGED (stari/novi dailyLimit + needApproval)
+ *   - resetUsedLimit()   -> AuditActionType.USED_LIMIT_RESET (stari usedLimit -> 0)
+ *
+ * NAPOMENA (mikroservisi): koristimo trading-service lokalni AuditLogService
+ * (rs.raf.trading.audit.*) — duplicirano iz banka-core jer je audit cross-cutting
+ * i svaki servis pise u svoju bazu po servisu (CLAUDE.md 19.05.2026 2e).
+ *
+ * TODO (legacy): pratiti pattern iz PR-a — stari komentari iz skeleton-a:
  *
  * Pri promeni limita agentu (updateLimit) i pri resetovanju iskoriscenog
  * limita (resetUsedLimit / ActuaryLimitResetScheduler) evidentirati akciju
@@ -52,6 +64,7 @@ public class ActuaryServiceImpl implements ActuaryService {
     private final ActuaryInfoRepository actuaryInfoRepository;
     private final BankaCoreClient bankaCoreClient;
     private final TradingUserResolver userResolver;
+    private final AuditLogService auditLogService;
 
     @Override
     public List<ActuaryInfoDto> getAgents(String email, String firstName, String lastName, String position) {
@@ -111,10 +124,23 @@ public class ActuaryServiceImpl implements ActuaryService {
             throw new RuntimeException("Limits can only be updated for agents.");
         }
 
+        BigDecimal oldLimit = targetUserInfo.getDailyLimit();
+        Boolean oldNeedApproval = targetUserInfo.isNeedApproval();
+
         targetUserInfo.setDailyLimit(dto.getDailyLimit() != null ? dto.getDailyLimit() : targetUserInfo.getDailyLimit());
         targetUserInfo.setNeedApproval(dto.getNeedApproval() != null ? dto.getNeedApproval() : targetUserInfo.isNeedApproval());
 
         actuaryInfoRepository.save(targetUserInfo);
+
+        // B7 audit hook (port iz main PR #86): actorId iz trenutnog autentifikovanog supervizora
+        auditLogService.record(
+                currentUserInfo.getEmployeeId(), "EMPLOYEE", AuditActionType.LIMIT_CHANGED,
+                "Agent limit updated for employee " + employeeId,
+                "ACTUARY", employeeId,
+                "dailyLimit=" + oldLimit + ",needApproval=" + oldNeedApproval,
+                "dailyLimit=" + targetUserInfo.getDailyLimit() + ",needApproval=" + targetUserInfo.isNeedApproval()
+        );
+
         ActuaryInfoDto response = ActuaryMapper.toDto(targetUserInfo, resolveEmployee(targetUserInfo.getEmployeeId()));
         return response;
     }
@@ -132,8 +158,38 @@ public class ActuaryServiceImpl implements ActuaryService {
             throw new IllegalStateException("Reset is only allowed for Agents. Supervisors do not have limits.");
         }
 
+        BigDecimal oldUsed = actuary.getUsedLimit();
         actuary.setUsedLimit(BigDecimal.ZERO);
         ActuaryInfo updatedActuary = actuaryInfoRepository.save(actuary);
+
+        // B7 audit hook (port iz main PR #86): actorId iz current user-a (employee/scheduler).
+        // U mikroservisnoj arhitekturi userResolver.resolveCurrent() radi samo unutar HTTP
+        // request thread-a — za scheduler putanju (ActuaryLimitResetScheduler) fallback je
+        // actorId=0 + actorType=SCHEDULER.
+        Long actorId;
+        String actorType;
+        try {
+            UserContext ctx = userResolver.resolveCurrent();
+            if (ctx != null && UserRole.isEmployee(ctx.userRole())) {
+                actorId = ctx.userId();
+                actorType = "EMPLOYEE";
+            } else {
+                actorId = 0L;
+                actorType = "SCHEDULER";
+            }
+        } catch (RuntimeException ignored) {
+            actorId = 0L;
+            actorType = "SCHEDULER";
+        }
+
+        auditLogService.record(
+                actorId, actorType, AuditActionType.USED_LIMIT_RESET,
+                "Used limit reset for agent " + employeeId,
+                "ACTUARY", employeeId,
+                String.valueOf(oldUsed),
+                "0"
+        );
+
         return ActuaryMapper.toDto(updatedActuary, resolveEmployee(updatedActuary.getEmployeeId()));
     }
 

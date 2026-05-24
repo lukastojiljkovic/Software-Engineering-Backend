@@ -15,6 +15,8 @@ import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.employee.service.EmployeeService;
 import rs.raf.banka2_bek.interbank.client.TradingServiceInternalClient;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
@@ -51,6 +53,7 @@ public class EmployeeServiceImpl implements EmployeeService {
     private final PasswordEncoder passwordEncoder;
     private final NotificationPublisher notificationPublisher;
     private final TradingServiceInternalClient tradingServiceInternalClient;
+    private final AuditLogService auditLogService;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -174,6 +177,16 @@ public class EmployeeServiceImpl implements EmployeeService {
                 tradingServiceInternalClient.reassignFundManager(id, newManagerId);
             }
             employee.setPermissions(request.getPermissions());
+            // B7 audit hook (port iz main PR #86, Stasa Dragovic)
+            Long actorId = resolveCurrentAdminId(id);
+            auditLogService.record(
+                    actorId, "EMPLOYEE",
+                    AuditActionType.PERMISSIONS_CHANGED,
+                    "Permissions updated for employee " + id,
+                    "EMPLOYEE", id,
+                    null,
+                    String.valueOf(employee.getPermissions())
+            );
         }
 
         employeeRepository.save(employee);

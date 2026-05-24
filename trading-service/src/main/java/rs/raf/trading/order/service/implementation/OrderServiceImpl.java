@@ -16,6 +16,8 @@ import rs.raf.banka2.contracts.internal.ReserveFundsResponse;
 import rs.raf.trading.actuary.model.ActuaryInfo;
 import rs.raf.trading.actuary.model.ActuaryType;
 import rs.raf.trading.actuary.repository.ActuaryInfoRepository;
+import rs.raf.trading.audit.model.AuditActionType;
+import rs.raf.trading.audit.service.AuditLogService;
 import rs.raf.trading.berza.service.ExchangeManagementService;
 import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.client.BankaCoreClientException;
@@ -109,6 +111,7 @@ public class OrderServiceImpl implements OrderService {
     private final BankaCoreClient bankaCoreClient;
     private final TradingUserResolver tradingUserResolver;
     private final NotificationService notificationService;
+    private final AuditLogService auditLogService;
 
     @Override
     @Transactional
@@ -518,6 +521,13 @@ public class OrderServiceImpl implements OrderService {
                     .warn("Failed to send order approved notification: {}", e.getMessage());
         }
 
+        // B7 audit hook (port iz main PR #86, Stasa Dragovic)
+        auditLogService.record(
+                resolveCurrentUser().userId(), "EMPLOYEE",
+                AuditActionType.ORDER_APPROVED,
+                "Order approved: " + saved.getId(),
+                "ORDER", saved.getId());
+
         return toDtoWithUserName(saved);
     }
 
@@ -580,6 +590,13 @@ public class OrderServiceImpl implements OrderService {
             org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
                     .warn("Failed to send order declined notification: {}", e.getMessage());
         }
+
+        // B7 audit hook (port iz main PR #86, Stasa Dragovic)
+        auditLogService.record(
+                resolveCurrentUser().userId(), "EMPLOYEE",
+                AuditActionType.ORDER_DECLINED,
+                "Order declined: " + saved.getId(),
+                "ORDER", saved.getId());
 
         return toDtoWithUserName(saved);
     }
