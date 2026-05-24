@@ -16,5 +16,6 @@ public enum NotificationKind {
     INSTALLMENT_PAID,
     INSTALLMENT_FAILED,
     MARGIN_ACCOUNT_BLOCKED,
+    ACCOUNT_LOCKED,
     IN_APP_GENERIC
 }

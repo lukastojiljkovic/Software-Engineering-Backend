@@ -185,4 +185,16 @@ public class NotificationPublisher {
         d.put("body", body == null ? "" : body);
         publish(NotificationKind.IN_APP_GENERIC, d);
     }
+
+    /**
+     * [B2 — Account lockout] Publishes an email notification telling the user
+     * their account has been temporarily locked due to too many failed login
+     * attempts. Consumer side renders via {@code AccountLockedEmailTemplate}.
+     */
+    public void sendAccountLockedMail(String toEmail, int lockMinutes) {
+        Map<String, String> d = new HashMap<>();
+        d.put("email", toEmail);
+        d.put("lockMinutes", Integer.toString(lockMinutes));
+        publish(NotificationKind.ACCOUNT_LOCKED, d);
+    }
 }

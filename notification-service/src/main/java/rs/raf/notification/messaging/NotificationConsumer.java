@@ -72,6 +72,8 @@ public class NotificationConsumer {
                 case MARGIN_ACCOUNT_BLOCKED ->
                         mail.sendMarginAccountBlockedMail(d.get("email"), d.get("maintenanceMargin"),
                                 d.get("initialMargin"), d.get("deficit"));
+                case ACCOUNT_LOCKED ->
+                        mail.sendAccountLockedMail(d.get("email"), Integer.parseInt(d.get("lockMinutes")));
                 case IN_APP_GENERIC -> {
                     String email = d.get("email");
                     if (email == null || email.isBlank()) {

@@ -9,6 +9,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mail.javamail.JavaMailSender;
 import rs.raf.notification.mail.template.AccountCreatedConfirmationEmailTemplate;
+import rs.raf.notification.mail.template.AccountLockedEmailTemplate;
 import rs.raf.notification.mail.template.ActivationConfirmedEmailTemplate;
 import rs.raf.notification.mail.template.ActivationEmailTemplate;
 import rs.raf.notification.mail.template.InAppGenericEmailTemplate;
@@ -20,6 +21,7 @@ import rs.raf.notification.mail.template.TransactionEmailTemplate;
 import java.util.Properties;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,6 +47,8 @@ class MailNotificationServiceTest {
     private MarginAccountBlockedEmailTemplate marginAccountBlockedEmailTemplate;
     @Mock
     private InAppGenericEmailTemplate inAppGenericEmailTemplate;
+    @Mock
+    private AccountLockedEmailTemplate accountLockedEmailTemplate;
 
     private MailNotificationService service;
 
@@ -57,6 +61,7 @@ class MailNotificationServiceTest {
         service = new MailNotificationService(
                 mailSender,
                 passwordResetTemplate,
+                accountLockedEmailTemplate,
                 activationTemplate,
                 activationConfirmedTemplate,
                 accountCreatedConfirmationEmailTemplate,
@@ -70,6 +75,16 @@ class MailNotificationServiceTest {
                 "http://localhost:3000",
                 "/activate-account"
         );
+    }
+
+    @Test
+    void sendAccountLockedMail_sends() {
+        when(accountLockedEmailTemplate.buildSubject()).thenReturn("Locked");
+        when(accountLockedEmailTemplate.buildBody(anyInt(), anyString())).thenReturn("<html/>");
+
+        service.sendAccountLockedMail("user@test.com", 10);
+
+        verify(mailSender).send(any(MimeMessage.class));
     }
 
     @Test

@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -135,6 +136,20 @@ class AuthServiceTest {
 
         assertThat(response.getAccessToken()).isEqualTo("access");
         assertThat(response.getRefreshToken()).isEqualTo("refresh");
+    }
+
+    @Test
+    void loginRejectsWhenAccountLocked() {
+        doThrow(new AccountLockoutService.AccountLockedException(
+                "Nalog je privremeno zakljucan zbog previse neuspesnih pokusaja. Pokusajte ponovo za 10 min.",
+                600))
+                .when(accountLockoutService).assertNotLocked("user@test.com");
+
+        assertThatThrownBy(() -> authService.login(new LoginRequestDto("user@test.com", "password")))
+                .isInstanceOf(AccountLockoutService.AccountLockedException.class)
+                .hasMessageContaining("Nalog je privremeno zakljucan");
+
+        verify(accountLockoutService).assertNotLocked("user@test.com");
     }
 
     @Test
@@ -348,6 +363,7 @@ class AuthServiceTest {
         verify(userRepository).save(user);
         verify(passwordResetTokenRepository).save(token);
         assertThat(token.getUsed()).isTrue();
+        verify(accountLockoutService).recordSuccess("user@test.com");
     }
 
     // ===== Register with duplicate email error =====

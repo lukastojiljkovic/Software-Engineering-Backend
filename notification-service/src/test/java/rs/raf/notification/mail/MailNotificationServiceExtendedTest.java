@@ -29,6 +29,7 @@ class MailNotificationServiceExtendedTest {
     @Mock private TransactionEmailTemplate transactionEmailTemplate;
     @Mock private MarginAccountBlockedEmailTemplate marginAccountBlockedEmailTemplate;
     @Mock private InAppGenericEmailTemplate inAppGenericEmailTemplate;
+    @Mock private AccountLockedEmailTemplate accountLockedEmailTemplate;
     @Mock private MimeMessage mimeMessage;
 
     private MailNotificationService service;
@@ -36,7 +37,7 @@ class MailNotificationServiceExtendedTest {
     @BeforeEach
     void setUp() {
         when(mailSender.createMimeMessage()).thenReturn(mimeMessage);
-        service = new MailNotificationService(mailSender, passwordResetEmailTemplate, activationEmailTemplate,
+        service = new MailNotificationService(mailSender, passwordResetEmailTemplate, accountLockedEmailTemplate, activationEmailTemplate,
                 activationConfirmedEmailTemplate, accountCreatedConfirmationEmailTemplate, otpEmailTemplate,
                 transactionEmailTemplate, marginAccountBlockedEmailTemplate, inAppGenericEmailTemplate,
                 "noreply@banka.rs",
