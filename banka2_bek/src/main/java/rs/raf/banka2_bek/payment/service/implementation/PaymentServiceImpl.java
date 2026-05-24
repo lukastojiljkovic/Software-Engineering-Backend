@@ -39,6 +39,8 @@ import rs.raf.banka2_bek.payment.repository.PaymentRepository;
 import rs.raf.banka2_bek.payment.service.PaymentReceiptPdfGenerator;
 import rs.raf.banka2_bek.payment.service.PaymentService;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
+import rs.raf.banka2_bek.notification.model.NotificationType;
+import rs.raf.banka2_bek.notification.service.NotificationService;
 import rs.raf.banka2_bek.transaction.dto.TransactionListItemDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionResponseDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionType;
@@ -77,6 +79,8 @@ public class PaymentServiceImpl implements PaymentService {
     private final InterbankPaymentAsyncService interbankPaymentAsyncService;
     private final InterbankTransactionRepository interbankTransactionRepository;
     private final String bankRegistrationNumber;
+    private final NotificationService notificationService;
+
     private static final int ORDER_NUMBER_MAX_RETRIES = 5;
     private static final BigDecimal COMMISSION_RATE = new BigDecimal("0.005"); // 0.5%
 
@@ -92,7 +96,8 @@ public class PaymentServiceImpl implements PaymentService {
                               TransactionExecutorService transactionExecutorService,
                               InterbankPaymentAsyncService interbankPaymentAsyncService,
                               InterbankTransactionRepository interbankTransactionRepository,
-                              @Value("${bank.registration-number}") String bankRegistrationNumber) {
+                              @Value("${bank.registration-number}") String bankRegistrationNumber,
+                              NotificationService notificationService) {
         this.paymentRepository = paymentRepository;
         this.paymentAccountRepository = paymentAccountRepository;
         this.accountRepository = accountRepository;
@@ -106,6 +111,7 @@ public class PaymentServiceImpl implements PaymentService {
         this.interbankPaymentAsyncService = interbankPaymentAsyncService;
         this.interbankTransactionRepository = interbankTransactionRepository;
         this.bankRegistrationNumber = bankRegistrationNumber;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -267,6 +273,20 @@ public class PaymentServiceImpl implements PaymentService {
                     "COMPLETED");
         } catch (Exception e) {
             log.warn("Failed to send payment confirmation email: {}", e.getMessage());
+        }
+
+        try {
+            notificationService.notify(
+                    client.getId(),
+                    "CLIENT",
+                    NotificationType.PAYMENT,
+                    "Plaćanje izvršeno",
+                    "Vaše plaćanje od " + amount + " " + (fromAccount.getCurrency() != null ? fromAccount.getCurrency().getCode() : "") + " je uspešno izvršeno.",
+                    "PAYMENT",
+                    savedPayment.getId()
+            );
+        } catch (Exception e) {
+            log.warn("Failed to send payment notification: {}", e.getMessage());
         }
 
         return toResponse(savedPayment, client.getId(), null);

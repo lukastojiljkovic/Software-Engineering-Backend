@@ -16,6 +16,7 @@ import rs.raf.trading.order.dto.CreateOrderDto;
 import rs.raf.trading.order.dto.OrderDto;
 import rs.raf.trading.order.service.OrderService;
 
+import java.time.LocalDate;
 import java.util.Map;
 
 // TODO [B4 - Filteri istorije ordera + B7 audit | Nosioci: Petar Poznanovic, Stasa Draskovic]
@@ -114,8 +115,12 @@ public class OrderController {
     @GetMapping("/my")
     public ResponseEntity<Page<OrderDto>> getMyOrders(
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(orderService.getMyOrders(page, size));
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) LocalDate dateFrom,
+            @RequestParam(required = false) LocalDate dateTo,
+            @RequestParam(required = false) String listingType) {
+        return ResponseEntity.ok(orderService.getMyOrders(page, size, status, dateFrom, dateTo, listingType));
     }
 
     /**

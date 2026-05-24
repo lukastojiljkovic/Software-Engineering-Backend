@@ -5,6 +5,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import rs.raf.trading.notification.model.NotificationType;
+import rs.raf.trading.notification.service.NotificationService;
 import rs.raf.trading.order.model.Order;
 import rs.raf.trading.order.model.OrderStatus;
 import rs.raf.trading.order.repository.OrderRepository;
@@ -34,6 +36,7 @@ import java.util.List;
 public class OrderCleanupScheduler {
 
     private final OrderRepository orderRepository;
+    private final NotificationService notificationService;
 
     @Scheduled(cron = "0 0 1 * * *")
     @Transactional
@@ -59,6 +62,19 @@ public class OrderCleanupScheduler {
             log.info("Order {} (user={}, listing={}) declined - settlement {} passed",
                     order.getId(), order.getUserId(),
                     order.getListing().getTicker(), settlement);
+            try {
+                notificationService.notify(
+                        order.getUserId(),
+                        order.getUserRole(),
+                        NotificationType.ORDER_CANCELLED,
+                        "Nalog automatski otkazan",
+                        "Vaš nalog za " + order.getListing().getTicker() + " je automatski otkazan jer je datum dospeća prošao.",
+                        "ORDER",
+                        order.getId()
+                );
+            } catch (Exception ex) {
+                log.warn("Failed to send order cancelled notification for order #{}: {}", order.getId(), ex.getMessage());
+            }
             declinedCount++;
         }
 

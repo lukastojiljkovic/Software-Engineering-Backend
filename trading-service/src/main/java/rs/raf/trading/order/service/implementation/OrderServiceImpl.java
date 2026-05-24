@@ -23,6 +23,8 @@ import rs.raf.trading.common.UserContext;
 import rs.raf.trading.common.UserRole;
 import rs.raf.trading.investmentfund.model.InvestmentFund;
 import rs.raf.trading.investmentfund.repository.InvestmentFundRepository;
+import rs.raf.trading.notification.model.NotificationType;
+import rs.raf.trading.notification.service.NotificationService;
 import rs.raf.trading.order.dto.CreateOrderDto;
 import rs.raf.trading.order.dto.OrderDto;
 import rs.raf.trading.order.exception.InsufficientFundsException;
@@ -34,6 +36,7 @@ import rs.raf.trading.order.model.OrderStatus;
 import rs.raf.trading.order.model.OrderType;
 import rs.raf.trading.order.model.SagaState;
 import rs.raf.trading.order.repository.OrderRepository;
+import rs.raf.trading.order.repository.OrderSpecification;
 import rs.raf.trading.order.service.BankTradingAccountResolver;
 import rs.raf.trading.order.service.CurrencyConversionService;
 import rs.raf.trading.order.service.FundReservationService;
@@ -45,11 +48,14 @@ import rs.raf.trading.portfolio.model.Portfolio;
 import rs.raf.trading.portfolio.repository.PortfolioRepository;
 import rs.raf.trading.security.TradingUserResolver;
 import rs.raf.trading.stock.model.Listing;
+import rs.raf.trading.stock.model.ListingType;
 import rs.raf.trading.stock.repository.ListingRepository;
 import rs.raf.trading.stock.util.ListingCurrencyResolver;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -102,6 +108,7 @@ public class OrderServiceImpl implements OrderService {
     private final InvestmentFundRepository investmentFundRepository;
     private final BankaCoreClient bankaCoreClient;
     private final TradingUserResolver tradingUserResolver;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional
@@ -294,6 +301,23 @@ public class OrderServiceImpl implements OrderService {
 
         // Step 12: Execution handled by OrderScheduler cron job
 
+        if (savedOrder.getStatus() == OrderStatus.PENDING) {
+            try {
+                notificationService.notify(
+                        savedOrder.getUserId(),
+                        savedOrder.getUserRole(),
+                        NotificationType.ORDER_PENDING,
+                        "Nalog čeka odobrenje",
+                        "Vaš nalog za " + savedOrder.getListing().getTicker() + " je kreiran i čeka odobrenje supervizora.",
+                        "ORDER",
+                        savedOrder.getId()
+                );
+            } catch (Exception e) {
+                org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                        .warn("Failed to send order pending notification: {}", e.getMessage());
+            }
+        }
+
         return toDtoWithUserName(savedOrder);
     }
 
@@ -479,6 +503,21 @@ public class OrderServiceImpl implements OrderService {
             });
         }
 
+        try {
+            notificationService.notify(
+                    saved.getUserId(),
+                    saved.getUserRole(),
+                    NotificationType.ORDER_APPROVED,
+                    "Nalog odobren",
+                    "Vaš nalog za " + saved.getListing().getTicker() + " je odobren i biće izvršen.",
+                    "ORDER",
+                    saved.getId()
+            );
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                    .warn("Failed to send order approved notification: {}", e.getMessage());
+        }
+
         return toDtoWithUserName(saved);
     }
 
@@ -526,6 +565,22 @@ public class OrderServiceImpl implements OrderService {
         order.setLastModification(LocalDateTime.now());
 
         Order saved = orderRepository.save(order);
+
+        try {
+            notificationService.notify(
+                    saved.getUserId(),
+                    saved.getUserRole(),
+                    NotificationType.ORDER_DECLINED,
+                    "Nalog odbijen",
+                    "Vaš nalog za " + (saved.getListing() != null ? saved.getListing().getTicker() : "") + " je odbijen.",
+                    "ORDER",
+                    saved.getId()
+            );
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                    .warn("Failed to send order declined notification: {}", e.getMessage());
+        }
+
         return toDtoWithUserName(saved);
     }
 
@@ -683,10 +738,34 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public Page<OrderDto> getMyOrders(int page, int size) {
+    public Page<OrderDto> getMyOrders(int page, int size, String status, LocalDate dateFrom, LocalDate dateTo, String listingType) {
         UserContext userContext = resolveCurrentUser();
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return orderRepository.findByUserId(userContext.userId(), pageable).map(this::toDtoWithUserName);
+
+        OrderStatus parsedStatus = null;
+        if (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status)) {
+            try {
+                parsedStatus = OrderStatus.valueOf(status.toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+
+        ListingType parsedListingType = null;
+        if (listingType != null && !listingType.isBlank()) {
+            try {
+                parsedListingType = ListingType.valueOf(listingType.toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+
+        Specification<Order> spec = Specification
+                .where(OrderSpecification.hasUserId(userContext.userId()))
+                .and(OrderSpecification.hasStatus(parsedStatus))
+                .and(OrderSpecification.createdAfter(dateFrom))
+                .and(OrderSpecification.createdBefore(dateTo))
+                .and(OrderSpecification.hasListingType(parsedListingType));
+
+        return orderRepository.findAll(spec, pageable).map(this::toDtoWithUserName);
     }
 
     @Override

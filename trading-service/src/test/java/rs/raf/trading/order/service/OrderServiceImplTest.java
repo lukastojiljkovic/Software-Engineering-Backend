@@ -82,6 +82,7 @@ class OrderServiceImplTest {
     @Mock private InvestmentFundRepository investmentFundRepository;
     @Mock private BankaCoreClient bankaCoreClient;
     @Mock private rs.raf.trading.security.TradingUserResolver tradingUserResolver;
+    @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -938,25 +939,22 @@ class OrderServiceImplTest {
         @DisplayName("Client sees only their own orders")
         void getMyOrdersClient() {
             asClient();
-            PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findByUserId(CLIENT_ID, pageable))
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
                     .thenReturn(new PageImpl<>(List.of(makeOrder(1L, CLIENT_ID))));
 
-            Page<OrderDto> result = orderService.getMyOrders(0, 20);
+            Page<OrderDto> result = orderService.getMyOrders(0, 20, null, null, null, null);
 
             assertEquals(1, result.getTotalElements());
-            verify(orderRepository).findByUserId(CLIENT_ID, pageable);
         }
 
         @Test
         @DisplayName("Employee sees only their own orders")
         void getMyOrdersEmployee() {
             asEmployee();
-            PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findByUserId(EMPLOYEE_ID, pageable))
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
                     .thenReturn(new PageImpl<>(List.of(makeOrder(5L, EMPLOYEE_ID))));
 
-            Page<OrderDto> result = orderService.getMyOrders(0, 20);
+            Page<OrderDto> result = orderService.getMyOrders(0, 20, null, null, null, null);
 
             assertEquals(1, result.getTotalElements());
         }

@@ -22,6 +22,7 @@ import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.exchange.ExchangeService;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
+import rs.raf.banka2_bek.notification.service.NotificationService;
 import rs.raf.banka2_bek.interbank.service.BankRoutingService;
 import rs.raf.banka2_bek.interbank.service.TransactionExecutorService;
 import rs.raf.banka2_bek.interbank.service.InterbankPaymentAsyncService;
@@ -67,6 +68,7 @@ class PaymentServiceImplCoverageTest {
     @Mock private TransactionExecutorService transactionExecutorService;
     @Mock private InterbankPaymentAsyncService interbankPaymentAsyncService;
     @Mock private InterbankTransactionRepository interbankTransactionRepository;
+    @Mock private NotificationService notificationService;
 
     private PaymentServiceImpl paymentService;
 
@@ -78,7 +80,7 @@ class PaymentServiceImplCoverageTest {
                 exchangeService, notificationPublisher,
                 bankRoutingService, transactionExecutorService,
                 interbankPaymentAsyncService, interbankTransactionRepository,
-                "22200022");
+                "22200022", notificationService);
         lenient().when(bankRoutingService.isLocalAccount(any())).thenReturn(true);
     }
 

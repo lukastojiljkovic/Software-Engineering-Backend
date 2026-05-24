@@ -90,13 +90,14 @@ class OtcServiceTest {
     @Mock private BankaCoreClient bankaCoreClient;
     @Mock private CurrencyConversionService currencyConversionService;
     @Mock private TradingUserResolver userResolver;
+    @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
 
     private OtcService service;
 
     @BeforeEach
     void setUp() {
         service = new OtcService(offerRepository, contractRepository, portfolioRepository,
-                listingRepository, bankaCoreClient, currencyConversionService, userResolver);
+                listingRepository, bankaCoreClient, currencyConversionService, userResolver, notificationService);
     }
 
     @AfterEach

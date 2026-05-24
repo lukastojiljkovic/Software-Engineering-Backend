@@ -11,6 +11,8 @@ import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.common.UserRole;
 import rs.raf.trading.investmentfund.service.FundLiquidationService;
+import rs.raf.trading.notification.model.NotificationType;
+import rs.raf.trading.notification.service.NotificationService;
 import rs.raf.trading.order.event.OrderCompletedEvent;
 import rs.raf.trading.order.model.Order;
 import rs.raf.trading.order.model.OrderDirection;
@@ -81,6 +83,7 @@ public class OrderExecutionService {
     private final FundLiquidationService fundLiquidationService;
     private final BankaCoreClient bankaCoreClient;
     private final ApplicationEventPublisher eventPublisher;
+    private final NotificationService notificationService;
 
     /** Minimalan broj sekundi izmedju approval-a i prvog fill pokusaja (Phase 6). */
     @Value("${orders.execution.initial-delay-seconds:60}")
@@ -142,6 +145,19 @@ public class OrderExecutionService {
 
                     log.warn("Order #{} auto-declined: settlement date {} has passed",
                             order.getId(), order.getListing().getSettlementDate());
+                    try {
+                        notificationService.notify(
+                                order.getUserId(),
+                                order.getUserRole(),
+                                NotificationType.ORDER_CANCELLED,
+                                "Nalog otkazan",
+                                "Vaš nalog za " + order.getListing().getTicker() + " je automatski otkazan jer je datum dospeća prošao.",
+                                "ORDER",
+                                order.getId()
+                        );
+                    } catch (Exception ex) {
+                        log.warn("Failed to send order cancelled notification for order #{}: {}", order.getId(), ex.getMessage());
+                    }
                     continue;
                 }
 
@@ -349,6 +365,33 @@ public class OrderExecutionService {
 
         if (justCompleted) {
             publishOrderCompleted(order);
+            try {
+                notificationService.notify(
+                        order.getUserId(),
+                        order.getUserRole(),
+                        NotificationType.ORDER_EXECUTED,
+                        "Nalog izvršen",
+                        "Vaš nalog za " + order.getListing().getTicker() + " je u potpunosti izvršen.",
+                        "ORDER",
+                        order.getId()
+                );
+            } catch (Exception ex) {
+                log.warn("Failed to send order executed notification for order #{}: {}", order.getId(), ex.getMessage());
+            }
+        } else {
+            try {
+                notificationService.notify(
+                        order.getUserId(),
+                        order.getUserRole(),
+                        NotificationType.ORDER_PARTIAL_FILL,
+                        "Nalog delimično izvršen",
+                        "Vaš nalog za " + order.getListing().getTicker() + " je delimično izvršen. Preostalo: " + order.getRemainingPortions() + " komada.",
+                        "ORDER",
+                        order.getId()
+                );
+            } catch (Exception ex) {
+                log.warn("Failed to send order partial fill notification for order #{}: {}", order.getId(), ex.getMessage());
+            }
         }
     }
 

@@ -53,6 +53,7 @@ class OrderExecutionServiceTest {
     @Mock private FundLiquidationService fundLiquidationService;
     @Mock private BankaCoreClient bankaCoreClient;
     @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
 
     @InjectMocks
     private OrderExecutionService orderExecutionService;

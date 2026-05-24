@@ -19,6 +19,8 @@ import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
+import rs.raf.banka2_bek.notification.model.NotificationType;
+import rs.raf.banka2_bek.notification.service.NotificationService;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -51,6 +53,7 @@ public class LoanServiceImpl implements LoanService {
     private final CurrencyRepository currencyRepository;
     private final NotificationPublisher notificationPublisher;
     private final String bankRegistrationNumber;
+    private final NotificationService notificationService;
 
     public LoanServiceImpl(LoanRequestRepository loanRequestRepository,
                            LoanRepository loanRepository,
@@ -59,7 +62,8 @@ public class LoanServiceImpl implements LoanService {
                            ClientRepository clientRepository,
                            CurrencyRepository currencyRepository,
                            NotificationPublisher notificationPublisher,
-                           @Value("${bank.registration-number}") String bankRegistrationNumber) {
+                           @Value("${bank.registration-number}") String bankRegistrationNumber,
+                           NotificationService notificationService) {
         this.loanRequestRepository = loanRequestRepository;
         this.loanRepository = loanRepository;
         this.installmentRepository = installmentRepository;
@@ -68,6 +72,7 @@ public class LoanServiceImpl implements LoanService {
         this.currencyRepository = currencyRepository;
         this.notificationPublisher = notificationPublisher;
         this.bankRegistrationNumber = bankRegistrationNumber;
+        this.notificationService = notificationService;
     }
 
     @Override
@@ -116,6 +121,20 @@ public class LoanServiceImpl implements LoanService {
                     currency.getCode());
         } catch (Exception e) {
             log.warn("Failed to send loan request notification email", e);
+        }
+
+        try {
+            notificationService.notify(
+                    client.getId(),
+                    "CLIENT",
+                    NotificationType.LOAN_CREATED,
+                    "Zahtev za kredit primljen",
+                    "Vaš zahtev za kredit od " + loanRequest.getAmount() + " " + currency.getCode() + " je uspešno podnet i čeka na obradu.",
+                    "LOAN_REQUEST",
+                    loanRequest.getId()
+            );
+        } catch (Exception e) {
+            log.warn("Failed to send loan created notification: {}", e.getMessage());
         }
 
         return response;
@@ -237,6 +256,20 @@ public class LoanServiceImpl implements LoanService {
                     loan.getStartDate());
         } catch (Exception e) {
             log.warn("Failed to send loan approval notification email", e);
+        }
+
+        try {
+            notificationService.notify(
+                    request.getClient().getId(),
+                    "CLIENT",
+                    NotificationType.LOAN_APPROVED,
+                    "Kredit odobren",
+                    "Vaš kredit od " + loan.getAmount() + " " + loan.getCurrency().getCode() + " je odobren i sredstva su preneta na vaš račun.",
+                    "LOAN",
+                    loan.getId()
+            );
+        } catch (Exception e) {
+            log.warn("Failed to send loan approved notification: {}", e.getMessage());
         }
 
         return toLoanResponse(loan);

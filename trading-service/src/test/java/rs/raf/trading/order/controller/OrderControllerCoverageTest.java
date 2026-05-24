@@ -33,6 +33,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -139,7 +140,7 @@ class OrderControllerCoverageTest {
     @DisplayName("GET /orders/my - 200 sa paginated")
     void getMyOrders_success() throws Exception {
         Page<OrderDto> page = new PageImpl<>(List.of(sampleOrder(2L, "DONE")));
-        when(orderService.getMyOrders(0, 20)).thenReturn(page);
+        when(orderService.getMyOrders(eq(0), eq(20), isNull(), isNull(), isNull(), isNull())).thenReturn(page);
 
         mockMvc.perform(get("/orders/my"))
                 .andExpect(status().isOk())
