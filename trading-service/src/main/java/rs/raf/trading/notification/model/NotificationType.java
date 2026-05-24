@@ -30,6 +30,9 @@ public enum NotificationType {
     OTC_DECLINED(false),
     OTC_CONTRACT_EXPIRING(false),
 
+    // [B8 — Nikola Djurovic] Recurring order events
+    RECURRING_ORDER_SKIPPED(false),
+
     // Fallback
     GENERAL(false);
 
