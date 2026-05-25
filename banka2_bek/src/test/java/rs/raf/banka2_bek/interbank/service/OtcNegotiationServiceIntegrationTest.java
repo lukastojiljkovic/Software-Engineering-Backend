@@ -112,10 +112,12 @@ class OtcNegotiationServiceIntegrationTest {
         service.acceptOffer(negotiationId);
 
         // Provera: pozivi prolaze kroz klijenta tacno tim redom
+        // T2-J (Tim 1 cross-bank Stage C, 2026-05-20): service uses 3-arg overload
+        // (negotiationId, targetPartnerRouting, offer) — defaults to negotiationId.routingNumber().
         var ord = inOrder(client);
         ord.verify(client).postNegotiation(eq(SELLER_RN), eq(initial));
         ord.verify(client).getNegotiation(negotiationId);
-        ord.verify(client).putCounterOffer(eq(negotiationId), eq(ourCounter));
+        ord.verify(client).putCounterOffer(eq(negotiationId), eq(SELLER_RN), eq(ourCounter));
         ord.verify(client).acceptNegotiation(negotiationId);
     }
 
@@ -143,8 +145,10 @@ class OtcNegotiationServiceIntegrationTest {
 
         service.closeNegotiation(negotiationId);
 
+        // T2-J (Tim 1 cross-bank Stage C, 2026-05-20): service uses 2-arg overload
+        // (negotiationId, targetPartnerRouting) — defaults to negotiationId.routingNumber().
         var ord = inOrder(client);
         ord.verify(client).postNegotiation(eq(SELLER_RN), any());
-        ord.verify(client).deleteNegotiation(negotiationId);
+        ord.verify(client).deleteNegotiation(eq(negotiationId), eq(SELLER_RN));
     }
 }

@@ -15,7 +15,6 @@ import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.client.BankaCoreClientException;
 import rs.raf.trading.common.UserContext;
 import rs.raf.trading.margin.dto.CreateMarginAccountDto;
-import rs.raf.trading.margin.dto.MarginAccountCheckDto;
 import rs.raf.trading.margin.dto.MarginAccountDto;
 import rs.raf.trading.margin.event.MarginAccountBlockedEvent;
 import rs.raf.trading.margin.model.MarginAccount;
@@ -495,27 +494,39 @@ class MarginAccountServiceTest {
 
     @Test
     void checkMaintenanceMargin_doesNothingWhenNoAccountsNeedBlocking() {
-        when(marginAccountRepository.findAccountsForMarginCheck("ACTIVE")).thenReturn(List.of());
+        // BE-STK-04 (25.05): 2-step JPA pattern (H2 test compat). Step 1 vraca prazan
+        // list → service eksplicitno NE poziva bulkUpdateStatus i NE objavljuje events.
+        when(marginAccountRepository.findEligibleForBlock(MarginAccountStatus.ACTIVE))
+                .thenReturn(List.of());
 
         marginAccountService.checkMaintenanceMargin();
 
-        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("ACTIVE", "BLOCKED");
+        verify(marginAccountRepository).findEligibleForBlock(MarginAccountStatus.ACTIVE);
+        verify(marginAccountRepository, never()).bulkUpdateStatus(any(), any());
         verify(eventPublisher, never()).publishEvent(any());
     }
 
     @Test
     void checkMaintenanceMargin_blocksAccountsAndPublishesEvent_withEmailResolvedViaBankaCore() {
-        MarginAccountCheckDto account = new MarginAccountCheckDto(
-                1L, 100L, null, new BigDecimal("5000"), new BigDecimal("4000")
-        );
-        when(marginAccountRepository.findAccountsForMarginCheck("ACTIVE")).thenReturn(List.of(account));
-        // native query vise ne JOIN-uje clients — email se razresava preko banka-core.
+        // BE-STK-04: Step 1 vraca id-eve eligible-za-blokadu. Step 2 ih flipa na BLOCKED.
+        // Posle: service `findAllById(ids)` da popuni detalje + publishuje event.
+        MarginAccount blockedAccount = MarginAccount.builder()
+                .id(1L)
+                .userId(100L)
+                .maintenanceMargin(new BigDecimal("5000"))
+                .initialMargin(new BigDecimal("4000"))
+                .build();
+
+        when(marginAccountRepository.findEligibleForBlock(MarginAccountStatus.ACTIVE))
+                .thenReturn(List.of(1L));
+        when(marginAccountRepository.findAllById(List.of(1L)))
+                .thenReturn(List.of(blockedAccount));
         when(bankaCoreClient.getUserById("CLIENT", 100L)).thenReturn(
                 new InternalUserDto(100L, "CLIENT", "owner@test.com", "Owner", "Test", true, null));
 
         marginAccountService.checkMaintenanceMargin();
 
-        verify(marginAccountRepository).blockAccountsWhereMaintenanceExceedsInitial("ACTIVE", "BLOCKED");
+        verify(marginAccountRepository).bulkUpdateStatus(List.of(1L), MarginAccountStatus.BLOCKED);
 
         ArgumentCaptor<MarginAccountBlockedEvent> eventCaptor =
                 ArgumentCaptor.forClass(MarginAccountBlockedEvent.class);
@@ -530,10 +541,17 @@ class MarginAccountServiceTest {
 
     @Test
     void checkMaintenanceMargin_publishesEventWithNullEmail_whenBankaCoreLookupFails() {
-        MarginAccountCheckDto account = new MarginAccountCheckDto(
-                1L, 100L, null, new BigDecimal("5000"), new BigDecimal("4000")
-        );
-        when(marginAccountRepository.findAccountsForMarginCheck("ACTIVE")).thenReturn(List.of(account));
+        MarginAccount blockedAccount = MarginAccount.builder()
+                .id(1L)
+                .userId(100L)
+                .maintenanceMargin(new BigDecimal("5000"))
+                .initialMargin(new BigDecimal("4000"))
+                .build();
+
+        when(marginAccountRepository.findEligibleForBlock(MarginAccountStatus.ACTIVE))
+                .thenReturn(List.of(1L));
+        when(marginAccountRepository.findAllById(List.of(1L)))
+                .thenReturn(List.of(blockedAccount));
         when(bankaCoreClient.getUserById("CLIENT", 100L))
                 .thenThrow(new BankaCoreClientException(404, "client not found"));
 
@@ -547,17 +565,28 @@ class MarginAccountServiceTest {
 
     @Test
     void checkMaintenanceMargin_publishesOneEventPerBlockedAccount() {
-        List<MarginAccountCheckDto> accounts = List.of(
-                new MarginAccountCheckDto(1L, 100L, null, new BigDecimal("5000"), new BigDecimal("4000")),
-                new MarginAccountCheckDto(2L, 200L, null, new BigDecimal("6000"), new BigDecimal("3000")),
-                new MarginAccountCheckDto(3L, 300L, null, new BigDecimal("7000"), new BigDecimal("2000"))
+        List<Long> blockedIds = List.of(1L, 2L, 3L);
+        List<MarginAccount> blockedAccounts = List.of(
+                MarginAccount.builder().id(1L).userId(100L)
+                        .maintenanceMargin(new BigDecimal("5000"))
+                        .initialMargin(new BigDecimal("4000")).build(),
+                MarginAccount.builder().id(2L).userId(200L)
+                        .maintenanceMargin(new BigDecimal("6000"))
+                        .initialMargin(new BigDecimal("3000")).build(),
+                MarginAccount.builder().id(3L).userId(300L)
+                        .maintenanceMargin(new BigDecimal("7000"))
+                        .initialMargin(new BigDecimal("2000")).build()
         );
-        when(marginAccountRepository.findAccountsForMarginCheck("ACTIVE")).thenReturn(accounts);
+
+        when(marginAccountRepository.findEligibleForBlock(MarginAccountStatus.ACTIVE))
+                .thenReturn(blockedIds);
+        when(marginAccountRepository.findAllById(blockedIds)).thenReturn(blockedAccounts);
         when(bankaCoreClient.getUserById(eq("CLIENT"), any())).thenReturn(
                 new InternalUserDto(100L, "CLIENT", "x@test.com", "X", "Y", true, null));
 
         marginAccountService.checkMaintenanceMargin();
 
+        verify(marginAccountRepository).bulkUpdateStatus(blockedIds, MarginAccountStatus.BLOCKED);
         verify(eventPublisher, times(3)).publishEvent(any(MarginAccountBlockedEvent.class));
     }
 

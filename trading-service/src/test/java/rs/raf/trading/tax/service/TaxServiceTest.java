@@ -168,23 +168,20 @@ class TaxServiceTest {
         }
 
         @Test
-        @DisplayName("EMPLOYEE orders create EMPLOYEE type tax record")
-        void employeeOrders() {
+        @DisplayName("BE-ORD-06: EMPLOYEE orders are NOT taxed (bank actuaries dont pay personal capital gains)")
+        void employeeOrdersAreSkipped() {
+            // Spec Celina 3 Sc 58: bank actuaries trade off bank accounts and dont pay
+            // personal capital gains tax. Pre BE-ORD-06 fix, EMPLOYEE orders falsely
+            // accumulated into personal TaxRecord. Sad se filtriraju u TaxService.
             Order sell = buildOrder(5L, "EMPLOYEE", OrderDirection.SELL, new BigDecimal("200"), 10, 1);
 
             when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(sell));
-            when(bankaCoreClient.getUserById("EMPLOYEE", 5L))
-                    .thenReturn(user(5L, "EMPLOYEE", "Ana", "Anic"));
-            when(taxRecordRepository.findByUserIdAndUserType(5L, "EMPLOYEE")).thenReturn(Optional.empty());
-            when(taxRecordRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(otcContractRepository.findAll()).thenReturn(Collections.emptyList());
 
             taxService.calculateTaxForAllUsers();
 
-            ArgumentCaptor<TaxRecord> captor = ArgumentCaptor.forClass(TaxRecord.class);
-            verify(taxRecordRepository).save(captor.capture());
-
-            assertThat(captor.getValue().getUserType()).isEqualTo("EMPLOYEE");
-            assertThat(captor.getValue().getUserName()).isEqualTo("Ana Anic");
+            // EMPLOYEE order je preskocen → ni jedan TaxRecord se ne snima.
+            verify(taxRecordRepository, never()).save(any());
         }
 
         @Test
@@ -249,16 +246,19 @@ class TaxServiceTest {
         }
 
         @Test
-        @DisplayName("multiple users are processed independently")
+        @DisplayName("multiple CLIENT users are processed independently (BE-ORD-06: EMPLOYEE skipped)")
         void multipleUsers() {
+            // BE-ORD-06: pre fix-a su CLIENT + EMPLOYEE orderi oba davali TaxRecord.
+            // Sad samo CLIENT orderi padaju u personal tax obracun (bank actuaries
+            // ne placaju licni porez; Profit Banke portal pokriva bank profit).
             Order user1Sell = buildOrder(1L, "CLIENT", OrderDirection.SELL, new BigDecimal("100"), 10, 1);
-            Order user2Buy = buildOrder(2L, "EMPLOYEE", OrderDirection.BUY, new BigDecimal("50"), 20, 1);
+            Order user2Sell = buildOrder(2L, "CLIENT", OrderDirection.SELL, new BigDecimal("50"), 20, 1);
 
-            when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(user1Sell, user2Buy));
+            when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(user1Sell, user2Sell));
             when(bankaCoreClient.getUserById("CLIENT", 1L))
                     .thenReturn(user(1L, "CLIENT", "A", "B"));
-            when(bankaCoreClient.getUserById("EMPLOYEE", 2L))
-                    .thenReturn(user(2L, "EMPLOYEE", "C", "D"));
+            when(bankaCoreClient.getUserById("CLIENT", 2L))
+                    .thenReturn(user(2L, "CLIENT", "C", "D"));
             when(taxRecordRepository.findByUserIdAndUserType(any(), any())).thenReturn(Optional.empty());
             when(taxRecordRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -358,6 +358,33 @@ class TaxServiceTest {
             // Verifikuj da je CurrencyConversionService pozvan za USD (ne i za RSD)
             verify(currencyConversionService).convert(new BigDecimal("100"), "USD", "RSD");
             verify(currencyConversionService, never()).convert(any(), eq("RSD"), eq("RSD"));
+        }
+
+        @Test
+        @DisplayName("BE-ORD-08: FX failure baca TaxCalculationException (ne fallback-uje na raw amount)")
+        void calculateTax_fxFailureThrowsTaxCalculationException() {
+            // Pre fix-a, FX failure je tisko fallback-ovao na sirovi iznos (USD 1000
+            // tretiran kao 1000 RSD = severe under-taxation). Sada propagira
+            // TaxCalculationException pa scheduler obavestava supervizora.
+            Listing aapl = listingWithCurrency(1L, "USD");
+            Order aaplBuy = buildOrderWithListing(1L, aapl, OrderDirection.BUY, new BigDecimal("100"), 1);
+            Order aaplSell = buildOrderWithListing(1L, aapl, OrderDirection.SELL, new BigDecimal("200"), 1);
+
+            when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(aaplBuy, aaplSell));
+            when(bankaCoreClient.getUserById("CLIENT", 1L))
+                    .thenReturn(user(1L, "CLIENT", "Marko", "Petrovic"));
+            when(taxRecordRepository.findByUserIdAndUserType(1L, "CLIENT")).thenReturn(Optional.empty());
+
+            // FX service puca — banka-core /internal/fx/rates nedostupan
+            when(currencyConversionService.convert(new BigDecimal("100"), "USD", "RSD"))
+                    .thenThrow(new RuntimeException("banka-core /internal/fx/rates timeout"));
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> taxService.calculateTaxForAllUsers())
+                    .isInstanceOf(rs.raf.trading.tax.service.TaxCalculationException.class)
+                    .hasMessageContaining("FX rate unavailable for USD");
+
+            // KRITICNO: TaxRecord se NE snima (raw amount NE tretira kao RSD).
+            verify(taxRecordRepository, never()).save(any());
         }
     }
 

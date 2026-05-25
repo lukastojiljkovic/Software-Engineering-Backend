@@ -72,6 +72,10 @@ class AccountControllerTest {
 
     @BeforeEach
     void setUp() {
+        // Test isolation: clear leaked SecurityContextHolder state from prior test
+        // classes (defense-in-depth — prior test classes set principal without clearing).
+        SecurityContextHolder.clearContext();
+
         mockMvc = MockMvcBuilders
                 .standaloneSetup(accountController)
                 .setControllerAdvice(new AccountExceptionHandler())
@@ -96,6 +100,12 @@ class AccountControllerTest {
                 .createdByEmployee("Petar Petrovic")
                 .company(null)
                 .build();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDownSecurityContext() {
+        // Test isolation: ensure we don't leak SecurityContextHolder to next test class.
+        SecurityContextHolder.clearContext();
     }
 
     // ══════════════════════════════════════════════════════════════════

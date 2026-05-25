@@ -26,7 +26,11 @@ public interface LoanService {
 
     List<InstallmentResponseDto> getInstallments(Long loanId);
 
-    LoanResponseDto earlyRepayment(Long loanId, String clientEmail);
+    /**
+     * BE-PAY-06: earlyRepayment sad zahteva OTP kod (paritet sa payments/savings).
+     * {@code otpCode} mora biti unesen u request header-u {@code X-OTP-Code}.
+     */
+    LoanResponseDto earlyRepayment(Long loanId, String clientEmail, String otpCode);
 
     List<LoanRequestResponseDto> getMyLoanRequests(String clientEmail);
 }

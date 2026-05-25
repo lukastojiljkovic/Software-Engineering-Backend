@@ -938,25 +938,30 @@ class OrderServiceImplTest {
             return o;
         }
 
+        // BE-ORD-03: default getAllOrders(status, page, size) sad delegira na
+        // getAllOrders(..., excludeFund=true) koji prolazi kroz Specification —
+        // testovi koriste findAll(Specification, Pageable) mock umesto findAll(Pageable).
+
         @Test
-        @DisplayName("Status ALL returns all orders")
+        @DisplayName("Status ALL returns all non-fund orders (BE-ORD-03)")
         void getAllOrdersStatusAll() {
             PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findAll(pageable))
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
                     .thenReturn(new PageImpl<>(List.of(makeOrder(1L, OrderStatus.PENDING), makeOrder(2L, OrderStatus.APPROVED))));
 
             Page<OrderDto> result = orderService.getAllOrders("ALL", 0, 20);
 
             assertEquals(2, result.getTotalElements());
-            verify(orderRepository).findAll(pageable);
+            verify(orderRepository).findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable));
             verify(orderRepository, never()).findByStatus(any(), any());
         }
 
         @Test
-        @DisplayName("Status null returns all orders")
+        @DisplayName("Status null returns all non-fund orders (BE-ORD-03)")
         void getAllOrdersStatusNull() {
             PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findAll(pageable)).thenReturn(new PageImpl<>(List.of(makeOrder(1L, OrderStatus.DONE))));
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
+                    .thenReturn(new PageImpl<>(List.of(makeOrder(1L, OrderStatus.DONE))));
 
             Page<OrderDto> result = orderService.getAllOrders(null, 0, 20);
 
@@ -967,19 +972,20 @@ class OrderServiceImplTest {
         @DisplayName("Blank string treated as ALL")
         void getAllOrdersBlankString() {
             PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findAll(pageable)).thenReturn(new PageImpl<>(List.of()));
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
+                    .thenReturn(new PageImpl<>(List.of()));
 
             Page<OrderDto> result = orderService.getAllOrders("   ", 0, 20);
 
             assertNotNull(result);
-            verify(orderRepository).findAll(pageable);
+            verify(orderRepository).findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable));
         }
 
         @Test
-        @DisplayName("Filters by PENDING status")
+        @DisplayName("Filters by PENDING status (excluding FUND orders)")
         void getAllOrdersStatusPending() {
             PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
-            when(orderRepository.findByStatus(OrderStatus.PENDING, pageable))
+            when(orderRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), eq(pageable)))
                     .thenReturn(new PageImpl<>(List.of(makeOrder(1L, OrderStatus.PENDING))));
 
             Page<OrderDto> result = orderService.getAllOrders("PENDING", 0, 20);
@@ -992,6 +998,22 @@ class OrderServiceImplTest {
         @DisplayName("Invalid status throws IllegalArgumentException")
         void getAllOrdersInvalidStatus() {
             assertThrows(IllegalArgumentException.class, () -> orderService.getAllOrders("INVALID", 0, 20));
+        }
+
+        @Test
+        @DisplayName("BE-ORD-03: excludeFund=false uses legacy findAll/findByStatus path (fund admin view)")
+        void getAllOrdersIncludesFundWhenExcludeFundFalse() {
+            PageRequest pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt"));
+            when(orderRepository.findAll(pageable))
+                    .thenReturn(new PageImpl<>(List.of(makeOrder(1L, OrderStatus.PENDING))));
+
+            Page<OrderDto> result = orderService.getAllOrders("ALL", 0, 20, false);
+
+            assertEquals(1, result.getTotalElements());
+            verify(orderRepository).findAll(pageable);
+            verify(orderRepository, never())
+                    .findAll(any(org.springframework.data.jpa.domain.Specification.class),
+                            any(org.springframework.data.domain.Pageable.class));
         }
     }
 

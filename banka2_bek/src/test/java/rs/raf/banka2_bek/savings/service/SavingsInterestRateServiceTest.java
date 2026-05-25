@@ -1,10 +1,12 @@
 package rs.raf.banka2_bek.savings.service;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import rs.raf.banka2_bek.currency.model.Currency;
 import rs.raf.banka2_bek.currency.repository.CurrencyRepository;
 import rs.raf.banka2_bek.savings.dto.SavingsRateDto;
@@ -29,7 +31,13 @@ class SavingsInterestRateServiceTest {
     @Mock SavingsInterestRateRepository rateRepo;
     @Mock CurrencyRepository currencyRepo;
     @Mock SavingsMapper mapper;
-    @InjectMocks SavingsInterestRateService service;
+
+    private SavingsInterestRateService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new SavingsInterestRateService(rateRepo, currencyRepo, mapper);
+    }
 
     private Currency rsd() {
         Currency c = new Currency();
@@ -107,7 +115,6 @@ class SavingsInterestRateServiceTest {
 
         assertThat(existing.getActive()).isFalse();
         assertThat(result.getAnnualRate()).isEqualByComparingTo("4.25");
-        // existing (deactivated) + new rate = 2 saves
         verify(rateRepo, times(2)).save(any(SavingsInterestRate.class));
     }
 
@@ -130,7 +137,6 @@ class SavingsInterestRateServiceTest {
         SavingsRateDto result = service.upsert(dto);
 
         assertThat(result.getAnnualRate()).isEqualByComparingTo("3.00");
-        // only new rate saved (no existing to deactivate)
         verify(rateRepo, times(1)).save(any(SavingsInterestRate.class));
     }
 
@@ -145,5 +151,82 @@ class SavingsInterestRateServiceTest {
         assertThatThrownBy(() -> service.upsert(dto))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Valuta ne postoji");
+    }
+
+    /**
+     * BE-PAY-04: optimistic lock retry — prvi pokusaj baci OptimisticLockingFailure,
+     * drugi pokusaj uspeva.
+     */
+    @Test
+    void upsert_retriesOnOptimisticLockFailure() {
+        Currency c = rsd();
+        UpsertSavingsRateDto dto = new UpsertSavingsRateDto();
+        dto.setCurrencyCode("RSD");
+        dto.setTermMonths(12);
+        dto.setAnnualRate(new BigDecimal("5.00"));
+
+        when(currencyRepo.findByCode("RSD")).thenReturn(Optional.of(c));
+        when(rateRepo.findActive(1L, 12)).thenReturn(Optional.empty());
+        when(rateRepo.save(any(SavingsInterestRate.class)))
+                .thenThrow(new ObjectOptimisticLockingFailureException(SavingsInterestRate.class, 0L))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(mapper.toRateDto(any(SavingsInterestRate.class))).thenAnswer(inv -> {
+            SavingsInterestRate r = inv.getArgument(0);
+            return SavingsRateDto.builder().annualRate(r.getAnnualRate()).build();
+        });
+
+        SavingsRateDto result = service.upsert(dto);
+
+        assertThat(result.getAnnualRate()).isEqualByComparingTo("5.00");
+        verify(rateRepo, times(2)).save(any(SavingsInterestRate.class));
+    }
+
+    /**
+     * BE-PAY-04: posle MAX_RETRIES neuspesnih pokusaja, service ipak baci exception klijentu.
+     */
+    @Test
+    void upsert_exhaustsRetriesOnOptimisticLockFailure() {
+        Currency c = rsd();
+        UpsertSavingsRateDto dto = new UpsertSavingsRateDto();
+        dto.setCurrencyCode("RSD");
+        dto.setTermMonths(12);
+        dto.setAnnualRate(new BigDecimal("5.00"));
+
+        when(currencyRepo.findByCode("RSD")).thenReturn(Optional.of(c));
+        when(rateRepo.findActive(1L, 12)).thenReturn(Optional.empty());
+        when(rateRepo.save(any(SavingsInterestRate.class)))
+                .thenThrow(new ObjectOptimisticLockingFailureException(SavingsInterestRate.class, 0L));
+
+        assertThatThrownBy(() -> service.upsert(dto))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        verify(rateRepo, times(3)).save(any(SavingsInterestRate.class));
+    }
+
+    /**
+     * BE-PAY-04: DataIntegrityViolationException (unique constraint) takodje retry-uje.
+     */
+    @Test
+    void upsert_retriesOnUniqueConstraintViolation() {
+        Currency c = rsd();
+        UpsertSavingsRateDto dto = new UpsertSavingsRateDto();
+        dto.setCurrencyCode("RSD");
+        dto.setTermMonths(12);
+        dto.setAnnualRate(new BigDecimal("5.00"));
+
+        when(currencyRepo.findByCode("RSD")).thenReturn(Optional.of(c));
+        when(rateRepo.findActive(1L, 12)).thenReturn(Optional.empty());
+        when(rateRepo.save(any(SavingsInterestRate.class)))
+                .thenThrow(new DataIntegrityViolationException("uk_savings_rates_currency_term_active"))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(mapper.toRateDto(any(SavingsInterestRate.class))).thenAnswer(inv -> {
+            SavingsInterestRate r = inv.getArgument(0);
+            return SavingsRateDto.builder().annualRate(r.getAnnualRate()).build();
+        });
+
+        SavingsRateDto result = service.upsert(dto);
+
+        assertThat(result.getAnnualRate()).isEqualByComparingTo("5.00");
+        verify(rateRepo, times(2)).save(any(SavingsInterestRate.class));
     }
 }

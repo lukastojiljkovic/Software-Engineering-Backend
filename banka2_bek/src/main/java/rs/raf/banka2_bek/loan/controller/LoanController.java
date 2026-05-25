@@ -50,9 +50,15 @@ public class LoanController {
         return ResponseEntity.ok(loanService.getInstallments(id));
     }
 
+    /**
+     * BE-PAY-06: OTP kod prosledjuje se preko {@code X-OTP-Code} header-a
+     * (paritet sa savings withdraw-early; POST endpoint nema body).
+     */
     @PostMapping("/{id}/early-repayment")
-    public ResponseEntity<LoanResponseDto> earlyRepayment(@PathVariable Long id) {
-        return ResponseEntity.ok(loanService.earlyRepayment(id, getEmail()));
+    public ResponseEntity<LoanResponseDto> earlyRepayment(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-OTP-Code", required = false) String otpCode) {
+        return ResponseEntity.ok(loanService.earlyRepayment(id, getEmail(), otpCode));
     }
 
     @GetMapping("/requests/my")

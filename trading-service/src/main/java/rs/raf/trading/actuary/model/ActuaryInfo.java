@@ -46,4 +46,17 @@ public class ActuaryInfo {
 
     @Column(name = "need_approval", nullable = false)
     private boolean needApproval;
+
+    /**
+     * BE-ORD-07: optimistic locking za concurrent usedLimit increment-e iz
+     * OrderServiceImpl.createOrder + approveOrder + cancelOrder. Bez @Version,
+     * dva paralelna BUY ordera istog agenta nad istim ActuaryInfo redom mogu
+     * citati isti usedLimit, oba upisati current + svoju delta, i lost-update
+     * istisnuti jednu inkrementaciju (agent prelazi dailyLimit unprimetno).
+     * Sa @Version, drugi commit puca sa OptimisticLockingFailureException —
+     * OrderServiceImpl ima retry loop koji ucita svezi red i ponovi inkrement.
+     */
+    @jakarta.persistence.Version
+    @Column(name = "version")
+    private Long version;
 }

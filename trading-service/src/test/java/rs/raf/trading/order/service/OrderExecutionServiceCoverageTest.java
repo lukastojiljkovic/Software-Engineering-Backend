@@ -187,8 +187,9 @@ class OrderExecutionServiceCoverageTest {
         when(orderRepository.findByStatusAndIsDoneFalse(OrderStatus.APPROVED)).thenReturn(List.of(o));
         when(listingRepository.findById(10L)).thenReturn(Optional.of(listing));
         when(aonValidationService.checkCanExecuteAon(any(), anyInt())).thenReturn(true);
-        when(portfolioRepository.findByUserIdAndUserRole(42L, "CLIENT"))
-                .thenReturn(new ArrayList<>(List.of(p)));
+        // BE-ORD-05: SELL fill putanja sad koristi forUpdate lock metod.
+        when(portfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate(42L, "CLIENT", 10L))
+                .thenReturn(Optional.of(p));
         when(bankaCoreClient.getAccount(1L)).thenReturn(usdAccount());
 
         service.executeOrders();
@@ -397,8 +398,9 @@ class OrderExecutionServiceCoverageTest {
         when(orderRepository.findByStatusAndIsDoneFalse(OrderStatus.APPROVED)).thenReturn(List.of(o));
         when(listingRepository.findById(10L)).thenReturn(Optional.of(listing));
         when(aonValidationService.checkCanExecuteAon(any(), anyInt())).thenReturn(true);
-        when(portfolioRepository.findByUserIdAndUserRole(42L, "CLIENT"))
-                .thenReturn(new ArrayList<>(List.of(p)));
+        // BE-ORD-05: SELL fill putanja sad koristi forUpdate lock metod.
+        when(portfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate(42L, "CLIENT", 10L))
+                .thenReturn(Optional.of(p));
         when(bankaCoreClient.getAccount(1L)).thenReturn(usdAccount());
         doThrow(new RuntimeException("release sell boom"))
                 .when(fundReservationService).releaseForSell(any(), any());
@@ -478,8 +480,9 @@ class OrderExecutionServiceCoverageTest {
         when(orderRepository.findByStatusAndIsDoneFalse(OrderStatus.APPROVED)).thenReturn(List.of(o));
         when(listingRepository.findById(10L)).thenReturn(Optional.of(listing));
         when(aonValidationService.checkCanExecuteAon(any(), anyInt())).thenReturn(true);
-        when(portfolioRepository.findByUserIdAndUserRole(42L, "CLIENT"))
-                .thenReturn(new ArrayList<>(List.of(p)));
+        // BE-ORD-05: SELL fill putanja sad koristi forUpdate lock metod.
+        when(portfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate(42L, "CLIENT", 10L))
+                .thenReturn(Optional.of(p));
         when(bankaCoreClient.getAccount(1L)).thenReturn(usdAccount());
 
         service.executeOrders();

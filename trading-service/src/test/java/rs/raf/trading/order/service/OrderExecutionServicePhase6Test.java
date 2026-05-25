@@ -199,8 +199,9 @@ class OrderExecutionServicePhase6Test {
                 .thenReturn(List.of(order));
         when(listingRepository.findById(10L)).thenReturn(Optional.of(listing));
         when(aonValidationService.checkCanExecuteAon(any(), anyInt())).thenReturn(true);
-        when(portfolioRepository.findByUserIdAndUserRole(42L, "CLIENT"))
-                .thenReturn(new ArrayList<>(List.of(portfolio)));
+        // BE-ORD-05: SELL fill putanja sad koristi forUpdate lock metod.
+        when(portfolioRepository.findByUserIdAndUserRoleAndListingIdForUpdate(42L, "CLIENT", 10L))
+                .thenReturn(Optional.of(portfolio));
         when(bankaCoreClient.getAccount(1L)).thenReturn(usdAccount());
 
         service.executeOrders();

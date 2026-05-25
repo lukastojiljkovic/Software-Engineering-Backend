@@ -39,4 +39,18 @@ public class OrderSpecification {
             return cb.equal(root.get("listing").get("listingType"), listingType);
         };
     }
+
+    /**
+     * BE-ORD-03: filtrira FUND ordere iz supervizorskog approval view-a.
+     * Kada je {@code excludeFund=true} (default), vraca samo ordere bez
+     * povezanog fonda (klijenti + zaposleni). FUND ordere ostaju dostupni
+     * preko fund admin view-a (po fund.id) — supervizori NE treba da odobravaju
+     * FUND ordere u opstem approval queue-u jer su to fund-management akcije
+     * pokrenute od strane manager-a fonda.
+     */
+    public static Specification<Order> excludeFundOrders(boolean excludeFund) {
+        return (root, query, cb) -> excludeFund
+                ? cb.isNull(root.get("fundId"))
+                : cb.conjunction();
+    }
 }

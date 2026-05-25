@@ -103,9 +103,13 @@ class InterbankInboundControllerTest {
     }
 
     @Test
-    @DisplayName("POST /interbank with routing number mismatch returns 401")
+    @DisplayName("POST /interbank with routing number mismatch returns 400")
     void receiveMessage_routingNumberMismatch_returns401() throws Exception {
         // Key says routing=999, but partner has routing=111
+        // T2-E (Tim 1 cross-bank Stage C, 2026-05-20): routing mismatch je sad 400 Bad Request
+        // (NIJE 401), jer X-Api-Key je validan — payload je malformed. Mirror-uje Tim 1
+        // inbound controller za simetricno ponasanje izmedju banaka (commit 11.05.2026
+        // BE_polish/inter-bank rev3 audit).
         String envelope = buildEnvelopeJson(999, "somekey", MessageType.COMMIT_TX,
                 objectMapper.writeValueAsString(new CommitTransaction(new ForeignBankId(999, "x"))));
 
@@ -113,7 +117,7 @@ class InterbankInboundControllerTest {
                         .header("X-Api-Key", VALID_INBOUND_TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(envelope))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isBadRequest());
     }
     @Test
     @DisplayName("POST /interbank with malformed envelope returns 400")

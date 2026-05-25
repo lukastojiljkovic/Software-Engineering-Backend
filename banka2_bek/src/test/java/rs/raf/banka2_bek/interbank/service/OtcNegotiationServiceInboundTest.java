@@ -103,10 +103,12 @@ class OtcNegotiationServiceInboundTest {
 
         // Simuliraj persistAcceptArtifacts vracanje validnog AcceptPrep-a sa
         // mockovanim tx-om (delegacija u self).
+        // T2-F (Tim 1 cross-bank Stage C, 2026-05-20): service uses 2-arg overload
+        // (negotiationId, senderRoutingNumber); legacy poziv delegira sa senderRoutingNumber=null.
         Transaction expectedTx = buildExpectedAcceptTx(negotiationId);
         OtcNegotiationService.AcceptPrep prep = new OtcNegotiationService.AcceptPrep(
                 42L, 99L, expectedTx, 7L, "CLIENT", "AAPL", 50);
-        when(selfMock.persistAcceptArtifacts(negotiationId)).thenReturn(prep);
+        when(selfMock.persistAcceptArtifacts(eq(negotiationId), eq((Integer) null))).thenReturn(prep);
 
         // 2PC izvrsenje uspeva (no exception).
         doNothing().when(transactionExecutor).execute(any(Transaction.class));
@@ -137,7 +139,8 @@ class OtcNegotiationServiceInboundTest {
         Transaction tx = buildExpectedAcceptTx(negotiationId);
         OtcNegotiationService.AcceptPrep prep = new OtcNegotiationService.AcceptPrep(
                 42L, 99L, tx, 7L, "CLIENT", "AAPL", 50);
-        when(selfMock.persistAcceptArtifacts(negotiationId)).thenReturn(prep);
+        // T2-F: service uses 2-arg overload sa senderRoutingNumber=null za legacy poziv.
+        when(selfMock.persistAcceptArtifacts(eq(negotiationId), eq((Integer) null))).thenReturn(prep);
 
         // Stock reservation uspeva, 2PC pukne.
         doNothing().when(reservationApplier).reserveStock(anyString(), any(), anyString(), anyString(), anyInt());
@@ -158,7 +161,8 @@ class OtcNegotiationServiceInboundTest {
         Transaction tx = buildExpectedAcceptTx(negotiationId);
         OtcNegotiationService.AcceptPrep prep = new OtcNegotiationService.AcceptPrep(
                 42L, 99L, tx, 7L, "CLIENT", "AAPL", 50);
-        when(selfMock.persistAcceptArtifacts(negotiationId)).thenReturn(prep);
+        // T2-F: service uses 2-arg overload sa senderRoutingNumber=null za legacy poziv.
+        when(selfMock.persistAcceptArtifacts(eq(negotiationId), eq((Integer) null))).thenReturn(prep);
 
         doThrow(new RuntimeException("insufficient stock"))
                 .when(reservationApplier).reserveStock(anyString(), any(), anyString(), anyString(), anyInt());
@@ -189,7 +193,7 @@ class OtcNegotiationServiceInboundTest {
     }
 
     @Test
-    @DisplayName("§3.6 persistAcceptArtifacts: pregovor nije ACTIVE -> ProtocolException")
+    @DisplayName("§3.6 persistAcceptArtifacts: pregovor nije ACTIVE -> 409 NegotiationConflict")
     void persistAcceptArtifacts_notActive_throwsProtocol() {
         ReflectionTestUtils.setField(service, "self", service);
         ForeignBankId negotiationId = new ForeignBankId(OUR_RN, "neg-closed");
@@ -199,8 +203,10 @@ class OtcNegotiationServiceInboundTest {
         when(negotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
                 eq(OUR_RN), eq("neg-closed"))).thenReturn(Optional.of(entity));
 
+        // T2-E (Tim 1 cross-bank Stage C, 2026-05-20): zatvoreni pregovor je
+        // 409 Conflict, ne 400 (mirror Tim 1 ponasanju + Tim 2 §6.6 spec).
         assertThatThrownBy(() -> service.persistAcceptArtifacts(negotiationId))
-                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class)
+                .isInstanceOf(InterbankExceptions.InterbankNegotiationConflictException.class)
                 .hasMessageContaining("nije aktivan");
     }
 

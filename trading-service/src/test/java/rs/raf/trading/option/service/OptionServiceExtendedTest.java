@@ -414,19 +414,35 @@ class OptionServiceExtendedTest {
         }
 
         @Test
-        @DisplayName("PUT option not in-the-money throws exception")
-        void putNotInTheMoney() {
+        @DisplayName("PUT option OTM is allowed (per spec — buyer's right to exercise)")
+        void putNotInTheMoneyAllowedWithWarning() {
+            // [BE-STK-02] Spec: kupac opcije ima PRAVO da je iskoristi i OTM.
+            // Ranija stroga blokada zamenjena WARN log-om + nastavkom izvrsenja.
+            // PUT exercise: trading-service zahteva da prodavac poseduje akcije u
+            // portfoliju (mocked kroz portfolioRepository), inace baca IllegalStateException
+            // "Nedovoljno akcija" — sto je drugacija provera od ITM gate-a. Da bi ovaj
+            // test verifikovao da ITM gate vise NE baca, koristimo PUT putanju koja
+            // pada na portfolio check (jasna granica izmedju "OTM dozvoljeno" i
+            // "ali dalja biznis validacija mora da prodje").
             mockAuthorizedActuary("agent@test.com", 12L);
 
-            // stock=200, strike=180 -> for PUT, need stock < strike
+            // stock=200, strike=180 -> for PUT, OTM (stock > strike)
             Option option = buildOption(1L, OptionType.PUT, new BigDecimal("200.00"),
                     new BigDecimal("180.00"), LocalDate.now().plusDays(5), 3);
 
             when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
+            // Bankin USD racun za PUT credit putanju
+            when(bankaCoreClient.getBankTradingAccount("USD")).thenReturn(bankAccount());
 
+            // Ne baca IllegalArgumentException("in-the-money"). Baca IllegalStateException
+            // jer kupac (agent employee 12) nema PUT akcije u portfoliju — to dokazuje
+            // da je proslo ITM gate i otislo dalje u PUT exercise logiku
+            // (updatePortfolioSell). Pre BE-STK-02 fix-a, hard ITM gate je bacao
+            // IllegalArgumentException sa "in-the-money" pre nego sto bi se uopste
+            // doslo do portfolio provere.
             assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("in-the-money");
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("nema dovoljno akcija");
         }
     }
 

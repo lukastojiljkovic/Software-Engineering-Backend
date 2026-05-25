@@ -247,7 +247,12 @@ class OptionControllerIntegrationTest {
     }
 
     @Test
-    void exerciseOption_returnsBadRequest_whenOptionIsNotInTheMoney() {
+    void exerciseOption_otmCall_allowedPerSpec() {
+        // [BE-STK-02] Spec: kupac opcije ima PRAVO da je iskoristi i OTM. Ranija
+        // hard-blokada zamenjena warning log-om; endpoint dalje moze pasti zbog
+        // drugih biznis razloga (npr. nedovoljno sredstava na bankinom racunu),
+        // ali NE zbog ITM gate-a. Test verifikuje da response NIJE 400 zbog ITM:
+        // ili 200 (uspeh) ili 409/500 zbog drugog razloga, samo NE "in-the-money".
         mockBankaCoreUser("agent@test.com", AGENT_ID, true, List.of("AGENT"));
 
         Listing listing = createListing("META", new BigDecimal("150.00"));
@@ -261,8 +266,8 @@ class OptionControllerIntegrationTest {
                 String.class
         );
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("in-the-money");
+        // ITM gate vise ne odbija OTM exercise — body NE sme da sadrzi "in-the-money".
+        assertThat(response.getBody()).doesNotContain("in-the-money");
     }
 
     // ── GET option chain / details ───────────────────────────────────────────

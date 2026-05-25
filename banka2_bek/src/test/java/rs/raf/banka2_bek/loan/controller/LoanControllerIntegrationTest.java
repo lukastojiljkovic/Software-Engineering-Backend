@@ -94,6 +94,13 @@ class LoanControllerIntegrationTest {
         });
 
         IntegrationTestCleanup.truncateAllTables(dataSource);
+
+        // BE-PAY-06: stub OtpService.verify() da vrati success — integration testovi
+        // ne testiraju OTP flow direktno (PaymentControllerIntegrationTest pokriva to).
+        org.mockito.Mockito.when(otpService.verify(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.util.Map.of("verified", true));
     }
 
     // ===== Create loan request =====
@@ -119,7 +126,8 @@ class LoanControllerIntegrationTest {
                   "employmentStatus": "EMPLOYED",
                   "monthlyIncome": 150000,
                   "permanentEmployment": true,
-                  "employmentPeriod": 36
+                  "employmentPeriod": 36,
+                  "otpCode": "123456"
                 }
                 """;
 
@@ -158,7 +166,8 @@ class LoanControllerIntegrationTest {
                   "currency": "USD",
                   "loanPurpose": "Test",
                   "repaymentPeriod": 12,
-                  "accountNumber": "210000000000000002"
+                  "accountNumber": "210000000000000002",
+                  "otpCode": "123456"
                 }
                 """;
 
@@ -199,7 +208,8 @@ class LoanControllerIntegrationTest {
                   "currency": "EUR",
                   "loanPurpose": "Test kredit",
                   "repaymentPeriod": 12,
-                  "accountNumber": "220000000000000001"
+                  "accountNumber": "220000000000000001",
+                  "otpCode": "123456"
                 }
                 """;
 
@@ -264,7 +274,8 @@ class LoanControllerIntegrationTest {
                   "amount": 50000,
                   "currency": "EUR",
                   "repaymentPeriod": 6,
-                  "accountNumber": "220000000000000002"
+                  "accountNumber": "220000000000000002",
+                  "otpCode": "123456"
                 }
                 """;
 
@@ -309,7 +320,8 @@ class LoanControllerIntegrationTest {
                   "currency": "EUR",
                   "loanPurpose": "Auto kredit",
                   "repaymentPeriod": 36,
-                  "accountNumber": "230000000000000001"
+                  "accountNumber": "230000000000000001",
+                  "otpCode": "123456"
                 }
                 """;
 
@@ -524,7 +536,8 @@ class LoanControllerIntegrationTest {
                   "amount": %d,
                   "currency": "EUR",
                   "repaymentPeriod": %d,
-                  "accountNumber": "%s"
+                  "accountNumber": "%s",
+                  "otpCode": "123456"
                 }
                 """.formatted(loanType, amount, period, accountNumber);
 

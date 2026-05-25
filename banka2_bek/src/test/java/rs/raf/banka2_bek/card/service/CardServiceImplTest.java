@@ -54,6 +54,12 @@ class CardServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        // Test isolation guard: clear leaked SecurityContextHolder state from prior test
+        // classes (some test files set principal but don't clear, causing NPE
+        // `principal is null` in getOptionalClient when CardServiceImpl runs in full
+        // suite). Defense-in-depth — mockAuth() sets context per-test; this clears.
+        SecurityContextHolder.clearContext();
+
         client = Client.builder()
                 .id(1L).firstName("Stefan").lastName("Jovanovic")
                 .email("stefan@test.com").build();
@@ -67,6 +73,12 @@ class CardServiceImplTest {
                 .id(2L).accountNumber("222000112345678912")
                 .accountType(AccountType.BUSINESS)
                 .client(client).build();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        // Ensure we don't leak context to other test classes.
+        SecurityContextHolder.clearContext();
     }
 
     private void mockAuth(String email) {

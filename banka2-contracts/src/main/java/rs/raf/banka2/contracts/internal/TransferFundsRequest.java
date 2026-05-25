@@ -17,9 +17,28 @@ import java.math.BigDecimal;
  *
  * <p>{@code commission}/{@code commissionCurrency} su opcioni — {@code null}/0
  * znaci bez provizije.
+ *
+ * <p>BE-INT-07: {@code expectedRate} je OPCIONI FX kurs koji caller dostavlja
+ * kao integrity check kad je prenos cross-currency. Ako je not-null, banka-core
+ * validira da {@code |creditAmount - (debitAmount * expectedRate)|} ne prelazi
+ * 1% od {@code |creditAmount|} — tolerancija pokriva rounding razlike, ali
+ * uhvata FX racunske bug-ove na seam boundary-ju. {@code null} preskoci proveru
+ * (back-compat sa starim caller-ima).
  */
 public record TransferFundsRequest(Long fromAccountId, BigDecimal debitAmount,
                                    Long toAccountId, BigDecimal creditAmount,
                                    BigDecimal commission, String commissionCurrency,
-                                   String description) {
+                                   String description, BigDecimal expectedRate) {
+
+    /**
+     * Back-compat ctor: bez {@code expectedRate} (postavlja {@code null}, ne radi
+     * FX integrity check). Postojeci pozivaoci ne moraju da se menjaju.
+     */
+    public TransferFundsRequest(Long fromAccountId, BigDecimal debitAmount,
+                                Long toAccountId, BigDecimal creditAmount,
+                                BigDecimal commission, String commissionCurrency,
+                                String description) {
+        this(fromAccountId, debitAmount, toAccountId, creditAmount,
+                commission, commissionCurrency, description, null);
+    }
 }

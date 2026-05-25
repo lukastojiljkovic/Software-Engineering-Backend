@@ -57,6 +57,9 @@ class LoanControllerTest {
 
     @BeforeEach
     void setUp() {
+        // Test isolation: clear leaked SecurityContextHolder state from prior test classes.
+        SecurityContextHolder.clearContext();
+
         mockMvc = MockMvcBuilders
                 .standaloneSetup(loanController)
                 .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
@@ -102,6 +105,12 @@ class LoanControllerTest {
                 .clientEmail("marko@banka.rs")
                 .clientName("Marko Markovic")
                 .build();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDownSecurityContext() {
+        // Test isolation: ensure we don't leak SecurityContextHolder to next test class.
+        SecurityContextHolder.clearContext();
     }
 
     // ══════════════════════════════════════════════════════════════════

@@ -37,4 +37,11 @@ public class LoanRequestDto {
     private BigDecimal monthlyIncome;
     private Boolean permanentEmployment;
     private Integer employmentPeriod;
+
+    /**
+     * BE-PAY-06: OTP verifikacioni kod za zahtev za kredit (povlacenje
+     * sredstava u korist klijenta). Paritet sa PaymentServiceImpl/Savings
+     * OTP gate-om. Mora biti unesen u istom request body-ju.
+     */
+    private String otpCode;
 }

@@ -250,31 +250,65 @@ public class TransactionExecutorService {
         boolean isExercise = postings.stream().anyMatch(
                 pp -> pp.asset() instanceof Asset.Stock && pp.account() instanceof TxAccount.Option);
 
-        for (int i = 0; i < postings.size(); i++) {
-            Posting p = postings.get(i);
-            if (isPostingRemote(p)) continue;
-            boolean isDebit = p.amount().compareTo(BigDecimal.ZERO) > 0;
-            BigDecimal abs = p.amount().abs();
+        // BE-INT-06 fix po Celini 5 audit-u: commitLocal racunski cikl je out-of-process
+        // (HTTP poziv ka trading-service-u). Ako commitStock uspe za jedan posting a
+        // sledeci pukne, prvi je vec ulazio u trading_db sa side-effectom (smanjenje
+        // portfolio quantity ili kreiranje novog portfolio reda). @Transactional rollback
+        // nije pravi rollback (trading-service ima sopstvenu Tx granicu). Pratimo svaki
+        // uspeh i reverzno-kompenzujemo immediate na mid-failure. Mirror Pass-2 obrasca.
+        //
+        // Monas commits se ne kompenzuju ovde — oni rade unutar nase @Transactional pa ce
+        // Spring rollback-ovati DB state ako exception bubbles up iz ove metode. Track-uju
+        // se samo Stock commits jer su out-of-process.
+        List<StockCommitRecord> stockCommits = new ArrayList<>();
+        try {
+            for (int i = 0; i < postings.size(); i++) {
+                Posting p = postings.get(i);
+                if (isPostingRemote(p)) continue;
+                boolean isDebit = p.amount().compareTo(BigDecimal.ZERO) > 0;
+                BigDecimal abs = p.amount().abs();
 
-            if (p.asset() instanceof Asset.Monas && p.account() instanceof TxAccount.Account a) {
-                reservationApplier.commitMonas(a.num(), abs, isDebit);
+                if (p.asset() instanceof Asset.Monas && p.account() instanceof TxAccount.Account a) {
+                    reservationApplier.commitMonas(a.num(), abs, isDebit);
 
-            } else if (p.asset() instanceof Asset.Stock s && p.account() instanceof TxAccount.Person pe) {
-                String ticker = s.asset().ticker();
-                // commitStock razresava listing po ticker-u u trading-service-u i
-                // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
-                // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
-                // HTTP round-trip unutar @Transactional.
-                Long userId = Long.parseLong(pe.id().id());
-                reservationApplier.commitStock(
-                        stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
-                        userId, "CLIENT", ticker, abs.intValueExact(), isDebit);
+                } else if (p.asset() instanceof Asset.Stock s && p.account() instanceof TxAccount.Person pe) {
+                    String ticker = s.asset().ticker();
+                    // commitStock razresava listing po ticker-u u trading-service-u i
+                    // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
+                    // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
+                    // HTTP round-trip unutar @Transactional.
+                    Long userId = Long.parseLong(pe.id().id());
+                    int quantity = abs.intValueExact();
+                    reservationApplier.commitStock(
+                            stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
+                            userId, "CLIENT", ticker, quantity, isDebit);
+                    stockCommits.add(new StockCommitRecord(userId, "CLIENT", ticker, quantity, isDebit, i));
 
+                }
+                // OptionAsset+Person posting (accept-shape) i Monas/Stock+Option posting
+                // (exercise-shape) ne barataju nikakvim portfolio/account state-om u nasoj
+                // banci ako smo seller (option pseudo-account je apstraktan); contract
+                // status flip se desava ispod, posle petlje.
             }
-            // OptionAsset+Person posting (accept-shape) i Monas/Stock+Option posting
-            // (exercise-shape) ne barataju nikakvim portfolio/account state-om u nasoj
-            // banci ako smo seller (option pseudo-account je apstraktan); contract
-            // status flip se desava ispod, posle petlje.
+        } catch (RuntimeException commitFail) {
+            // Kompenzacija: za svaki uspesan stock commit, izvrsi reverzni commit
+            // (isDebit ↔ !isDebit) sa razlicitim idempotency kljucem ("compensate" fazom)
+            // da trading-service ne kesira kao replay. commitStock je idempotentan u
+            // okviru istog kljuca, a "compensate" kljuc je determinisitcki po txId+
+            // posting-u → retry-safe.
+            for (StockCommitRecord c : stockCommits) {
+                try {
+                    reservationApplier.commitStock(
+                            stockIdempotencyKey(transactionId, "compensate", c.userId(), c.role(), c.ticker(), c.postingIndex()),
+                            c.userId(), c.role(), c.ticker(), c.quantity(), !c.isDebit());
+                } catch (RuntimeException compEx) {
+                    log.error("Compensation commitStock failed for tx={} posting={}: {}",
+                            transactionId, c.postingIndex(), compEx.getMessage(), compEx);
+                    // Best-effort — nastavi sa ostalim kompenzacijama. Idempotency-driven
+                    // retry scheduler ili manualni intervent saniraju ostatak.
+                }
+            }
+            throw commitFail;
         }
 
         // Posle iteracije: ako je exercise-shape tx, oznaci kontaminirani contract
@@ -871,6 +905,14 @@ public class TransactionExecutorService {
     /** Trag uspesne rezervacije hartije u Pass 2 — koristi se za kompenzaciju. */
     private record StockReservationRecord(Long userId, String role, String ticker,
                                           int quantity, int postingIndex) {}
+
+    /**
+     * Trag uspesnog commit-a hartije u {@code commitLocal} — koristi se za reverznu
+     * kompenzaciju (BE-INT-06). Cuva {@code isDebit} smer da kompenzacija moze da ga
+     * invertuje.
+     */
+    private record StockCommitRecord(Long userId, String role, String ticker,
+                                     int quantity, boolean isDebit, int postingIndex) {}
 
     /**
      * Determinisitcki idempotency kljuc za hartijsku nogu inter-bank transakcije.

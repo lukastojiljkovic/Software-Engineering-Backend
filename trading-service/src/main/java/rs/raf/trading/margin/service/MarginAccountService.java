@@ -330,12 +330,15 @@ public class MarginAccountService {
     /**
      * Dnevna provera maintenance margine za sve aktivne margin racune.
      *
-     * <p><b>BE-STK-04 (atomic block):</b> umesto SELECT-zatim-UPDATE obrazca
-     * (koji je dozvoljavao da concurrent deposit izmedju ova dva koraka flipne
-     * flag dok je vec procenjivan za blokadu), sad koristi
-     * {@code blockUnderMargin} koji u jednom UPDATE-u sa RETURNING klauzulom
-     * atomicno blokira redove i vrati id-eve. Posle UPDATE-a, posebnim
-     * lookupom puni email-ove blokiranih za notification publish — bez race-a.
+     * <p><b>BE-STK-04 (2-step block, H2 test compat):</b> umesto atomic UPDATE
+     * sa RETURNING klauzulom (PG-only), sad koristi 2-step JPA pattern:
+     * (1) {@link MarginAccountRepository#findEligibleForBlock} → lista id-eva
+     * koji ispunjavaju MM>IM AND status=ACTIVE; (2)
+     * {@link MarginAccountRepository#bulkUpdateStatus} flipa ih ACTIVE→BLOCKED
+     * unutar iste Tx. Race window izmedju SELECT i UPDATE pokriven Tx context-om
+     * (cela {@code checkMaintenanceMargin} je @Transactional; depozit/withdraw
+     * idu sa pessimistic lock nad ACTIVE redovima — ako u medjuvremenu redovi
+     * postanu BLOCKED, depozit puca pre commit-a).
      */
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
@@ -343,17 +346,18 @@ public class MarginAccountService {
 
         log.info("Running daily maintenance margin check...");
 
-        // Atomic UPDATE + RETURNING: blokira sve eligible margin racune i vraca
-        // njihove id-eve. Bez race window-a izmedju eligibility check-a i blokade.
-        List<Long> blockedIds = marginAccountRepository.blockUnderMargin(
-                MarginAccountStatus.ACTIVE.toString(),
-                MarginAccountStatus.BLOCKED.toString()
+        // Step 1: pronalazi sve id-eve eligible za blokiranje (ACTIVE + MM>IM).
+        List<Long> blockedIds = marginAccountRepository.findEligibleForBlock(
+                MarginAccountStatus.ACTIVE
         );
 
         if (blockedIds.isEmpty()) {
             log.info("Daily maintenance margin check completed. No accounts blocked.");
             return;
         }
+
+        // Step 2: bulk UPDATE statusa ACTIVE → BLOCKED unutar iste Tx.
+        marginAccountRepository.bulkUpdateStatus(blockedIds, MarginAccountStatus.BLOCKED);
 
         // Posle blokade: resolve detalje (userId/MM/IM) za notification publish.
         // Bezbedno: redovi su sada BLOCKED, vise ne mogu da se menjaju kroz

@@ -9,9 +9,11 @@ import org.springframework.web.client.RestTemplate;
 import rs.raf.banka2_bek.exchange.dto.CalculateExchangeResponseDto;
 import rs.raf.banka2_bek.exchange.dto.ExchangeRateDto;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class ExchangeService {
@@ -26,9 +28,35 @@ public class ExchangeService {
     @Value("${exchange.api.url}")
     private String apiUrl;
 
+    /**
+     * BE-PAY-07: snapshot tipa za thread-safe kes.
+     *
+     * <p>{@code rates} je immutable (kopiramo u List.copyOf pri save-u);
+     * {@code timestamp} pamti kad je snapshot napravljen. Cela snapshot se
+     * publish-uje atomicno preko {@link AtomicReference#set} pa ne moze
+     * doci do delimicnog citanja gde rates pripada novom batch-u a timestamp
+     * starom (race u prethodnoj implementaciji sa razdvojenim
+     * {@code cachedRates}/{@code cacheTimestamp} field-ovima).</p>
+     *
+     * @param rates immutable cache-ovani kurs
+     * @param timestamp Instant kad je snapshot napravljen
+     */
+    private record RatesSnapshot(List<ExchangeRateDto> rates, Instant timestamp) {
+        RatesSnapshot(List<ExchangeRateDto> rates, Instant timestamp) {
+            this.rates = List.copyOf(rates);
+            this.timestamp = timestamp;
+        }
+
+        boolean isFresh(long ttlMs) {
+            return timestamp != null
+                    && (Instant.now().toEpochMilli() - timestamp.toEpochMilli()) < ttlMs;
+        }
+    }
+
+    // BE-PAY-07: thread-safe cache (AtomicReference garantuje atomic publish/read).
+    private final AtomicReference<RatesSnapshot> snapshotRef = new AtomicReference<>(null);
+
     // Cache za kurseve — 5 minuta TTL
-    private List<ExchangeRateDto> cachedRates;
-    private long cacheTimestamp = 0;
     private static final long CACHE_TTL_MS = 5 * 60 * 1000;
 
     public ExchangeService(RestTemplate restTemplate) {
@@ -45,23 +73,25 @@ public class ExchangeService {
     }
 
     public List<ExchangeRateDto> getAllRates() {
-        if (cachedRates != null && (System.currentTimeMillis() - cacheTimestamp) < CACHE_TTL_MS) {
-            return cachedRates;
+        RatesSnapshot snapshot = snapshotRef.get();
+        if (snapshot != null && snapshot.isFresh(CACHE_TTL_MS)) {
+            return snapshot.rates();
         }
         return fetchAndCacheRates();
     }
 
     private synchronized List<ExchangeRateDto> fetchAndCacheRates() {
         // Double-check after acquiring lock
-        if (cachedRates != null && (System.currentTimeMillis() - cacheTimestamp) < CACHE_TTL_MS) {
-            return cachedRates;
+        RatesSnapshot existing = snapshotRef.get();
+        if (existing != null && existing.isFresh(CACHE_TTL_MS)) {
+            return existing.rates();
         }
 
         // SEC-01: ne salji zahtev ka Fixer.io bez validnog key-a — odmah fallback.
         if (apiKey == null || apiKey.isBlank()) {
-            cachedRates = getFallbackRates();
-            cacheTimestamp = System.currentTimeMillis();
-            return cachedRates;
+            List<ExchangeRateDto> fallback = getFallbackRates();
+            snapshotRef.set(new RatesSnapshot(fallback, Instant.now()));
+            return fallback;
         }
 
         String url = apiUrl + "?access_key=" + apiKey +
@@ -74,17 +104,17 @@ public class ExchangeService {
             body = responseBody;
         } catch (Exception e) {
             // API nedostupan ili rate limit — koristimo fallback kurseve
-            if (cachedRates != null) return cachedRates;
-            cachedRates = getFallbackRates();
-            cacheTimestamp = System.currentTimeMillis();
-            return cachedRates;
+            if (existing != null) return existing.rates();
+            List<ExchangeRateDto> fallback = getFallbackRates();
+            snapshotRef.set(new RatesSnapshot(fallback, Instant.now()));
+            return fallback;
         }
 
         if (body == null || body.get("rates") == null) {
-            if (cachedRates != null) return cachedRates;
-            cachedRates = getFallbackRates();
-            cacheTimestamp = System.currentTimeMillis();
-            return cachedRates;
+            if (existing != null) return existing.rates();
+            List<ExchangeRateDto> fallback = getFallbackRates();
+            snapshotRef.set(new RatesSnapshot(fallback, Instant.now()));
+            return fallback;
         }
 
         @SuppressWarnings("unchecked")
@@ -121,8 +151,10 @@ public class ExchangeService {
             }
         }
 
-        cachedRates = result;
-        cacheTimestamp = System.currentTimeMillis();
+        // BE-PAY-07: atomic publish — citaoci vide ili stari snapshot ili novi snapshot
+        // (List.copyOf u RatesSnapshot ctor-u + AtomicReference.set garantuje
+        // happens-before bez race-a izmedju rates i timestamp polja).
+        snapshotRef.set(new RatesSnapshot(result, Instant.now()));
         return result;
     }
 

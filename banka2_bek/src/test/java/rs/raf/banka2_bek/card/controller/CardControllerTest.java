@@ -69,6 +69,9 @@ class CardControllerTest {
 
     @BeforeEach
     void setUp() {
+        // Test isolation: clear leaked SecurityContextHolder state from prior test classes.
+        SecurityContextHolder.clearContext();
+
         mockMvc = MockMvcBuilders
                 .standaloneSetup(cardController)
                 .setControllerAdvice(new GlobalExceptionHandler())
@@ -86,6 +89,12 @@ class CardControllerTest {
                 .createdAt(LocalDate.of(2025, 3, 15))
                 .expirationDate(LocalDate.of(2029, 3, 15))
                 .build();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDownSecurityContext() {
+        // Test isolation: ensure we don't leak SecurityContextHolder to next test class.
+        SecurityContextHolder.clearContext();
     }
 
     // ══════════════════════════════════════════════════════════════════

@@ -171,8 +171,12 @@ class OptionControllerUnitTest {
     }
 
     @Test
-    @DisplayName("POST /options/{id}/exercise — 400 when not in the money")
-    void exerciseOption_notItm() throws Exception {
+    @DisplayName("POST /options/{id}/exercise — 400 propagates IllegalArgumentException message from service")
+    void exerciseOption_propagatesIllegalArgumentExceptionFromService() throws Exception {
+        // Controller error-handler test: bilo koja IllegalArgumentException iz service-a
+        // mora da se mapira u HTTP 400 sa porukom u JSON body-ju. Nakon BE-STK-02,
+        // ITM gate vise NE baca; ovaj test demonstrira da i dalje radi mapiranje za
+        // ostale uzroke (npr. opcija istekla, otp invalid).
         doThrow(new IllegalArgumentException("Opcija nije in-the-money."))
                 .when(optionService).exerciseOption(anyLong(), anyString());
 

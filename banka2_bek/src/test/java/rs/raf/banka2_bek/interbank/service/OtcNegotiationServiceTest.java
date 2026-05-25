@@ -276,7 +276,9 @@ class OtcNegotiationServiceTest {
     void closeNegotiation_delegates() {
         ForeignBankId negotiationId = new ForeignBankId(SELLER_RN, "neg-1");
         service.closeNegotiation(negotiationId);
-        verify(client).deleteNegotiation(negotiationId);
+        // T2-J: service uses 2-arg overload (negotiationId, targetPartnerRouting)
+        // gde targetPartnerRouting default-uje na negotiationId.routingNumber().
+        verify(client).deleteNegotiation(negotiationId, SELLER_RN);
     }
 
     // ───────────────────── §3.6 acceptOffer ─────────────────────

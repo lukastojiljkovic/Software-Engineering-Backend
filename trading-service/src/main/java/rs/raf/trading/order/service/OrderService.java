@@ -76,9 +76,24 @@ public interface OrderService {
 
     /**
      * Pregled svih ordera (za supervizora).
-     * Filtriranje po statusu: ALL, PENDING, APPROVED, DECLINED, DONE
+     * Filtriranje po statusu: ALL, PENDING, APPROVED, DECLINED, DONE.
+     *
+     * <p>BE-ORD-03: FUND ordere podrazumevano iskljucuje iz approval view-a —
+     * supervizori NE treba da odobravaju fund-management ordere kroz opstu
+     * approval listu (oni idu kroz fund admin view, po manager-u fonda).
+     * Stari pozivaoci koji ne prosledjuju {@code excludeFund} dobijaju
+     * default {@code true}.
      */
-    Page<OrderDto> getAllOrders(String status, int page, int size);
+    default Page<OrderDto> getAllOrders(String status, int page, int size) {
+        return getAllOrders(status, page, size, true);
+    }
+
+    /**
+     * Prosirena varijanta {@link #getAllOrders(String, int, int)} sa
+     * eksplicitnim FUND-exclude flag-om. {@code excludeFund=false} se koristi
+     * samo iz fund admin view-a koji namerno hoce FUND ordere.
+     */
+    Page<OrderDto> getAllOrders(String status, int page, int size, boolean excludeFund);
 
     /**
      * Pregled ordera jednog korisnika (za korisnika) sa opcionim filterima.

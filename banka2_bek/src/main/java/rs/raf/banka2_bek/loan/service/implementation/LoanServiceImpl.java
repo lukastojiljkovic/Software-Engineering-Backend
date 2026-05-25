@@ -18,9 +18,11 @@ import rs.raf.banka2_bek.loan.service.LoanService;
 import rs.raf.banka2_bek.loan.repository.LoanInstallmentRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRepository;
 import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
+import org.springframework.security.access.AccessDeniedException;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.notification.model.NotificationType;
 import rs.raf.banka2_bek.notification.service.NotificationService;
+import rs.raf.banka2_bek.otp.service.OtpService;
 import rs.raf.banka2_bek.audit.model.AuditActionType;
 import rs.raf.banka2_bek.audit.service.AuditLogService;
 import org.springframework.security.core.Authentication;
@@ -32,6 +34,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -51,6 +54,8 @@ public class LoanServiceImpl implements LoanService {
     // BE-PAY-01: audit hooks za loan lifecycle (approve/reject/early-repay)
     private final AuditLogService auditLogService;
     private final EmployeeRepository employeeRepository;
+    // BE-PAY-06: OTP gate za loan apply + early-repayment (paritet sa payments/savings).
+    private final OtpService otpService;
 
     public LoanServiceImpl(LoanRequestRepository loanRequestRepository,
                            LoanRepository loanRepository,
@@ -62,7 +67,8 @@ public class LoanServiceImpl implements LoanService {
                            @Value("${bank.registration-number}") String bankRegistrationNumber,
                            NotificationService notificationService,
                            AuditLogService auditLogService,
-                           EmployeeRepository employeeRepository) {
+                           EmployeeRepository employeeRepository,
+                           OtpService otpService) {
         this.loanRequestRepository = loanRequestRepository;
         this.loanRepository = loanRepository;
         this.installmentRepository = installmentRepository;
@@ -74,6 +80,24 @@ public class LoanServiceImpl implements LoanService {
         this.notificationService = notificationService;
         this.auditLogService = auditLogService;
         this.employeeRepository = employeeRepository;
+        this.otpService = otpService;
+    }
+
+    /**
+     * BE-PAY-06: OTP gate helper. Baca {@link AccessDeniedException} ako
+     * verifikacija ne uspe. Spec-paritet sa
+     * {@link rs.raf.banka2_bek.savings.service.SavingsDepositService#openDeposit}.
+     */
+    private void verifyOtp(String email, String otpCode) {
+        if (otpCode == null || otpCode.isBlank()) {
+            throw new AccessDeniedException("OTP kod je obavezan.");
+        }
+        Map<String, Object> verifyResult = otpService.verify(email, otpCode);
+        if (!Boolean.TRUE.equals(verifyResult.get("verified"))) {
+            String message = String.valueOf(verifyResult.getOrDefault(
+                    "message", "OTP verifikacija nije uspela."));
+            throw new AccessDeniedException(message);
+        }
     }
 
     /**
@@ -108,6 +132,9 @@ public class LoanServiceImpl implements LoanService {
     @Override
     @Transactional
     public LoanRequestResponseDto createLoanRequest(LoanRequestDto request, String clientEmail) {
+        // BE-PAY-06: OTP gate (paritet sa payments/savings).
+        verifyOtp(clientEmail, request.getOtpCode());
+
         Client client = clientRepository.findByEmail(clientEmail)
                 .orElseThrow(() -> new RuntimeException("Klijent nije pronadjen"));
 
@@ -388,7 +415,10 @@ public class LoanServiceImpl implements LoanService {
 
     @Override
     @Transactional
-    public LoanResponseDto earlyRepayment(Long loanId, String clientEmail) {
+    public LoanResponseDto earlyRepayment(Long loanId, String clientEmail, String otpCode) {
+        // BE-PAY-06: OTP gate (early repayment je money-mover — paritet sa savings withdraw-early).
+        verifyOtp(clientEmail, otpCode);
+
         Loan loan = loanRepository.findById(loanId)
                 .orElseThrow(() -> new RuntimeException("Kredit nije pronadjen"));
 

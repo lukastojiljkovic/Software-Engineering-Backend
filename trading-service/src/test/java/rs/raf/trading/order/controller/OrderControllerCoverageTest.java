@@ -109,10 +109,11 @@ class OrderControllerCoverageTest {
     // ---------- GET /orders ----------
 
     @Test
-    @DisplayName("GET /orders - 200 sa default parametrima")
+    @DisplayName("GET /orders - 200 sa default parametrima (BE-ORD-03: excludeFund=true)")
     void getAllOrders_defaultParams() throws Exception {
         Page<OrderDto> page = new PageImpl<>(List.of(sampleOrder(1L, "PENDING")));
-        when(orderService.getAllOrders("ALL", 0, 20)).thenReturn(page);
+        // BE-ORD-03: controller sad poziva 4-arg overload sa excludeFund=true (default).
+        when(orderService.getAllOrders("ALL", 0, 20, true)).thenReturn(page);
 
         mockMvc.perform(get("/orders"))
                 .andExpect(status().isOk())
@@ -120,10 +121,10 @@ class OrderControllerCoverageTest {
     }
 
     @Test
-    @DisplayName("GET /orders?status=PENDING&page=1&size=5 - 200")
+    @DisplayName("GET /orders?status=PENDING&page=1&size=5 - 200 (BE-ORD-03: excludeFund=true default)")
     void getAllOrders_withFilters() throws Exception {
         Page<OrderDto> page = new PageImpl<>(Collections.emptyList());
-        when(orderService.getAllOrders("PENDING", 1, 5)).thenReturn(page);
+        when(orderService.getAllOrders("PENDING", 1, 5, true)).thenReturn(page);
 
         mockMvc.perform(get("/orders")
                         .param("status", "PENDING")
@@ -131,7 +132,7 @@ class OrderControllerCoverageTest {
                         .param("size", "5"))
                 .andExpect(status().isOk());
 
-        verify(orderService).getAllOrders("PENDING", 1, 5);
+        verify(orderService).getAllOrders("PENDING", 1, 5, true);
     }
 
     // ---------- GET /orders/my ----------

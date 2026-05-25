@@ -62,17 +62,23 @@ public class NotificationServiceImpl implements NotificationService {
                        String referenceType,
                        Long referenceId) {
 
-        Notification notification = Notification.builder()
-                .recipientId(recipientId)
-                .recipientType(recipientType)
-                .notificationType(notificationType)
-                .title(title)
-                .body(body)
-                .read(false)
-                .referenceType(referenceType)
-                .referenceId(referenceId)
-                .build();
-        notificationRepository.save(notification);
+        // [BE-NTF-02] In-app persist je gate-ovan {@code sendsInApp} flag-om.
+        // Tipovi koji su samo email (npr. eventualno: marketing) ne pune
+        // notification bell. Trenutno svi tipovi imaju sendsInApp=true (cuva
+        // backward-compat), ali infra je tu za per-type suppression.
+        if (notificationType.isSendsInApp()) {
+            Notification notification = Notification.builder()
+                    .recipientId(recipientId)
+                    .recipientType(recipientType)
+                    .notificationType(notificationType)
+                    .title(title)
+                    .body(body)
+                    .read(false)
+                    .referenceType(referenceType)
+                    .referenceId(referenceId)
+                    .build();
+            notificationRepository.save(notification);
+        }
 
         if (notificationType.isSendsEmail()) {
             queueEmail(recipientId, recipientType, notificationType, title, body);

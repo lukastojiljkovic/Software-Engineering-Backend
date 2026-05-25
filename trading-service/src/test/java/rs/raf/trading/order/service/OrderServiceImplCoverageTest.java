@@ -521,4 +521,92 @@ class OrderServiceImplCoverageTest {
         assertThat(approved.getReservedAmount()).isEqualByComparingTo("600.0000");
         verify(actuaryInfoRepository).save(ai);
     }
+
+    // ─── BE-ORD-04: cancelOrder race compensation ──────────────────────────────
+
+    @Test
+    @DisplayName("BE-ORD-04: parcijalni cancel pucanjem 409 na pro-rata re-reserve — restaurira originalnu rezervaciju")
+    void partialCancelRaceCompensatesByRestoringOriginalReservation() {
+        // Klijent BUY APPROVED, qty 10, originalna rezervacija 1000.
+        // releaseFunds(full) uspe, ali pro-rata reserveFunds(newReservation=600) puca sa 409
+        // jer je drugi paralelni order u medjuvremenu uzeo oslobodjena sredstva.
+        // Kompenzacija: bacamo InsufficientFundsException, ali tek POSLE sto smo restaurirali
+        // originalnu (vecu) rezervaciju.
+        when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(CLIENT_ID, "CLIENT"));
+        when(tradingUserResolver.resolveName(CLIENT_ID, "CLIENT")).thenReturn("Stefan Jovanovic");
+
+        Order approved = new Order();
+        approved.setId(77L);
+        approved.setStatus(OrderStatus.APPROVED);
+        approved.setDirection(OrderDirection.BUY);
+        approved.setUserRole("CLIENT");
+        approved.setUserId(CLIENT_ID);
+        approved.setListing(listing(ListingType.STOCK, "NASDAQ"));
+        approved.setQuantity(10);
+        approved.setRemainingPortions(10);
+        approved.setContractSize(1);
+        approved.setReservedAccountId(900L);
+        approved.setReservedAmount(new BigDecimal("1000.0000"));
+        approved.setBankaCoreReservationId("res-original-77");
+        approved.setReservationReleased(false);
+
+        when(orderRepository.findByIdForUpdate(77L)).thenReturn(Optional.of(approved));
+        when(bankaCoreClient.getAccount(900L)).thenReturn(bankUsd);
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        rs.raf.trading.client.BankaCoreClientException race409 =
+                new rs.raf.trading.client.BankaCoreClientException(
+                        409, "Nedovoljno sredstava na racunu");
+        when(bankaCoreClient.reserveFunds(eq("order-77-cancel-rereserve"), any()))
+                .thenThrow(race409);
+        when(bankaCoreClient.reserveFunds(eq("order-77-cancel-restore"), any()))
+                .thenReturn(new rs.raf.banka2.contracts.internal.ReserveFundsResponse(
+                        "res-restored-77", 900L, new BigDecimal("1000.0000"),
+                        new BigDecimal("9999000")));
+
+        assertThatThrownBy(() -> orderService.cancelOrder(77L, 4))
+                .isInstanceOf(rs.raf.trading.order.exception.InsufficientFundsException.class);
+
+        verify(bankaCoreClient).reserveFunds(eq("order-77-cancel-restore"), any());
+        assertThat(approved.getBankaCoreReservationId()).isEqualTo("res-restored-77");
+        assertThat(approved.getReservedAmount()).isEqualByComparingTo("1000.0000");
+        assertThat(approved.isReservationReleased()).isFalse();
+    }
+
+    @Test
+    @DisplayName("BE-ORD-04: ako i restore padne, order se markira COMPENSATED i baca se InsufficientFundsException")
+    void partialCancelRaceWithRestoreFailureMarksCompensated() {
+        when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(CLIENT_ID, "CLIENT"));
+        when(tradingUserResolver.resolveName(CLIENT_ID, "CLIENT")).thenReturn("Stefan Jovanovic");
+
+        Order approved = new Order();
+        approved.setId(78L);
+        approved.setStatus(OrderStatus.APPROVED);
+        approved.setDirection(OrderDirection.BUY);
+        approved.setUserRole("CLIENT");
+        approved.setUserId(CLIENT_ID);
+        approved.setListing(listing(ListingType.STOCK, "NASDAQ"));
+        approved.setQuantity(10);
+        approved.setRemainingPortions(10);
+        approved.setContractSize(1);
+        approved.setReservedAccountId(900L);
+        approved.setReservedAmount(new BigDecimal("1000.0000"));
+        approved.setBankaCoreReservationId("res-original-78");
+        approved.setReservationReleased(false);
+
+        when(orderRepository.findByIdForUpdate(78L)).thenReturn(Optional.of(approved));
+        when(bankaCoreClient.getAccount(900L)).thenReturn(bankUsd);
+        when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        rs.raf.trading.client.BankaCoreClientException race409 =
+                new rs.raf.trading.client.BankaCoreClientException(
+                        409, "Nedovoljno sredstava");
+        when(bankaCoreClient.reserveFunds(anyString(), any())).thenThrow(race409);
+
+        assertThatThrownBy(() -> orderService.cancelOrder(78L, 4))
+                .isInstanceOf(rs.raf.trading.order.exception.InsufficientFundsException.class);
+
+        assertThat(approved.isReservationReleased()).isTrue();
+        assertThat(approved.getSagaState()).isEqualTo(rs.raf.trading.order.model.SagaState.COMPENSATED);
+    }
 }

@@ -179,7 +179,10 @@ class OptionServiceTest {
     }
 
     @Test
-    void exerciseOption_throwsWhenCallOptionIsNotInTheMoney() {
+    void exerciseOption_otmCallSucceedsWithWarning() {
+        // [BE-STK-02] Spec: kupac opcije ima PRAVO (ne obavezu) da je iskoristi
+        // cak i OTM (ekonomski gubitak je njegova odluka). Ranije je test ocekivao
+        // hard-throw, sad ocekuje da exercise prodje (sa WARN log-om).
         mockAuthorizedActuary("agent@test.com", 12L);
 
         Option option = buildOption(
@@ -189,9 +192,15 @@ class OptionServiceTest {
 
         when(optionRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(option));
 
-        assertThatThrownBy(() -> optionService.exerciseOption(1L, "agent@test.com"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("in-the-money");
+        // OTM CALL (current 170 < strike 180) — exercise se ne baca, samo loguje warning.
+        // Mockujemo bankaCoreClient.getBankTradingAccount da debitFunds prodje.
+        when(bankaCoreClient.getBankTradingAccount("USD"))
+                .thenReturn(bankAccount(new BigDecimal("100000")));
+
+        optionService.exerciseOption(1L, "agent@test.com");
+
+        // Open interest mora biti dekrementiran — exercise je prosao.
+        assertThat(option.getOpenInterest()).isEqualTo(2);
     }
 
     @Test

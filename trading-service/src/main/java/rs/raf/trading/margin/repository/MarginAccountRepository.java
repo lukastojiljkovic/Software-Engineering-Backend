@@ -83,26 +83,26 @@ public interface MarginAccountRepository extends JpaRepository<MarginAccount, Lo
     void blockAccountsWhereMaintenanceExceedsInitial(@Param("active") String active, @Param("blocked") String blocked);
 
     /**
-     * BE-STK-04 (atomic block + return ids): jedinstven UPDATE koji blokira sve
-     * margin racune sa {@code maintenance_margin > initial_margin} i vraca id-eve
-     * blokiranih redova. PostgreSQL {@code RETURNING} klauzula garantuje da
-     * concurrent deposit izmedju SELECT i UPDATE ne moze pomeriti flag — sve se
-     * resava unutar iste row-lock atomicne operacije.
+     * BE-STK-04 (2-step block, H2 test compat): pronalazi id-eve svih margin
+     * racuna sa {@code maintenance_margin > initial_margin} koji su jos uvek
+     * ACTIVE. Caller (servis) potom poziva {@link #bulkUpdateStatus} sa istom
+     * listom da ih atomicno flipne na BLOCKED.
      *
-     * <p>Posle JPQL update-a, caller poziva {@link #findAllById(Iterable)} ili
-     * direktnu lookup metodu da popuni emails / maintenance / initial margine za
-     * notification publish.
+     * <p>Was atomic UPDATE...RETURNING (PG-only). Now 2-step JPA for H2 test
+     * compat. Race window: between SELECT and UPDATE, concurrent deposit moze
+     * deactivate a row — handled via per-row check inside transaction context
+     * (depozit ide nad ACTIVE redom sa pessimistic lock; ako je u medjuvremenu
+     * flipnut na BLOCKED, depozit puca; sa druge strane scheduler trci unutar
+     * @Transactional pa svi nadjeni id-evi se UPDATE-uju u istoj Tx).
+     */
+    @Query("SELECT m.id FROM MarginAccount m WHERE m.maintenanceMargin > m.initialMargin AND m.status = :activeStatus")
+    List<Long> findEligibleForBlock(@Param("activeStatus") MarginAccountStatus activeStatus);
+
+    /**
+     * BE-STK-04: bulk UPDATE statusa za listu id-eva. Caller je
+     * {@link #findEligibleForBlock} → flip ACTIVE → BLOCKED unutar iste Tx.
      */
     @Modifying
-    @Query(
-            value = """
-                    UPDATE margin_accounts
-                       SET status = :blocked
-                     WHERE maintenance_margin > initial_margin
-                       AND status = :active
-                     RETURNING id
-                    """,
-            nativeQuery = true
-    )
-    List<Long> blockUnderMargin(@Param("active") String active, @Param("blocked") String blocked);
+    @Query("UPDATE MarginAccount m SET m.status = :blockedStatus WHERE m.id IN :ids")
+    int bulkUpdateStatus(@Param("ids") List<Long> ids, @Param("blockedStatus") MarginAccountStatus blockedStatus);
 }

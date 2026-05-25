@@ -47,4 +47,16 @@ public class SavingsInterestRate {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    /**
+     * BE-PAY-04: optimistic locking — sprecava race-condition u
+     * {@link rs.raf.banka2_bek.savings.service.SavingsInterestRateService#upsert}
+     * gde dva concurrent admin POST-a mogu oba da nadju isti aktivan record,
+     * oba ga deaktiviraju i oba pokusaju insert novog -> unique constraint fail.
+     */
+    @Version
+    @Column(nullable = false)
+    @ColumnDefault("0")
+    @Builder.Default
+    private Long version = 0L;
 }

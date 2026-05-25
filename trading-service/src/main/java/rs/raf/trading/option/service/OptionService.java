@@ -148,16 +148,18 @@ public class OptionService {
         BigDecimal currentPrice = option.getStockListing().getPrice();
         BigDecimal strikePrice = option.getStrikePrice();
 
-        if (option.getOptionType() == OptionType.CALL && currentPrice.compareTo(strikePrice) <= 0) {
-            throw new IllegalArgumentException(
-                    "CALL opcija nije in-the-money (stock: " + currentPrice + ", strike: " + strikePrice + ")"
-            );
-        }
-
-        if (option.getOptionType() == OptionType.PUT && currentPrice.compareTo(strikePrice) >= 0) {
-            throw new IllegalArgumentException(
-                    "PUT opcija nije in-the-money (stock: " + currentPrice + ", strike: " + strikePrice + ")"
-            );
+        // [BE-STK-02] Per Opcije.txt + Celina 3, kupac opcije ima PRAVO (ne obavezu)
+        // da je iskoristi cak i kad nije in-the-money. To je njegova ekonomska odluka
+        // (gubitak je dozvoljen). Ranija logika je tvrdo blokirala OTM exercise sto
+        // je suprotno spec-u. Sad samo upozoravamo i pustamo da nastavi.
+        boolean isOtm = (option.getOptionType() == OptionType.CALL
+                && currentPrice.compareTo(strikePrice) <= 0)
+                || (option.getOptionType() == OptionType.PUT
+                && currentPrice.compareTo(strikePrice) >= 0);
+        if (isOtm) {
+            log.warn("Option exercise OTM by {}: option id={} type={} strike={} currentPrice={} — "
+                            + "allowing per spec (buyer has the right to exercise even when uneconomical).",
+                    userEmail, option.getId(), option.getOptionType(), strikePrice, currentPrice);
         }
 
         if (option.getOpenInterest() <= 0) {

@@ -213,24 +213,21 @@ class TaxServiceCoverageTest {
     }
 
     @Test
-    @DisplayName("EMPLOYEE tax short-circuits to collected=true (no banka-core collectTax call)")
+    @DisplayName("BE-ORD-06: EMPLOYEE orderi se preskacu (bank actuaries ne placaju licni porez)")
     void employeeTaxCollectedInternally() {
+        // BE-ORD-06: spec Celina 3 Sc 58 — bank actuaries trade off bank accounts
+        // and dont pay personal capital gains tax. Pre fix-a su EMPLOYEE orderi
+        // padali u TaxRecord. Sad se filtriraju u TaxService.
         Listing l = listing(1L, "RSD");
         Order buy = order(5L, "EMPLOYEE", l, OrderDirection.BUY, "100", 1);
         Order sell = order(5L, "EMPLOYEE", l, OrderDirection.SELL, "500", 1);
 
         when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(buy, sell));
-        when(bankaCoreClient.getUserById("EMPLOYEE", 5L)).thenReturn(user(5L, "EMPLOYEE", "Ana", "Anic"));
-        when(taxRecordRepository.findByUserIdAndUserType(5L, "EMPLOYEE")).thenReturn(Optional.empty());
 
         taxService.calculateTaxForAllUsers();
 
-        ArgumentCaptor<TaxRecord> rc = ArgumentCaptor.forClass(TaxRecord.class);
-        verify(taxRecordRepository).save(rc.capture());
-        // profit=400, tax=60, taxPaid=60 jer zaposleni automatski "collected"
-        assertThat(rc.getValue().getTaxOwed()).isEqualByComparingTo("60.0000");
-        assertThat(rc.getValue().getTaxPaid()).isEqualByComparingTo("60.0000");
-        // zaposleni trguju sa bankinih racuna → collectTax se NE poziva
+        // EMPLOYEE orderi su preskoceni — nijedan TaxRecord ne snima se.
+        verify(taxRecordRepository, never()).save(any());
         verify(bankaCoreClient, never()).collectTax(any(), any());
     }
 
@@ -395,26 +392,25 @@ class TaxServiceCoverageTest {
     // ─── convertToRsd branches ──────────────────────────────────────────────────
 
     @Test
-    @DisplayName("conversion exception falls back to raw amount")
+    @DisplayName("BE-ORD-08: FX failure baca TaxCalculationException (NE fallback na raw amount)")
     void conversionExceptionFallback() {
+        // Pre BE-ORD-08 fix-a: FX failure je tisko fallback-ovao na sirovi iznos
+        // (USD 1000 → 1000 RSD = severe under-taxation). Sad propagira
+        // TaxCalculationException; TaxRecord se NE snima sa pogresnim podatkom.
         Listing l = listing(1L, "USD");
         Order buy = order(1L, "CLIENT", l, OrderDirection.BUY, "100", 1);
         Order sell = order(1L, "CLIENT", l, OrderDirection.SELL, "300", 1);
 
         when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(buy, sell));
-        when(bankaCoreClient.getUserById("CLIENT", 1L)).thenReturn(user(1L, "CLIENT", "M", "P"));
-        when(taxRecordRepository.findByUserIdAndUserType(1L, "CLIENT")).thenReturn(Optional.empty());
         when(currencyConversionService.convert(any(), eq("USD"), eq("RSD")))
                 .thenThrow(new RuntimeException("rate unavailable"));
-        when(bankaCoreClient.collectTax(any(), any()))
-                .thenReturn(new TaxCollectResponse(1L, new BigDecimal("30"), true));
 
-        taxService.calculateTaxForAllUsers();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> taxService.calculateTaxForAllUsers())
+                .isInstanceOf(rs.raf.trading.tax.service.TaxCalculationException.class)
+                .hasMessageContaining("FX rate unavailable for USD");
 
-        ArgumentCaptor<TaxRecord> rc = ArgumentCaptor.forClass(TaxRecord.class);
-        verify(taxRecordRepository).save(rc.capture());
-        // fallback na raw iznos: profit = 200 (ne konvertovano)
-        assertThat(rc.getValue().getTotalProfit()).isEqualByComparingTo("200");
+        // KRITICNO: TaxRecord se NE snima (raw amount NE tretira kao RSD).
+        verify(taxRecordRepository, never()).save(any());
     }
 
     @Test
@@ -462,21 +458,23 @@ class TaxServiceCoverageTest {
     }
 
     @Test
-    @DisplayName("unknown EMPLOYEE user id falls back to 'Zaposleni #id' label")
+    @DisplayName("unknown CLIENT user id falls back to 'Klijent #id' label")
     void unknownEmployeeUserNameFallback() {
+        // BE-ORD-06: EMPLOYEE orderi se preskacu pa testiramo CLIENT fallback put.
+        // Pre fix-a testirao se EMPLOYEE 'Zaposleni #N' label; sad CLIENT 'Klijent #N'.
         Listing l = listing(1L, "RSD");
-        Order sell = order(42L, "EMPLOYEE", l, OrderDirection.SELL, "100", 1);
+        Order sell = order(42L, "CLIENT", l, OrderDirection.SELL, "100", 1);
 
         when(orderRepository.findByIsDoneTrue()).thenReturn(List.of(sell));
-        when(bankaCoreClient.getUserById("EMPLOYEE", 42L))
+        when(bankaCoreClient.getUserById("CLIENT", 42L))
                 .thenThrow(new BankaCoreClientException(404, "not found"));
-        when(taxRecordRepository.findByUserIdAndUserType(42L, "EMPLOYEE")).thenReturn(Optional.empty());
+        when(taxRecordRepository.findByUserIdAndUserType(42L, "CLIENT")).thenReturn(Optional.empty());
 
         taxService.calculateTaxForAllUsers();
 
         ArgumentCaptor<TaxRecord> rc = ArgumentCaptor.forClass(TaxRecord.class);
         verify(taxRecordRepository).save(rc.capture());
-        assertThat(rc.getValue().getUserName()).isEqualTo("Zaposleni #42");
+        assertThat(rc.getValue().getUserName()).isEqualTo("Klijent #42");
     }
 
     // ─── getTaxRecords explicit filter path ─────────────────────────────────────

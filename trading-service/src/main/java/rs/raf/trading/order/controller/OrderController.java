@@ -74,14 +74,20 @@ public class OrderController {
 
     /**
      * GET /orders - Pregled svih ordera (supervizor portal)
-     * Filtriranje po statusu: ALL, PENDING, APPROVED, DECLINED, DONE
+     * Filtriranje po statusu: ALL, PENDING, APPROVED, DECLINED, DONE.
+     *
+     * <p>BE-ORD-03: {@code excludeFund=true} (default) iskljucuje FUND ordere
+     * iz approval view-a. FUND ordere supervizori NE odobravaju ovde — fund
+     * admin view ih nudi posebno (excludeFund=false) jer su to fund-management
+     * akcije pokrenute od strane manager-a fonda.
      */
     @GetMapping
     public ResponseEntity<Page<OrderDto>> getAllOrders(
             @RequestParam(defaultValue = "ALL") String status,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(orderService.getAllOrders(status, page, size));
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "true") boolean excludeFund) {
+        return ResponseEntity.ok(orderService.getAllOrders(status, page, size, excludeFund));
     }
 
     /**

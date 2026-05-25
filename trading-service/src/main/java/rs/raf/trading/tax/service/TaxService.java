@@ -129,10 +129,17 @@ public class TaxService {
     @Transactional
     public void calculateTaxForAllUsers() {
         LocalDateTime now = LocalDateTime.now();
+        // BE-ORD-06: spec Celina 3 Sc 58 — bank actuaries (zaposleni) trguju sa
+        // bankinih racuna i NE placaju licni porez na kapitalnu dobit. Pre fix-a
+        // filter je samo preskakao FUND ordere, pa su EMPLOYEE orderi padali u
+        // tax obracun (lazno se obracunao porez supervizoru/agentu kao klijentu).
+        // Sada uzimamo SAMO CLIENT ordere bez fundId — EMPLOYEE + FUND orderi se
+        // preskacu (bank profit ide kroz Profit Banke portal, ne licni porez).
         List<Order> allDoneOrders = orderRepository.findByIsDoneTrue().stream()
                 .filter(o -> o.getListing() != null
                         && TAXABLE_LISTING_TYPES.contains(o.getListing().getListingType())
-                        && o.getFundId() == null)  // Preskoci fond-ordere
+                        && o.getFundId() == null                    // preskoci fond-ordere
+                        && UserRole.isClient(o.getUserRole()))      // BE-ORD-06: samo CLIENT placa licni porez
                 .collect(Collectors.toList());
 
         // Note: PUT exercise opcija i EXERCISED inter-bank OTC ugovori se trenutno
@@ -167,25 +174,36 @@ public class TaxService {
             BigDecimal strikeTotal = c.getStrikePrice().multiply(qty);
             BigDecimal premium = c.getPremium() != null ? c.getPremium() : BigDecimal.ZERO;
 
-            String sellerKey = c.getSellerId() + ":" + c.getSellerRole();
-            String buyerKey = c.getBuyerId() + ":" + c.getBuyerRole();
-            otcUserKeys.add(sellerKey);
-            otcUserKeys.add(buyerKey);
-
-            otcSellByUser.computeIfAbsent(sellerKey, k -> new HashMap<>())
-                    .merge(listingId, strikeTotal.add(premium), BigDecimal::add);
-            otcBuyByUser.computeIfAbsent(buyerKey, k -> new HashMap<>())
-                    .merge(listingId, strikeTotal.add(premium), BigDecimal::add);
+            // BE-ORD-06: ucitavamo OTC stranu samo ako je CLIENT (employee ucesnik
+            // ne placa licni porez — paritet sa Order filter-om iznad).
+            if (UserRole.isClient(c.getSellerRole())) {
+                String sellerKey = c.getSellerId() + ":" + c.getSellerRole();
+                otcUserKeys.add(sellerKey);
+                otcSellByUser.computeIfAbsent(sellerKey, k -> new HashMap<>())
+                        .merge(listingId, strikeTotal.add(premium), BigDecimal::add);
+            }
+            if (UserRole.isClient(c.getBuyerRole())) {
+                String buyerKey = c.getBuyerId() + ":" + c.getBuyerRole();
+                otcUserKeys.add(buyerKey);
+                otcBuyByUser.computeIfAbsent(buyerKey, k -> new HashMap<>())
+                        .merge(listingId, strikeTotal.add(premium), BigDecimal::add);
+            }
         }
 
         Set<String> allKeys = new HashSet<>(grouped.keySet());
         allKeys.addAll(otcUserKeys);
 
+        // BE-ORD-08: TaxCalculationException uhvacen po-korisniku — re-baca se sa
+        // userId/userType popunjenim da TaxScheduler moze da identifikuje koji je
+        // korisnik preskocen + posalje notifikaciju supervizoru.
+        java.util.List<TaxCalculationException> perUserFailures = new java.util.ArrayList<>();
         for (String key : allKeys) {
             String[] parts = key.split(":");
             Long userId = Long.parseLong(parts[0]);
             String userRole = parts[1];
+            String userType = UserRole.isEmployee(userRole) ? UserRole.EMPLOYEE : UserRole.CLIENT;
             List<Order> userOrders = grouped.getOrDefault(key, List.of());
+            try {
 
             // Racunamo profit per-asset: za svaki listing posebno racunamo sell - buy
             // pa sabiramo samo pozitivne profite (kapitalna dobit).
@@ -254,7 +272,7 @@ public class TaxService {
                     : BigDecimal.ZERO;
 
             String userName = resolveUserName(userId, userRole);
-            String userType = UserRole.isEmployee(userRole) ? UserRole.EMPLOYEE : UserRole.CLIENT;
+            // BE-ORD-08: userType je vec deklarisan na vrhu petlje (try grana).
 
             TaxRecord record = taxRecordRepository.findByUserIdAndUserType(userId, userType)
                     .orElse(TaxRecord.builder()
@@ -313,6 +331,25 @@ public class TaxService {
                     taxRecordBreakdownRepository.save(breakdown);
                 }
             }
+            } catch (TaxCalculationException txEx) {
+                // BE-ORD-08: re-baca exception sa userId/userType da TaxScheduler moze
+                // da posalje notifikaciju supervizoru sa konkretnim korisnikom.
+                TaxCalculationException enriched = new TaxCalculationException(
+                        userId, userType, txEx.getMessage(), txEx.getCause());
+                log.error("Tax calculation skipped for user {} ({}): {}", userId, userType, txEx.getMessage());
+                perUserFailures.add(enriched);
+            }
+        }
+        // BE-ORD-08: ako je makar jedan korisnik preskocen, propagiraj agregatni
+        // TaxCalculationException pa scheduler obavestava supervizora. Obracun ostalih
+        // korisnika je vec persistovan (TaxRecord.save() je u try grani po-korisniku).
+        if (!perUserFailures.isEmpty()) {
+            TaxCalculationException first = perUserFailures.get(0);
+            String summary = perUserFailures.size() == 1
+                    ? first.getMessage()
+                    : "Tax calculation failed for " + perUserFailures.size() + " users (first: "
+                            + first.getMessage() + ")";
+            throw new TaxCalculationException(first.getUserId(), first.getUserType(), summary, first.getCause());
         }
     }
 
@@ -421,6 +458,15 @@ public class TaxService {
     /**
      * Konvertuje iznos u RSD. Ako je vec u RSD, vraca isti iznos.
      * Koristi CurrencyConversionService (srednji kurs, bez provizije) — S80.
+     *
+     * <p>BE-ORD-08: pre fix-a, na FX neuspeh ({@code currencyConversionService.convert}
+     * baci exception zbog banka-core /internal/fx/rates 5xx/timeout) metoda je tisko
+     * fallback-ovala na sirovi iznos i tretirala npr. USD 1000 kao 1000 RSD —
+     * severe under-taxation. Sad propagiramo izvornu gresku kao
+     * {@link TaxCalculationException} pozivaocu, koji moze da zaustavi obracun za
+     * tog korisnika (TaxScheduler hvata exception po korisniku i nastavlja sa
+     * ostalima + emituje notifikaciju supervizoru). {@code userId/userType} su
+     * setovani kasnije u catch grani kalkulacije.
      */
     private BigDecimal convertToRsd(BigDecimal amount, String fromCurrency) {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) == 0) {
@@ -432,8 +478,10 @@ public class TaxService {
         try {
             return currencyConversionService.convert(amount, fromCurrency, "RSD");
         } catch (Exception e) {
-            log.warn("Currency conversion {} -> RSD failed, using raw amount: {}", fromCurrency, e.getMessage());
-            return amount;
+            log.error("Currency conversion {} -> RSD failed: {}", fromCurrency, e.getMessage());
+            throw new TaxCalculationException(null, null,
+                    "FX rate unavailable for " + fromCurrency
+                            + ", cannot compute tax in RSD", e);
         }
     }
 

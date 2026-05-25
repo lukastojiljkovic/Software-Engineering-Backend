@@ -32,6 +32,7 @@ import rs.raf.banka2_bek.transaction.model.Transaction;
 import rs.raf.banka2_bek.transaction.repository.TransactionRepository;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -412,6 +413,36 @@ public class InternalFundsService {
         BigDecimal commission = req.commission() != null ? req.commission() : BigDecimal.ZERO;
         if (commission.compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("Provizija ne sme biti negativna");
+        }
+
+        // 1b. BE-INT-07 FX integrity check (opciono): ako je {@code expectedRate}
+        // dostavljen, validira da {@code creditAmount ≈ debitAmount * expectedRate}
+        // unutar 1% tolerancije od {@code |creditAmount|}. Tolerancija pokriva
+        // rounding razlike (BigDecimal scale, banker's rounding, decimalna mesta
+        // razlicitih FX feeda), ali uhvata stvarne racunske bug-ove (npr. inverzni
+        // kurs, pogresna valuta, off-by-decimal). Pozivalac (trading-service) treba
+        // da postavi {@code expectedRate} kada je {@code debitAmount.scale() != creditAmount.scale()}
+        // ili kad su valute razlicite (cross-currency transfer). {@code null} preskoci
+        // proveru za back-compat sa starim caller-ima.
+        if (req.expectedRate() != null) {
+            if (req.expectedRate().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException(
+                        "expectedRate mora biti pozitivan: " + req.expectedRate());
+            }
+            BigDecimal computedCredit = req.debitAmount()
+                    .multiply(req.expectedRate())
+                    .setScale(4, RoundingMode.HALF_UP);
+            BigDecimal drift = computedCredit.subtract(req.creditAmount()).abs();
+            BigDecimal allowedDrift = req.creditAmount().abs()
+                    .multiply(BigDecimal.valueOf(0.01));
+            if (drift.compareTo(allowedDrift) > 0) {
+                throw new IllegalArgumentException(
+                        "FX rate drift exceeds 1% tolerance: expected creditAmount "
+                                + computedCredit + " (= debitAmount " + req.debitAmount()
+                                + " * expectedRate " + req.expectedRate() + "), got "
+                                + req.creditAmount() + " (drift " + drift + " > allowed "
+                                + allowedDrift + ")");
+            }
         }
 
         // 2. Pesimisticki lock oba racuna (uvek isti redosled po ID-u da bi se izbeglo deadlock)

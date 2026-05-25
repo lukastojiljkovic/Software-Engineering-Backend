@@ -103,7 +103,9 @@ class ClientServiceImplTest {
 
         ClientResponseDto result = clientService.createClient(dto);
         assertNotNull(result);
-        verify(passwordEncoder, times(2)).encode(any());
+        // BE-AUTH-06 single-hash refactor — Client.password = User.password identical hash
+        // (jedna invokacija passwordEncoder.encode umesto dve, single source of truth).
+        verify(passwordEncoder, times(1)).encode(any());
     }
 
     @Test

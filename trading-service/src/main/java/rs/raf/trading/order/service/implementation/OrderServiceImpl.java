@@ -325,16 +325,15 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        // Step 11: Update agent usedLimit if APPROVED
+        // Step 11: Update agent usedLimit if APPROVED.
+        // BE-ORD-07: atomic increment kroz optimistic locking retry — bez
+        // ovog wrapper-a paralelne BUY ordere istog agenta mogu lost-update
+        // istisnuti delta.
         if (status == OrderStatus.APPROVED && isEmployee) {
             final BigDecimal limitDelta = totalReservation != null ? totalReservation : approximatePrice;
-            Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(userContext.userId());
-            actuaryOpt.ifPresent(actuary -> {
-                if (actuary.getActuaryType() == ActuaryType.AGENT) {
-                    BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
-                    actuary.setUsedLimit(current.add(limitDelta));
-                    actuaryInfoRepository.save(actuary);
-                }
+            mutateActuaryWithRetry(userContext.userId(), actuary -> {
+                BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
+                actuary.setUsedLimit(current.add(limitDelta));
             });
         }
 
@@ -528,17 +527,14 @@ public class OrderServiceImpl implements OrderService {
         // Update agent usedLimit when supervisor approves — koristimo totalReservation
         // (u valuti racuna) kao delta. Za SELL nema novcane rezervacije pa padamo na
         // approximatePrice fallback radi backward compat.
+        // BE-ORD-07: atomic increment kroz optimistic locking retry.
         if (isEmployee) {
             final BigDecimal limitDelta = totalReservation != null
                     ? totalReservation
                     : (order.getApproximatePrice() != null ? order.getApproximatePrice() : BigDecimal.ZERO);
-            Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(order.getUserId());
-            actuaryOpt.ifPresent(actuary -> {
-                if (actuary.getActuaryType() == ActuaryType.AGENT) {
-                    BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
-                    actuary.setUsedLimit(current.add(limitDelta));
-                    actuaryInfoRepository.save(actuary);
-                }
+            mutateActuaryWithRetry(order.getUserId(), actuary -> {
+                BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
+                actuary.setUsedLimit(current.add(limitDelta));
             });
         }
 
@@ -593,15 +589,13 @@ public class OrderServiceImpl implements OrderService {
                 fundReservationService.releaseForSell(order, portfolio);
             }
 
+            // BE-ORD-07: atomic rollback kroz optimistic locking retry.
             if (UserRole.isEmployee(order.getUserRole()) && order.getReservedAmount() != null) {
-                Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(order.getUserId());
-                actuaryOpt.ifPresent(actuary -> {
-                    if (actuary.getActuaryType() == ActuaryType.AGENT) {
-                        BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
-                        BigDecimal rolledBack = current.subtract(order.getReservedAmount());
-                        actuary.setUsedLimit(rolledBack.max(BigDecimal.ZERO));
-                        actuaryInfoRepository.save(actuary);
-                    }
+                final BigDecimal rollbackAmount = order.getReservedAmount();
+                mutateActuaryWithRetry(order.getUserId(), actuary -> {
+                    BigDecimal current = actuary.getUsedLimit() != null ? actuary.getUsedLimit() : BigDecimal.ZERO;
+                    BigDecimal rolledBack = current.subtract(rollbackAmount);
+                    actuary.setUsedLimit(rolledBack.max(BigDecimal.ZERO));
                 });
             }
         }
@@ -693,6 +687,16 @@ public class OrderServiceImpl implements OrderService {
             BigDecimal newReservation = order.getReservedAmount().multiply(fraction)
                     .setScale(4, RoundingMode.HALF_UP);
 
+            // BE-ORD-04 race window mitigation: cuvamo trag originalne rezervacije
+            // (ID + iznos) PRE release-a, da bismo mogli da je restauriramo ako
+            // pro-rata re-reserve padne sa 409 zato sto je drugi paralelni order u
+            // medjuvremenu uzeo oslobodjena sredstva. Permanent fix (banka-core
+            // /internal/funds/release-partial) jos ne postoji; ovo je best-effort
+            // kompenzacija unutar trenutnog seam-a.
+            String originalReservationId = order.getBankaCoreReservationId();
+            BigDecimal originalAmount = order.getReservedAmount();
+            boolean wasReleasedBeforeCancel = order.isReservationReleased();
+
             // 1. oslobodi celu preostalu rezervaciju
             if (!order.isReservationReleased() && order.getBankaCoreReservationId() != null) {
                 bankaCoreClient.releaseFunds(
@@ -718,6 +722,38 @@ public class OrderServiceImpl implements OrderService {
                     order.setReservationReleased(false);
                 } catch (BankaCoreClientException ex) {
                     if (ex.getHttpStatus() == 409) {
+                        // BE-ORD-04: race window — drugi paralelni order je uzeo
+                        // oslobodjena sredstva. Kompenzacija: pokusaj da restauriramo
+                        // originalnu (vecu) rezervaciju, da klijent ostane sa istim
+                        // pre-cancel stanjem. "cancel-restore" je nov idempotency key
+                        // (originalni release key vec konzumiran, "cancel-rereserve" 409).
+                        if (!wasReleasedBeforeCancel && originalAmount != null
+                                && originalAmount.signum() > 0) {
+                            try {
+                                ReserveFundsResponse restore = bankaCoreClient.reserveFunds(
+                                        "order-" + order.getId() + "-cancel-restore",
+                                        new ReserveFundsRequest(order.getReservedAccountId(),
+                                                originalAmount, currencyCode));
+                                order.setBankaCoreReservationId(restore.reservationId());
+                                order.setReservedAmount(originalAmount);
+                                order.setSagaState(SagaState.FUNDS_RESERVED);
+                                order.setReservationReleased(false);
+                                orderRepository.save(order);
+                                org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                                        .warn("BE-ORD-04 race: order {} cancel pro-rata re-reserve failed (409), "
+                                                + "original reservation restored (id={}, amount={})",
+                                                order.getId(), restore.reservationId(), originalAmount);
+                            } catch (BankaCoreClientException restoreEx) {
+                                order.setReservationReleased(true);
+                                order.setSagaState(SagaState.COMPENSATED);
+                                orderRepository.save(order);
+                                org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                                        .error("BE-ORD-04 race + restore failure: order {} ostao bez rezervacije "
+                                                + "(originalReservationId={}, originalAmount={}, restoreErr={})",
+                                                order.getId(), originalReservationId, originalAmount,
+                                                restoreEx.getMessage(), restoreEx);
+                            }
+                        }
                         throw new InsufficientFundsException(
                                 "Nedovoljno sredstava za re-rezervaciju posle parcijalnog cancel-a");
                     }
@@ -744,23 +780,22 @@ public class OrderServiceImpl implements OrderService {
         // prepisan na umanjenu re-rezervaciju — inace bi usedLimit bio premalo
         // vracen agentu (npr. order qty 10, original 1000, cancel 4 → treba
         // 1000*4/10 = 400, a sa prepisanom vrednoscu bi bilo samo 600*4/10 = 240).
+        // BE-ORD-07: atomic partial rollback kroz optimistic locking retry.
         if (order.getDirection() == OrderDirection.BUY
                 && UserRole.isEmployee(order.getUserRole())
                 && originalReservedAmount != null
                 && originalQty != null && originalQty > 0) {
-            Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(order.getUserId());
-            int cancelQtyFinal = cancelQty;
-            actuaryOpt.ifPresent(actuary -> {
-                if (actuary.getActuaryType() == ActuaryType.AGENT) {
-                    BigDecimal fraction = new BigDecimal(cancelQtyFinal)
-                            .divide(new BigDecimal(originalQty), 10, RoundingMode.HALF_UP);
-                    BigDecimal rollback = originalReservedAmount.multiply(fraction)
-                            .setScale(4, RoundingMode.HALF_UP);
-                    BigDecimal current = actuary.getUsedLimit() != null
-                            ? actuary.getUsedLimit() : BigDecimal.ZERO;
-                    actuary.setUsedLimit(current.subtract(rollback).max(BigDecimal.ZERO));
-                    actuaryInfoRepository.save(actuary);
-                }
+            final int cancelQtyFinal = cancelQty;
+            final Integer originalQtyFinal = originalQty;
+            final BigDecimal originalReservedFinal = originalReservedAmount;
+            mutateActuaryWithRetry(order.getUserId(), actuary -> {
+                BigDecimal fraction = new BigDecimal(cancelQtyFinal)
+                        .divide(new BigDecimal(originalQtyFinal), 10, RoundingMode.HALF_UP);
+                BigDecimal rollback = originalReservedFinal.multiply(fraction)
+                        .setScale(4, RoundingMode.HALF_UP);
+                BigDecimal current = actuary.getUsedLimit() != null
+                        ? actuary.getUsedLimit() : BigDecimal.ZERO;
+                actuary.setUsedLimit(current.subtract(rollback).max(BigDecimal.ZERO));
             });
         }
 
@@ -772,22 +807,35 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public Page<OrderDto> getAllOrders(String status, int page, int size) {
+    public Page<OrderDto> getAllOrders(String status, int page, int size, boolean excludeFund) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
 
-        if (status == null || status.isBlank() || status.equalsIgnoreCase("ALL")) {
-            return orderRepository.findAll(pageable).map(this::toDtoWithUserName);
+        OrderStatus orderStatus = null;
+        boolean isAllStatus = status == null || status.isBlank() || status.equalsIgnoreCase("ALL");
+        if (!isAllStatus) {
+            try {
+                orderStatus = OrderStatus.valueOf(status.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid status: " + status +
+                        ". Valid status: ALL, PENDING, APPROVED, DECLINED, DONE");
+            }
         }
 
-        OrderStatus orderStatus;
-        try {
-            orderStatus = OrderStatus.valueOf(status.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Invalid status: " + status +
-                    ". Valid status: ALL, PENDING, APPROVED, DECLINED, DONE");
+        // BE-ORD-03: kada je excludeFund=true (default), FUND ordere ne prikazujemo u
+        // supervizorskom approval view-u (fund-management ordere uvek pokrece manager
+        // fonda, ne prolaze kroz opsti approval queue). Stari ponasanje (sve ordere
+        // ukljucujuci FUND) ostaje dostupno preko excludeFund=false (fund admin view).
+        if (!excludeFund) {
+            if (isAllStatus) {
+                return orderRepository.findAll(pageable).map(this::toDtoWithUserName);
+            }
+            return orderRepository.findByStatus(orderStatus, pageable).map(this::toDtoWithUserName);
         }
 
-        return orderRepository.findByStatus(orderStatus, pageable).map(this::toDtoWithUserName);
+        Specification<Order> spec = Specification
+                .where(OrderSpecification.excludeFundOrders(true))
+                .and(OrderSpecification.hasStatus(orderStatus));
+        return orderRepository.findAll(spec, pageable).map(this::toDtoWithUserName);
     }
 
     @Override
@@ -915,5 +963,52 @@ public class OrderServiceImpl implements OrderService {
     private OrderDto toDtoWithUserName(Order order) {
         String userName = tradingUserResolver.resolveName(order.getUserId(), order.getUserRole());
         return OrderMapper.toDto(order, userName);
+    }
+
+    /**
+     * BE-ORD-07: izvrsava mutaciju nad {@link ActuaryInfo} sa optimistic
+     * locking retry-em. Pre fix-a, increment je bio non-atomic — paralelne
+     * BUY ordere istog agenta mogu lost-update istisnuti delta (agent prelazi
+     * dailyLimit unprimetno). Sa {@code @Version} kolonom + retry loop-om,
+     * drugi konkurentni commit baca {@link org.springframework.orm.ObjectOptimisticLockingFailureException},
+     * ponavljamo ucitavanje svezeg reda i re-primenu mutacije.
+     *
+     * <p>maxAttempts=3 (initial + 2 retries) sa kratkim backoff-om (50ms baseline,
+     * 100ms na drugi pokusaj). Veci retry brojevi bi indikovali sistemski problem
+     * (npr. preopterecen agent ili 4xx loop u banka-core seam-u).
+     *
+     * @param employeeId ID zaposlenog (= ActuaryInfo.employeeId)
+     * @param mutator    callback koji prima ActuaryInfo i menja usedLimit (ili ne)
+     */
+    private void mutateActuaryWithRetry(Long employeeId, java.util.function.Consumer<ActuaryInfo> mutator) {
+        int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            Optional<ActuaryInfo> actuaryOpt = orderStatusService.getAgentInfo(employeeId);
+            if (actuaryOpt.isEmpty()) {
+                return; // nije AGENT (supervizor/admin), niti se nista ne menja
+            }
+            ActuaryInfo actuary = actuaryOpt.get();
+            if (actuary.getActuaryType() != ActuaryType.AGENT) {
+                return; // samo AGENT-i imaju usedLimit / dailyLimit
+            }
+            try {
+                mutator.accept(actuary);
+                actuaryInfoRepository.save(actuary);
+                return;
+            } catch (org.springframework.orm.ObjectOptimisticLockingFailureException ex) {
+                if (attempt == maxAttempts) {
+                    org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                            .error("ActuaryInfo update lost race for employeeId={} after {} attempts",
+                                    employeeId, maxAttempts);
+                    throw ex;
+                }
+                try {
+                    Thread.sleep(50L * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw ex;
+                }
+            }
+        }
     }
 }

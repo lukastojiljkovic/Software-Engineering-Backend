@@ -311,10 +311,14 @@ public class OrderExecutionService {
             Long sellPortfolioUserId = order.getFundId() != null ? order.getFundId() : order.getUserId();
             String sellPortfolioUserRole = order.getFundId() != null ? UserRole.FUND : order.getUserRole();
 
+            // BE-ORD-05: pessimistic write lock u SELL fill putanji da se spreci
+            // race izmedju paralelnih scheduler tick-ova nad istom portfolio pozicijom.
+            // Bez lock-a, dva paralelna fill-a istog SELL ordera (npr. mali partial-fill
+            // delay-i) bi mogla citati istu reservedQuantity, oba smanjiti, i kreirati
+            // negativne reservedQuantity ili double-spend portfolio.quantity.
             Portfolio portfolio = portfolioRepository
-                    .findByUserIdAndUserRole(sellPortfolioUserId, sellPortfolioUserRole).stream()
-                    .filter(p -> p.getListingId().equals(order.getListing().getId()))
-                    .findFirst()
+                    .findByUserIdAndUserRoleAndListingIdForUpdate(
+                            sellPortfolioUserId, sellPortfolioUserRole, order.getListing().getId())
                     .orElseThrow(() -> new IllegalStateException(
                             "Portfolio nije pronadjen za SELL order #" + order.getId()));
 

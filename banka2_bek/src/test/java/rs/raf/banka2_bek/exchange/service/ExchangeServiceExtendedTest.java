@@ -43,9 +43,61 @@ class ExchangeServiceExtendedTest {
     void setUp() {
         ReflectionTestUtils.setField(exchangeService, "apiKey", "test-key");
         ReflectionTestUtils.setField(exchangeService, "apiUrl", "https://data.fixer.io/api/latest");
-        // Reset cache for each test
-        ReflectionTestUtils.setField(exchangeService, "cachedRates", null);
-        ReflectionTestUtils.setField(exchangeService, "cacheTimestamp", 0L);
+        // BE-PAY-07: cache reset preko AtomicReference.set(null).
+        resetSnapshot(null, 0L);
+    }
+
+    /**
+     * BE-PAY-07: helper za manipulaciju RatesSnapshot atomic reference-a u testovima.
+     * Pre BE-PAY-07, ExchangeService je imao 2 odvojena field-a (cachedRates +
+     * cacheTimestamp). Sad ima jedan AtomicReference&lt;RatesSnapshot&gt;.
+     */
+    private void resetSnapshot(List<ExchangeRateDto> rates, long timestampMillis) {
+        @SuppressWarnings("unchecked")
+        java.util.concurrent.atomic.AtomicReference<Object> ref =
+                (java.util.concurrent.atomic.AtomicReference<Object>)
+                        ReflectionTestUtils.getField(exchangeService, "snapshotRef");
+        if (ref == null) return;
+        if (rates == null) {
+            ref.set(null);
+            return;
+        }
+        try {
+            Class<?> snapshotClass = Class.forName(
+                    "rs.raf.banka2_bek.exchange.ExchangeService$RatesSnapshot");
+            java.lang.reflect.Constructor<?> ctor = snapshotClass.getDeclaredConstructor(
+                    List.class, java.time.Instant.class);
+            ctor.setAccessible(true);
+            Object snap = ctor.newInstance(rates, java.time.Instant.ofEpochMilli(timestampMillis));
+            ref.set(snap);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Failed to build RatesSnapshot via reflection", ex);
+        }
+    }
+
+    /**
+     * BE-PAY-07: helper koji menja timestamp postojeceg snapshot-a (npr. da
+     * simulira da je cache istekao). Cita private record field `rates` preko
+     * Field reflection-a (record accessor metod je javan ali samog record-a je
+     * private nested klasa u ExchangeService).
+     */
+    private void setSnapshotTimestamp(long timestampMillis) {
+        @SuppressWarnings("unchecked")
+        java.util.concurrent.atomic.AtomicReference<Object> ref =
+                (java.util.concurrent.atomic.AtomicReference<Object>)
+                        ReflectionTestUtils.getField(exchangeService, "snapshotRef");
+        if (ref == null) return;
+        Object snap = ref.get();
+        if (snap == null) return;
+        try {
+            java.lang.reflect.Field ratesField = snap.getClass().getDeclaredField("rates");
+            ratesField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            List<ExchangeRateDto> rates = (List<ExchangeRateDto>) ratesField.get(snap);
+            resetSnapshot(rates, timestampMillis);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Failed to read RatesSnapshot.rates", ex);
+        }
     }
 
     private void mockRates() {
@@ -97,8 +149,7 @@ class ExchangeServiceExtendedTest {
             exchangeService.getAllRates();
 
             // Simulate expired cache by setting timestamp far in the past
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp",
-                    System.currentTimeMillis() - 6 * 60 * 1000); // 6 min ago, TTL is 5 min
+            setSnapshotTimestamp(System.currentTimeMillis() - 6 * 60 * 1000); // 6 min ago, TTL is 5 min
 
             // Second call should fetch again
             exchangeService.getAllRates();
@@ -140,8 +191,7 @@ class ExchangeServiceExtendedTest {
             assertThat(cached).hasSize(8);
 
             // Expire cache
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp",
-                    System.currentTimeMillis() - 6 * 60 * 1000);
+            setSnapshotTimestamp(System.currentTimeMillis() - 6 * 60 * 1000);
 
             // API fails on next call
             when(restTemplate.getForEntity(EXPECTED_URL, Map.class))
@@ -349,8 +399,7 @@ class ExchangeServiceExtendedTest {
             exchangeService.getAllRates();
 
             // Set timestamp to 4 min 59 sec ago (just under 5 min TTL)
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp",
-                    System.currentTimeMillis() - (5 * 60 * 1000 - 1000));
+            setSnapshotTimestamp(System.currentTimeMillis() - (5 * 60 * 1000 - 1000));
 
             exchangeService.getAllRates();
 
@@ -366,8 +415,7 @@ class ExchangeServiceExtendedTest {
             exchangeService.getAllRates();
 
             // Set timestamp to exactly 5 min ago
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp",
-                    System.currentTimeMillis() - 5 * 60 * 1000);
+            setSnapshotTimestamp(System.currentTimeMillis() - 5 * 60 * 1000);
 
             exchangeService.getAllRates();
 
@@ -445,8 +493,7 @@ class ExchangeServiceExtendedTest {
             assertThat(cached).hasSize(8);
 
             // Expire cache
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp",
-                    System.currentTimeMillis() - 6 * 60 * 1000);
+            setSnapshotTimestamp(System.currentTimeMillis() - 6 * 60 * 1000);
 
             // API returns null body
             when(restTemplate.getForEntity(EXPECTED_URL, Map.class))
@@ -716,18 +763,20 @@ class ExchangeServiceExtendedTest {
         @Test
         @DisplayName("fetchAndCacheRates returns cached when called directly with fresh cache (DCL inner branch)")
         void fetchAndCacheRates_returnsCached_whenInnerCheckHits() throws Exception {
+            // BE-PAY-07: koristimo helper koji puni AtomicReference<RatesSnapshot> umesto
+            // pre-postojeci 2-field pattern.
             List<ExchangeRateDto> cached = List.of(
                     new ExchangeRateDto("EUR", 117.0)
             );
-            ReflectionTestUtils.setField(exchangeService, "cachedRates", cached);
-            ReflectionTestUtils.setField(exchangeService, "cacheTimestamp", System.currentTimeMillis());
+            resetSnapshot(cached, System.currentTimeMillis());
 
             java.lang.reflect.Method m = ExchangeService.class.getDeclaredMethod("fetchAndCacheRates");
             m.setAccessible(true);
             @SuppressWarnings("unchecked")
             List<ExchangeRateDto> result = (List<ExchangeRateDto>) m.invoke(exchangeService);
 
-            assertThat(result).isSameAs(cached);
+            // List.copyOf u RatesSnapshot ctor-u znaci da reference vise nije isti — proveri sadrzaj.
+            assertThat(result).containsExactlyElementsOf(cached);
             verifyNoInteractions(restTemplate);
         }
     }

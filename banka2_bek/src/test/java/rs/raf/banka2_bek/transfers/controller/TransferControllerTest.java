@@ -64,6 +64,9 @@ class TransferControllerTest {
 
     @BeforeEach
     void setUp() {
+        // Test isolation: clear leaked SecurityContextHolder state from prior test classes.
+        SecurityContextHolder.clearContext();
+
         mockMvc = MockMvcBuilders
                 .standaloneSetup(transferController)
                 .setControllerAdvice(new GlobalExceptionHandler())
@@ -84,6 +87,12 @@ class TransferControllerTest {
 
         // Set up authentication so controller can extract email
         setupSecurityContext("marko@banka.rs");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDownSecurityContext() {
+        // Test isolation: ensure we don't leak SecurityContextHolder to next test class.
+        SecurityContextHolder.clearContext();
     }
 
     // ══════════════════════════════════════════════════════════════════

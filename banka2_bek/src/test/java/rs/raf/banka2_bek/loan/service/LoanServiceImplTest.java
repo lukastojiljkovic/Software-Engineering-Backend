@@ -53,6 +53,7 @@ class LoanServiceImplTest {
     @Mock private NotificationService notificationService;
     @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
     @Mock private rs.raf.banka2_bek.employee.repository.EmployeeRepository employeeRepository;
+    @Mock private rs.raf.banka2_bek.otp.service.OtpService otpService;
 
     private LoanServiceImpl loanService;
 
@@ -67,7 +68,11 @@ class LoanServiceImplTest {
                 loanRequestRepository, loanRepository, installmentRepository,
                 accountRepository, clientRepository, currencyRepository,
                 notificationPublisher, "22200022", notificationService,
-                auditLogService, employeeRepository);
+                auditLogService, employeeRepository, otpService);
+
+        // BE-PAY-06: default OTP — verifikuje sve. Negativni testovi imaju dedikovan setup.
+        lenient().when(otpService.verify(anyString(), anyString()))
+                .thenReturn(java.util.Map.of("verified", true));
 
         rsd = new Currency();
         rsd.setId(8L);
@@ -104,6 +109,7 @@ class LoanServiceImplTest {
         @DisplayName("uspesno kreira zahtev za kredit")
         void success() {
             LoanRequestDto dto = new LoanRequestDto();
+            dto.setOtpCode("123456");
             dto.setLoanType("CASH");
             dto.setInterestType("FIXED");
             dto.setAmount(BigDecimal.valueOf(100000));
@@ -136,6 +142,7 @@ class LoanServiceImplTest {
         @DisplayName("baca gresku za nepostojeceg klijenta")
         void clientNotFound() {
             LoanRequestDto dto = new LoanRequestDto();
+            dto.setOtpCode("123456");
             dto.setAccountNumber("222000112345678911");
             when(clientRepository.findByEmail("nepostojeci@test.com")).thenReturn(Optional.empty());
 
@@ -148,6 +155,7 @@ class LoanServiceImplTest {
         @DisplayName("baca gresku za nepostojeci racun")
         void accountNotFound() {
             LoanRequestDto dto = new LoanRequestDto();
+            dto.setOtpCode("123456");
             dto.setAccountNumber("999999999999999999");
             when(clientRepository.findByEmail("stefan@test.com")).thenReturn(Optional.of(client));
             when(accountRepository.findByAccountNumber("999999999999999999")).thenReturn(Optional.empty());
@@ -165,6 +173,7 @@ class LoanServiceImplTest {
             eur.setCode("EUR");
 
             LoanRequestDto dto = new LoanRequestDto();
+            dto.setOtpCode("123456");
             dto.setLoanType("CASH");
             dto.setInterestType("FIXED");
             dto.setAmount(BigDecimal.valueOf(1000));
@@ -190,6 +199,7 @@ class LoanServiceImplTest {
                     .currency(rsd).client(other).build();
 
             LoanRequestDto dto = new LoanRequestDto();
+            dto.setOtpCode("123456");
             dto.setLoanType("CASH");
             dto.setInterestType("FIXED");
             dto.setAmount(BigDecimal.valueOf(1000));
