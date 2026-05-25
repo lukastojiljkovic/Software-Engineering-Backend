@@ -415,9 +415,11 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("prepareLocal: MONAS on Person account → NO + UNACCEPTABLE_ASSET")
+    @DisplayName("prepareLocal: MONAS on Person account with no resolvable account → NO + NO_SUCH_ACCOUNT")
     void prepareLocal_monasOnPerson_noVote() {
-        // Debit goes to a Person TxAccount — invalid for MONAS
+        // Person+Monas is a valid shape per spec §2.6 (Tim 1 P0.1 mirror): resolver
+        // tries to locate the holder's account by clientId from the foreign id and
+        // currency. With no account mocked the resolver returns empty → NO_SUCH_ACCOUNT.
         Transaction tx = new Transaction(List.of(
                 new Posting(new TxAccount.Person(new ForeignBankId(MY_RN, "99")),
                         BigDecimal.valueOf(100), new Asset.Monas(new MonetaryAsset(CurrencyCode.RSD))),
@@ -431,7 +433,7 @@ class TransactionExecutorServiceTest {
 
         assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.NO);
         assertThat(vote.reasons()).anySatisfy(r ->
-                assertThat(r.reason()).isEqualTo(NoVoteReason.Reason.UNACCEPTABLE_ASSET));
+                assertThat(r.reason()).isEqualTo(NoVoteReason.Reason.NO_SUCH_ACCOUNT));
     }
 
     @Test

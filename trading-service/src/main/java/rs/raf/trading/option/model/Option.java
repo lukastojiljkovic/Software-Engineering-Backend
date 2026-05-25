@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.ColumnDefault;
 import rs.raf.trading.stock.model.Listing;
 
 import java.math.BigDecimal;
@@ -75,6 +76,23 @@ public class Option {
     /** Price - premija opcije izracunata Black-Scholes modelom. */
     @Column(precision = 18, scale = 4)
     private BigDecimal price;
+
+    /**
+     * Maintenance margin = ContractSize x 50% x Stock Price
+     * (spec Opcije.txt: option writer/seller obavezan posed margina).
+     *
+     * <p>Po default-u ContractSize=100, pa je maintenanceMargin = 50 x Price.
+     * Generalnija formula (ContractSize * 0.5 * Price) ostaje za buduce
+     * razlicite contract size-ove.
+     *
+     * <p>NAPOMENA: trenutno se opcije kreiraju system-side (generator), pa je
+     * ovo polje informacijsko (prikaz na FE-u). Ako se u buducnosti omoguci
+     * user-side option writing, treba dodati check da seller ima dovoljan
+     * margin pre nego sto pozicija pocne (vidi spec Marzni_Racuni.txt).
+     */
+    @Column(name = "maintenance_margin", precision = 18, scale = 4)
+    @ColumnDefault("0")
+    private BigDecimal maintenanceMargin;
 
     /** Ask - najniza cena po kojoj prodavac nudi opciju. */
     @Column(precision = 18, scale = 4)

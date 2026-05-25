@@ -197,6 +197,13 @@ public class AuthService {
             String salt = employee.getSaltPassword();
             if (passwordEncoder.matches(request.getPassword() + salt, employee.getPassword())) {
                 if (!Boolean.TRUE.equals(employee.getActive())) {
+                    // BE-AUTH-04 fix: inactive accounts moraju takodje da increment
+                    // failedLoginAttempts pre throw-a, inace deaktivirani nalozi dobijaju
+                    // unlimited probe pokusaje. Ako napadac zna email aktivnog/deaktiviranog
+                    // naloga + tacnu sifru, bez recordFailure-a moze beskonacno da poll-uje
+                    // (npr. provera da li nalog jos uvek postoji u sistemu, ili priprema
+                    // za reactivation napad ako admin reaktivira nalog kasnije).
+                    accountLockoutService.recordFailure(request.getEmail());
                     // Spec Sc 14 — login deaktiviranog naloga vraca 401, ne 400
                     // (Bug T1-012 prijavljen 12.05.2026).
                     throw new AuthenticationFailedException("Nalog je deaktiviran.");
@@ -216,6 +223,9 @@ public class AuthService {
 
             if (passwordEncoder.matches(request.getPassword(), user.getPassword())) {
                 if (!user.isActive()) {
+                    // BE-AUTH-04 fix: vidi gore — increment counter i za deaktivirane
+                    // user naloge da napadac ne moze beskonacno da poll-uje.
+                    accountLockoutService.recordFailure(request.getEmail());
                     // Isto kao employee — generic poruka ne otkriva da li email
                     // postoji ili je deaktiviran. Vraca 401.
                     throw new AuthenticationFailedException("Nalog je deaktiviran.");

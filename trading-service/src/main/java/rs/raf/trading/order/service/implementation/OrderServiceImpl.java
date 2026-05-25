@@ -27,6 +27,10 @@ import rs.raf.trading.common.UserContext;
 import rs.raf.trading.common.UserRole;
 import rs.raf.trading.investmentfund.model.InvestmentFund;
 import rs.raf.trading.investmentfund.repository.InvestmentFundRepository;
+import rs.raf.trading.margin.model.MarginAccount;
+import rs.raf.trading.margin.model.MarginAccountStatus;
+import rs.raf.trading.margin.repository.MarginAccountRepository;
+import rs.raf.trading.margin.service.MarginOrderSettlementService;
 import rs.raf.trading.notification.model.NotificationType;
 import rs.raf.trading.notification.service.NotificationService;
 import rs.raf.trading.order.dto.CreateOrderDto;
@@ -90,6 +94,8 @@ public class OrderServiceImpl implements OrderService {
     private final TradingUserResolver tradingUserResolver;
     private final NotificationService notificationService;
     private final AuditLogService auditLogService;
+    private final MarginAccountRepository marginAccountRepository;
+    private final MarginOrderSettlementService marginOrderSettlementService;
 
     @Override
     @Transactional
@@ -220,10 +226,33 @@ public class OrderServiceImpl implements OrderService {
         // Step 6: Verify funds / holdings
         //   BUY: availableBalance >= totalReservation
         //   SELL: portfolio.availableQuantity >= dto.quantity (provereno iznad pri portfolio lookup-u)
-        if (direction == OrderDirection.BUY) {
+        // BE-STK-05: za margin BUY preskocimo regular available balance check
+        // (sredstva ce biti rezervisana na MarginAccount.reservedMargin u Step 10).
+        // Marzni_Racuni.txt §137: margin orderi su odbijeni ako je racun blokiran.
+        if (direction == OrderDirection.BUY && !dto.isMargin()) {
             if (account.availableBalance().compareTo(totalReservation) < 0) {
                 throw new InsufficientFundsException(
                         "Nedovoljno raspolozivih sredstava na racunu " + account.accountNumber());
+            }
+        }
+        if (dto.isMargin()) {
+            // BE-STK-05: pre-check da klijent ima ACTIVE margin racun + da BP/IM/MM postoje.
+            // Stvarna rezervacija ide u Step 10 kroz MarginOrderSettlementService.
+            MarginAccount margin = marginAccountRepository
+                    .findFirstByUserIdAndStatus(userContext.userId(), MarginAccountStatus.ACTIVE)
+                    .orElseThrow(() -> new InsufficientFundsException(
+                            "Klijent #" + userContext.userId() + " nema ACTIVE margin racun za margin trgovinu."));
+            if (direction == OrderDirection.BUY) {
+                // Pre-check: total × (1 - BP) <= availableInitialMargin.
+                BigDecimal bankPart = approximatePrice.multiply(margin.getBankParticipation())
+                        .setScale(4, RoundingMode.HALF_UP);
+                BigDecimal userPart = approximatePrice.subtract(bankPart)
+                        .setScale(4, RoundingMode.HALF_UP);
+                if (margin.getAvailableInitialMargin().compareTo(userPart) < 0) {
+                    throw new InsufficientFundsException(
+                            "Nedovoljno raspolozive marzine: traziti " + userPart
+                                    + ", raspolozivo " + margin.getAvailableInitialMargin());
+                }
             }
         }
 
@@ -277,9 +306,20 @@ public class OrderServiceImpl implements OrderService {
         Order savedOrder = orderRepository.save(order);
 
         // Step 10: Rezervacija (sredstva za BUY, kolicina hartija za SELL) za APPROVED ordere
+        // BE-STK-05: za margin BUY rezervacija ide na MarginAccount.reservedMargin
+        // (userPart = total - bankPart), ne na banka-core funds reserve.
         if (status == OrderStatus.APPROVED) {
             if (direction == OrderDirection.BUY) {
-                fundReservationService.reserveForBuy(savedOrder);
+                if (order.isMargin()) {
+                    boolean reserved = marginOrderSettlementService.reserveForMarginBuy(
+                            savedOrder, savedOrder.getApproximatePrice());
+                    if (!reserved) {
+                        throw new InsufficientFundsException(
+                                "Nedovoljno raspolozive marzine za margin BUY order #" + savedOrder.getId());
+                    }
+                } else {
+                    fundReservationService.reserveForBuy(savedOrder);
+                }
             } else { // SELL — portfolio je uvek non-null nakon SELL grane iznad
                 fundReservationService.reserveForSell(savedOrder, portfolio);
             }

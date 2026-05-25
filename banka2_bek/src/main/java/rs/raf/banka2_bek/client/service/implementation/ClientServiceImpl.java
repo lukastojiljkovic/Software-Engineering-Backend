@@ -36,7 +36,13 @@ public class ClientServiceImpl implements ClientService {
         String password = (request.getPassword() != null && !request.getPassword().isBlank())
                 ? request.getPassword()
                 : UUID.randomUUID().toString().substring(0, 12);
-        String salt = UUID.randomUUID().toString().substring(0, 16);
+
+        // BE-AUTH-06 fix: salt + concat pattern je DEPRECATED. Login flow proverava
+        // samo User.password (bez salt-a). Client.password ostaje zbog nullable=false
+        // constraint-a — popunjava se istim bcrypt hash-om kao User.password
+        // (umesto razlicitog salt-concat hash-a) tako da je single source of truth.
+        // Salt polje takodje deprecated — placeholder "deprecated" string.
+        String hashedPassword = passwordEncoder.encode(password);
 
         Client client = Client.builder()
                 .firstName(request.getFirstName())
@@ -46,20 +52,22 @@ public class ClientServiceImpl implements ClientService {
                 .email(request.getEmail())
                 .phone(request.getPhone())
                 .address(request.getAddress())
-                .password(passwordEncoder.encode(password + salt))
-                .saltPassword(salt)
+                // DEPRECATED polja — vidi Client.java javadoc.
+                // Cuvamo istu vrednost kao User.password radi konzistentnosti.
+                .password(hashedPassword)
+                .saltPassword("deprecated")
                 .active(true)
                 .build();
 
         client = clientRepository.save(client);
 
-        // Also create a User entry for login
+        // Login flow koristi User.password kao single source of truth.
         if (userRepository.findByEmail(request.getEmail()).isEmpty()) {
             User user = new User();
             user.setFirstName(request.getFirstName());
             user.setLastName(request.getLastName());
             user.setEmail(request.getEmail());
-            user.setPassword(passwordEncoder.encode(password));
+            user.setPassword(hashedPassword);
             user.setPhone(request.getPhone());
             user.setAddress(request.getAddress());
             user.setActive(true);

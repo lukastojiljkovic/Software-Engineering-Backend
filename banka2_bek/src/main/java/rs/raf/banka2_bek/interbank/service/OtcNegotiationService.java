@@ -109,7 +109,14 @@ public class OtcNegotiationService {
 
     // ────────────────────────── outbound (T2 / T5) ────────────────────────────
 
-    @Transactional
+    /**
+     * BE-INT-05: namerno BEZ @Transactional jer radi HTTP I/O van banka-core
+     * DB-a (samo cita ConcurrentHashMap + fetcha sa partner banke). Ranija
+     * @Transactional anotacija je drzala Hikari konekciju otvorenu kroz HTTP
+     * call ka partner banci (latencija + tail rizik) — pool exhaustion ako se
+     * pozove iz vise threadova istovremeno. Ako kasnije zatreba Tx (npr.
+     * persist u DB cache), koristiti propagation=SUPPORTS.
+     */
     public List<PublicStock> fetchRemotePublicStocks(int routingNumber) {
         Instant now = Instant.now();
         CachedPublicStocks cached = publicStockCache.get(routingNumber);

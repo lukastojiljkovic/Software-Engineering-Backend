@@ -48,11 +48,32 @@ public class Client {
     @Column(length = 200)
     private String address;
 
+    /**
+     * BE-AUTH-06: DEPRECATED — vise se NE koristi za login/autentifikaciju.
+     *
+     * Login flow ({@code AuthService.login}) proverava iskljucivo
+     * {@code User.password} (bcrypt bez salt-a konkatenacije). Polje je
+     * ranije bilo "dual storage" — {@code Client.password} cuvao bcrypt
+     * sa salt-om konkatenacijom (UUID substring), {@code User.password}
+     * bez salt-a. Posto login uzima samo {@code User.password}, vrednost
+     * u {@code Client.password} je dead code.
+     *
+     * Zadrzano radi backwards-compatibility (DB shema constraint
+     * {@code nullable=false} + 12+ test fixtures koje ga setuju). Novi
+     * kod NE SME da cita ovu vrednost za autentifikaciju — koristi
+     * {@code User.password} preko {@code UserRepository.findByEmail}.
+     * Buduca runda moze: 1) ALTER TABLE clients ALTER COLUMN password DROP NOT NULL,
+     * 2) ukloniti polje iz JPA modela i test fixtures, 3) opciono migracija
+     * SET password = NULL na svim postojecim redovima.
+     */
+    @Deprecated
     @Column(nullable = false, length = 255)
-    private String password;        // Heširana lozinka (bcrypt/Argon2)
+    private String password;        // Heširana lozinka — DEPRECATED, vidi javadoc iznad.
 
+    /** BE-AUTH-06: DEPRECATED — vidi {@link #password}. Salt-ovi su unused jer login ne koristi Client.password. */
+    @Deprecated
     @Column(nullable = false, length = 64)
-    private String saltPassword;    // Random salt, generiše se pri kreiranju
+    private String saltPassword;    // DEPRECATED — vidi password.
 
     // Token za aktivaciju naloga — brisan nakon aktivacije
     @Column(length = 255)

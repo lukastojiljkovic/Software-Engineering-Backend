@@ -74,8 +74,16 @@ public class EmployeeAuthServiceImpl implements EmployeeAuthService {
      *   3) expiresAt < now → EXPIRED
      *   4) employee.active == true → ALREADY_ACTIVE (token jos validan ali nalog je vec aktivan)
      *   5) Sve OK → VALID
+     *
+     * BE-AUTH-05 fix: {@code @Transactional(readOnly=true)} je obavezno jer u
+     * {@code if (token.isUsed() || token.isInvalidated())} putanji ucitavamo
+     * lazy asocijaciju {@code token.getEmployee()}. Bez aktivne Hibernate Session-a
+     * (van Tx scope-a), {@code LazyInitializationException} se baca. {@code readOnly=true}
+     * dodatno hint-uje JPA provider-u da preskoci flush + omogucava {@code LazyConnectionDataSourceProxy}
+     * da rute zahtev na read replica ako je konfigurisano.
      */
     @Override
+    @Transactional(readOnly = true)
     public ActivationTokenStatusDto getTokenStatus(String tokenValue) {
         if (tokenValue == null || tokenValue.isBlank()) {
             return ActivationTokenStatusDto.builder().status("INVALID").build();

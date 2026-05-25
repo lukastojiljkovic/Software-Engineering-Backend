@@ -1,6 +1,8 @@
 package rs.raf.trading.margin.repository;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -10,14 +12,29 @@ import rs.raf.trading.margin.model.MarginAccount;
 import rs.raf.trading.margin.model.MarginAccountStatus;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface MarginAccountRepository extends JpaRepository<MarginAccount, Long> {
 
     /**
-     * Pronalazi sve margin racune za datog korisnika
+     * Pronalazi sve margin racune za datog korisnika (USER vlasnistvo).
      */
     List<MarginAccount> findByUserId(Long userId);
+
+    /**
+     * BE-STK-05: pronalazi prvi ACTIVE margin racun za korisnika.
+     * Po Marzni_Racuni.txt §57: "korisnik moze imati samo jedan marzni racun".
+     */
+    Optional<MarginAccount> findFirstByUserIdAndStatus(Long userId, MarginAccountStatus status);
+
+    /**
+     * BE-STK-05: pessimistic lock za concurrent BUY/SELL settlement.
+     * Sprecava race izmedju paralelnih order fill commit-a, deposit-a i margin call check-a.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT m FROM MarginAccount m WHERE m.id = :id")
+    Optional<MarginAccount> findByIdForUpdate(@Param("id") Long id);
 
     /**
      * Pronalazi sve margin racune sa datim statusom
@@ -64,4 +81,28 @@ public interface MarginAccountRepository extends JpaRepository<MarginAccount, Lo
             nativeQuery = true
     )
     void blockAccountsWhereMaintenanceExceedsInitial(@Param("active") String active, @Param("blocked") String blocked);
+
+    /**
+     * BE-STK-04 (atomic block + return ids): jedinstven UPDATE koji blokira sve
+     * margin racune sa {@code maintenance_margin > initial_margin} i vraca id-eve
+     * blokiranih redova. PostgreSQL {@code RETURNING} klauzula garantuje da
+     * concurrent deposit izmedju SELECT i UPDATE ne moze pomeriti flag — sve se
+     * resava unutar iste row-lock atomicne operacije.
+     *
+     * <p>Posle JPQL update-a, caller poziva {@link #findAllById(Iterable)} ili
+     * direktnu lookup metodu da popuni emails / maintenance / initial margine za
+     * notification publish.
+     */
+    @Modifying
+    @Query(
+            value = """
+                    UPDATE margin_accounts
+                       SET status = :blocked
+                     WHERE maintenance_margin > initial_margin
+                       AND status = :active
+                     RETURNING id
+                    """,
+            nativeQuery = true
+    )
+    List<Long> blockUnderMargin(@Param("active") String active, @Param("blocked") String blocked);
 }

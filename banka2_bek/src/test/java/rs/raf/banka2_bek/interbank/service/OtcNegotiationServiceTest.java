@@ -222,7 +222,9 @@ class OtcNegotiationServiceTest {
 
         service.postCounterOffer(negotiationId, counter);
 
-        verify(client).putCounterOffer(negotiationId, counter);
+        // T2-J: service uses 3-arg overload (negotiationId, targetPartnerRouting, offer)
+        // where targetPartnerRouting defaults to negotiationId.routingNumber().
+        verify(client).putCounterOffer(negotiationId, SELLER_RN, counter);
     }
 
     @Test

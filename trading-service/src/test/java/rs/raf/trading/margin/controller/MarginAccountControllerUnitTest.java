@@ -129,8 +129,9 @@ class MarginAccountControllerUnitTest {
     @Test
     @DisplayName("POST /margin-accounts — validation failure returns 400")
     void create_invalidBody() throws Exception {
-        // initialDeposit missing — @NotNull triggers MethodArgumentNotValidException
-        String json = "{\"accountId\": 100}";
+        // BE-STK-07: initialDeposit vise nije @NotNull (IM/MM/BP su alternativa).
+        // Validacija puca na accountId == null (@NotNull) ili na negativnom initialDeposit (@DecimalMin).
+        String json = "{\"initialDeposit\": -100}";
 
         mockMvc.perform(post("/margin-accounts")
                         .principal(auth)

@@ -18,6 +18,9 @@ import rs.raf.trading.dividend.dto.DividendPayoutDto;
 import rs.raf.trading.dividend.model.DividendPayout;
 import rs.raf.trading.dividend.repository.DividendPayoutRepository;
 import rs.raf.trading.dividend.service.DividendService;
+import rs.raf.trading.investmentfund.model.InvestmentFund;
+import rs.raf.trading.investmentfund.repository.InvestmentFundRepository;
+import rs.raf.trading.investmentfund.service.FundDividendService;
 import rs.raf.trading.order.service.CurrencyConversionService;
 import rs.raf.trading.portfolio.model.Portfolio;
 import rs.raf.trading.portfolio.repository.PortfolioRepository;
@@ -75,6 +78,12 @@ class DividendServiceTest {
 
     @Mock
     private CurrencyConversionService currencyConversionService;
+
+    @Mock
+    private FundDividendService fundDividendService;
+
+    @Mock
+    private InvestmentFundRepository investmentFundRepository;
 
     /**
      * BE-FND-03 fix: {@code DividendService} ima self-injected proxy field
@@ -365,6 +374,89 @@ class DividendServiceTest {
         verify(dividendPayoutRepository, times(1))
                 .findByPaymentDateBetween(eq(from), eq(today), eq(pageable));
         verify(dividendPayoutRepository, never()).findAllByOrderByPaymentDateDesc(any());
+    }
+
+    // ── Test 10a: TODO_final C4 #14 / Sc 70 — dispatch po politici fonda ──────
+
+    /**
+     * Posle DIVIDEND_INFLOW kreditiranja, scheduler treba da iterira aktivne
+     * fondove i pozove odgovarajuci handler na osnovu {@code reinvestDividends}
+     * flag-a. Fond sa reinvest=true ide na {@code reinvestDividends(fundId)},
+     * fond sa reinvest=false ide na {@code distributeDividendsToClients(fundId)}.
+     */
+    @Test
+    void dispatchFundDividendsByPolicy_branchesBasedOnReinvestFlag() {
+        InvestmentFund reinvestFund = new InvestmentFund();
+        reinvestFund.setId(1L);
+        reinvestFund.setName("Reinvest Fund");
+        reinvestFund.setReinvestDividends(true);
+        reinvestFund.setActive(true);
+
+        InvestmentFund distributeFund = new InvestmentFund();
+        distributeFund.setId(2L);
+        distributeFund.setName("Distribute Fund");
+        distributeFund.setReinvestDividends(false);
+        distributeFund.setActive(true);
+
+        when(investmentFundRepository.findByActiveTrueOrderByNameAsc())
+                .thenReturn(List.of(reinvestFund, distributeFund));
+
+        dividendService.dispatchFundDividendsByPolicy();
+
+        verify(fundDividendService, times(1)).reinvestDividends(1L);
+        verify(fundDividendService, never()).reinvestDividends(2L);
+        verify(fundDividendService, times(1)).distributeDividendsToClients(2L);
+        verify(fundDividendService, never()).distributeDividendsToClients(1L);
+    }
+
+    /**
+     * Greska u jednom fondu ne sme da prekine dispatch ostalih fondova.
+     */
+    @Test
+    void dispatchFundDividendsByPolicy_continuesOnFailure() {
+        InvestmentFund failingFund = new InvestmentFund();
+        failingFund.setId(1L);
+        failingFund.setName("Bad");
+        failingFund.setReinvestDividends(true);
+        failingFund.setActive(true);
+
+        InvestmentFund okFund = new InvestmentFund();
+        okFund.setId(2L);
+        okFund.setName("Good");
+        okFund.setReinvestDividends(false);
+        okFund.setActive(true);
+
+        when(investmentFundRepository.findByActiveTrueOrderByNameAsc())
+                .thenReturn(List.of(failingFund, okFund));
+        when(fundDividendService.reinvestDividends(1L))
+                .thenThrow(new RuntimeException("boom"));
+
+        dividendService.dispatchFundDividendsByPolicy();
+
+        verify(fundDividendService).reinvestDividends(1L);
+        // I dalje pokusava drugi fond uprkos gresci u prvom.
+        verify(fundDividendService).distributeDividendsToClients(2L);
+    }
+
+    /**
+     * Null {@code reinvestDividends} (legacy fund pre uvodjenja polja) tretira
+     * se kao false (distribute). Backward-compat.
+     */
+    @Test
+    void dispatchFundDividendsByPolicy_nullReinvestFlagDefaultsToDistribute() {
+        InvestmentFund legacyFund = new InvestmentFund();
+        legacyFund.setId(7L);
+        legacyFund.setName("Legacy");
+        legacyFund.setReinvestDividends(null);
+        legacyFund.setActive(true);
+
+        when(investmentFundRepository.findByActiveTrueOrderByNameAsc())
+                .thenReturn(List.of(legacyFund));
+
+        dividendService.dispatchFundDividendsByPolicy();
+
+        verify(fundDividendService).distributeDividendsToClients(7L);
+        verify(fundDividendService, never()).reinvestDividends(7L);
     }
 
     // ── Test 10: payDividendForOwner cuva prosledjeni paymentDate nepromenjeno ─

@@ -509,6 +509,67 @@ class OptionGeneratorServiceTest {
     }
 
     // ============================================================
+    // Maintenance margin tests (Option O1 — spec Opcije.txt)
+    // ============================================================
+
+    @Test
+    void computeMaintenanceMargin_standardContract_equalsFiftyTimesPrice() {
+        // ContractSize=100, factor=0.5, price=150 => 100 * 0.5 * 150 = 7500.0000
+        BigDecimal margin = optionGeneratorService.computeMaintenanceMargin(new BigDecimal("150.00"));
+
+        assertThat(margin).isEqualByComparingTo(new BigDecimal("7500.0000"));
+    }
+
+    @Test
+    void computeMaintenanceMargin_smallPrice_correctScale() {
+        // 100 * 0.5 * 1.00 = 50.0000
+        BigDecimal margin = optionGeneratorService.computeMaintenanceMargin(new BigDecimal("1.00"));
+
+        assertThat(margin).isEqualByComparingTo(new BigDecimal("50.0000"));
+        assertThat(margin.scale()).isEqualTo(4);
+    }
+
+    @Test
+    void computeMaintenanceMargin_largePrice() {
+        // 100 * 0.5 * 5000 = 250000.0000
+        BigDecimal margin = optionGeneratorService.computeMaintenanceMargin(new BigDecimal("5000.00"));
+
+        assertThat(margin).isEqualByComparingTo(new BigDecimal("250000.0000"));
+    }
+
+    @Test
+    void computeMaintenanceMargin_nullPrice_returnsZero() {
+        BigDecimal margin = optionGeneratorService.computeMaintenanceMargin(null);
+
+        assertThat(margin).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    void generateOptionsForListing_setsMaintenanceMarginOnEveryOption() {
+        BigDecimal stockPrice = new BigDecimal("100.00");
+        Listing stock = createListing(1L, "AAPL", ListingType.STOCK, stockPrice);
+
+        when(optionRepository.existsByStockListingIdAndSettlementDate(anyLong(), any(LocalDate.class)))
+                .thenReturn(false);
+        when(blackScholesService.calculateCallPrice(anyDouble(), anyDouble(), anyDouble(), anyDouble()))
+                .thenReturn(new BigDecimal("5.0000"));
+        when(blackScholesService.calculatePutPrice(anyDouble(), anyDouble(), anyDouble(), anyDouble()))
+                .thenReturn(new BigDecimal("3.0000"));
+
+        optionGeneratorService.generateOptionsForListing(stock);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Option>> captor = ArgumentCaptor.forClass(List.class);
+        verify(optionRepository).saveAll(captor.capture());
+
+        // Spec: ContractSize x 50% x StockPrice = 100 * 0.5 * 100 = 5000.0000
+        BigDecimal expectedMargin = new BigDecimal("5000.0000");
+        captor.getValue().forEach(o ->
+                assertThat(o.getMaintenanceMargin()).isEqualByComparingTo(expectedMargin)
+        );
+    }
+
+    // ============================================================
     // Helper
     // ============================================================
 

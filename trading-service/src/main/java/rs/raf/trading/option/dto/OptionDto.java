@@ -63,6 +63,9 @@ public class OptionDto {
     @Schema(description = "Velicina ugovora (broj akcija po ugovoru, standardno 100)", example = "100")
     private int contractSize;
 
+    @Schema(description = "Maintenance margin = ContractSize x 50% x Stock Price (spec Opcije.txt: option writer obavezan posed)")
+    private BigDecimal maintenanceMargin;
+
     @Schema(description = "Da li je opcija 'in the money' (CALL: stockPrice > strike, PUT: stockPrice < strike)")
     private boolean inTheMoney;
 

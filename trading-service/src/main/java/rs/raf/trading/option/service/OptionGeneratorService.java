@@ -125,6 +125,12 @@ public class OptionGeneratorService {
         log.info("Generisano {} opcija za {}", options.size(), stock.getTicker());
     }
 
+    /** Standardna velicina ugovora (broj akcija po jednom option ugovoru). */
+    private static final int CONTRACT_SIZE = 100;
+
+    /** Maintenance margin faktor po spec-u: 50% (Opcije.txt + Marzni_Racuni.txt). */
+    private static final BigDecimal MAINTENANCE_MARGIN_FACTOR = BigDecimal.valueOf(0.5);
+
     private Option buildOption(Listing stock, OptionType type, BigDecimal strike,
                                LocalDate date, double T, double sigma, double S, double K) {
         BigDecimal price;
@@ -145,9 +151,33 @@ public class OptionGeneratorService {
         option.setBid(price.multiply(BigDecimal.valueOf(0.95)).setScale(4, RoundingMode.HALF_UP));
         option.setVolume((long) (100 + Math.random() * 9900));
         option.setOpenInterest(0);
-        option.setContractSize(100);
+        option.setContractSize(CONTRACT_SIZE);
+        option.setMaintenanceMargin(computeMaintenanceMargin(stock.getPrice()));
         option.setTicker(generateTicker(stock.getTicker(), date, type, strike));
         return option;
+    }
+
+    /**
+     * Maintenance margin za option writer-a (seller-a).
+     *
+     * <p>Spec Opcije.txt + Marzni_Racuni.txt: option writer mora posedovati
+     * margin = {@code ContractSize x 50% x Stock Price}. Pri ContractSize=100
+     * (standard) to iznosi {@code 50 x Price}.
+     *
+     * <p>Koristi generalnu formulu (ContractSize * 0.5 * Price) zbog buducih
+     * razlicitih contract size-ova; trenutno daje isti rezultat kao 50 x Price.
+     *
+     * @param stockPrice trenutna cena osnovne akcije
+     * @return maintenance margin, zaokruzeno na 4 decimale (HALF_UP)
+     */
+    protected BigDecimal computeMaintenanceMargin(BigDecimal stockPrice) {
+        if (stockPrice == null) {
+            return BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.valueOf(CONTRACT_SIZE)
+                .multiply(MAINTENANCE_MARGIN_FACTOR)
+                .multiply(stockPrice)
+                .setScale(4, RoundingMode.HALF_UP);
     }
 
     /** Generise opcije za SVE akcije u sistemu. */

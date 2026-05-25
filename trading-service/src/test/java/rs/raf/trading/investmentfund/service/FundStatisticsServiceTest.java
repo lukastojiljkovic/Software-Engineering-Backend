@@ -227,6 +227,83 @@ class FundStatisticsServiceTest {
         assertThat(ex.getMessage()).contains("999");
     }
 
+    @Test
+    @DisplayName("BE-FND-02: avg monthly return <= -100% (bankrupt base) -> annualizedReturn null")
+    void computeAnnualizedReturn_bankruptBase_returnsNull() {
+        // avg = -1.25 -> base = 1 + (-1.25) = -0.25 (signum <= 0) -> null
+        BigDecimal avgMonthlyReturn = new BigDecimal("-1.25");
+
+        BigDecimal result = service.computeAnnualizedReturn(avgMonthlyReturn);
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    @DisplayName("BE-FND-02: avg monthly return = -100% (boundary) -> annualizedReturn null")
+    void computeAnnualizedReturn_atBoundary_returnsNull() {
+        // avg = -1.0 -> base = 0 (signum == 0) -> null (po fix-u: <= 0)
+        BigDecimal avgMonthlyReturn = new BigDecimal("-1.0");
+
+        BigDecimal result = service.computeAnnualizedReturn(avgMonthlyReturn);
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    @DisplayName("BE-FND-02: avg monthly return = -95% -> bukvalno racunato, ne null")
+    void computeAnnualizedReturn_nearBankruptButPositiveBase_returnsValue() {
+        // avg = -0.95 -> base = 0.05 > 0 -> 0.05^12 - 1 = -0.999999... (-100% approx) * 100
+        BigDecimal avgMonthlyReturn = new BigDecimal("-0.95");
+
+        BigDecimal result = service.computeAnnualizedReturn(avgMonthlyReturn);
+
+        assertThat(result).isNotNull();
+        // ~ -100% (ne 0)
+        assertThat(result).isLessThan(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("BE-FND-02: bankrupt fund snapshots -> sufficientHistory=false, metrike null")
+    void computeStatistics_bankruptFund_sufficientHistoryFalse() {
+        // Konstruisi 36 mesecnih snapshot-ova ciji mesecni prinosi prosecno
+        // daju <= -100% (bankrupt path). Strategija: za svaki par susednih
+        // meseci postavi vrednosti tako da je return = -1.5 (-150%), sto se
+        // postize kad value padne sa 100 na -50 (negativna vrednost je matematicki
+        // moguca u test fixturi; realan fond ne moze biti negativan, ali to je
+        // upravo signal koji testiramo — algorithm hendluje patoloski input).
+        List<FundValueSnapshot> snapshots = new ArrayList<>();
+        LocalDate start = LocalDate.of(2024, 1, 1);
+        // Alternirajucih 100 i -50 → returns: -1.5, -1.5, -1.5, ... avg = -1.5
+        BigDecimal hi = new BigDecimal("100");
+        BigDecimal lo = new BigDecimal("-50");
+        for (int i = 0; i < 36; i++) {
+            FundValueSnapshot s = new FundValueSnapshot();
+            s.setFundId(FUND_ID);
+            s.setSnapshotDate(start.plusMonths(i));
+            BigDecimal v = (i % 2 == 0) ? hi : lo;
+            s.setFundValue(v);
+            s.setLiquidAmount(v);
+            s.setInvestedTotal(v);
+            snapshots.add(s);
+        }
+        when(fundRepository.findById(eq(FUND_ID))).thenReturn(Optional.of(fund));
+        when(snapshotRepository.findByFundIdOrderBySnapshotDateAsc(eq(FUND_ID)))
+                .thenReturn(snapshots);
+
+        FundStatisticsDto dto = service.computeStatistics(FUND_ID);
+
+        // Bankrupt path mora downgrade-ovati sufficientHistory na false
+        assertThat(dto.isSufficientHistory()).isFalse();
+        assertThat(dto.getSnapshotCount()).isEqualTo(36);
+        // annualizedReturn / volatility / rewardToVariability moraju biti null
+        assertThat(dto.getAnnualizedReturn()).isNull();
+        assertThat(dto.getVolatility()).isNull();
+        assertThat(dto.getRewardToVariability()).isNull();
+        // fundId / fundName i dalje popunjeni (metadata)
+        assertThat(dto.getFundId()).isEqualTo(FUND_ID);
+        assertThat(dto.getFundName()).isEqualTo("Test Fund");
+    }
+
     // ----- fixture helperi -----
 
     /**

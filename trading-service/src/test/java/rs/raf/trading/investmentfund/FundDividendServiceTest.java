@@ -499,7 +499,9 @@ class FundDividendServiceTest {
     @DisplayName("scheduledDividendProcessing continues with other funds if one fund fails")
     void scheduledDividendProcessing_exceptionInOneFund_continuesOthers() {
         InvestmentFund firstFund = activeFund(1L, 101L);
+        firstFund.setReinvestDividends(true);
         InvestmentFund secondFund = activeFund(2L, 102L);
+        secondFund.setReinvestDividends(true);
 
         FundDividendService spyService = spy(service);
 

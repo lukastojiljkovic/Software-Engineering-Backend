@@ -56,6 +56,26 @@ public class InvestmentFund {
     private LocalDate inceptionDate;
 
     /**
+     * TODO_final C4 #14 / Sc 70: politika obrade dividendi za fond.
+     * <ul>
+     *   <li>{@code false} (default) — dividende se distribuiraju klijentima
+     *       srazmerno {@code totalInvested} preko
+     *       {@link rs.raf.trading.investmentfund.service.FundDividendService#distributeDividendsToClients}.</li>
+     *   <li>{@code true} — dividende se reinvestiraju kroz auto-BUY MARKET
+     *       ordere u top holdings fonda preko
+     *       {@link rs.raf.trading.investmentfund.service.FundDividendService#reinvestDividends}.</li>
+     * </ul>
+     *
+     * <p>Default {@code false} osigurava backward-compat: postojeci fondovi
+     * (kreirani pre uvodjenja ovog polja) zadrzavaju klasicno distribuiranje
+     * klijentima. Admin/supervizor moze promeniti preko
+     * {@code PATCH /funds/{id}/dividend-policy}.
+     */
+    @Column(name = "reinvest_dividends", nullable = false)
+    @org.hibernate.annotations.ColumnDefault("0")
+    private Boolean reinvestDividends = false;
+
+    /**
      * P9 — Spec Celina 4 (Nova) §4222 Napomena 2: "Klijent je klijent koji je
      * vlasnik banke." Banka kao entitet investira kroz pozicije
      * ClientFundPosition sa userRole='CLIENT' i userId = ownerClientId banke.

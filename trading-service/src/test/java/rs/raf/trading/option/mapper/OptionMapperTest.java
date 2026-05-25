@@ -43,6 +43,7 @@ class OptionMapperTest {
         option.setVolume(500L);
         option.setSettlementDate(LocalDate.of(2026, 4, 2));
         option.setContractSize(100);
+        option.setMaintenanceMargin(BigDecimal.valueOf(9500));
         option.setStockListing(stock);
         option.setCreatedAt(LocalDateTime.of(2026, 3, 1, 10, 0));
 
@@ -62,11 +63,26 @@ class OptionMapperTest {
         assertThat(dto.getVolume()).isEqualTo(500L);
         assertThat(dto.getSettlementDate()).isEqualTo(LocalDate.of(2026, 4, 2));
         assertThat(dto.getContractSize()).isEqualTo(100);
+        assertThat(dto.getMaintenanceMargin()).isEqualByComparingTo(BigDecimal.valueOf(9500));
         assertThat(dto.getStockTicker()).isEqualTo("AAPL");
         assertThat(dto.getStockName()).isEqualTo("Apple Inc.");
         assertThat(dto.getStockListingId()).isEqualTo(50L);
         assertThat(dto.getCurrentStockPrice()).isEqualByComparingTo(BigDecimal.valueOf(190));
         assertThat(dto.isInTheMoney()).isTrue();
+    }
+
+    @Test
+    void toDto_nullMaintenanceMargin_dtoFieldIsNull() {
+        Option option = new Option();
+        option.setId(8L);
+        option.setTicker("TEST");
+        option.setOptionType(OptionType.CALL);
+        option.setStrikePrice(BigDecimal.valueOf(100));
+        option.setMaintenanceMargin(null);
+
+        OptionDto dto = OptionMapper.toDto(option, BigDecimal.TEN);
+
+        assertThat(dto.getMaintenanceMargin()).isNull();
     }
 
     @Test

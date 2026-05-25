@@ -58,6 +58,11 @@ public class FundReservationService {
             throw new IllegalStateException(
                     "Rezervacija je vec oslobodjena za order " + order.getId());
         }
+        // BE-STK-05: margin BUY orderi imaju rezervaciju u MarginAccount.reservedMargin,
+        // ne u banka-core funds reserve. Skip ovde.
+        if (order.isMargin()) {
+            return;
+        }
         BigDecimal amount = order.getReservedAmount();
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("Iznos rezervacije mora biti pozitivan");
@@ -89,6 +94,12 @@ public class FundReservationService {
     @Transactional
     public void releaseForBuy(Order order) {
         if (order.isReservationReleased()) {
+            return;
+        }
+        // BE-STK-05: margin orderi imaju rezervaciju u MarginAccount.reservedMargin.
+        // OrderExecutionService.releaseReservationSafe rukuje margin direktno.
+        if (order.isMargin()) {
+            order.setReservationReleased(true);
             return;
         }
         if (order.getReservedAccountId() == null || order.getReservedAmount() == null

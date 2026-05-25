@@ -103,14 +103,16 @@ class MarginAccountServiceExtendedTest {
         }
 
         @Test
-        @DisplayName("throws when dto.initialDeposit is null")
+        @DisplayName("throws when dto.initialDeposit is null and IM/MM/BP not provided")
         void throwsWhenInitialDepositIsNull() {
+            // BE-STK-07: u legacy putanji (kad IM/MM/BP nisu zadati eksplicitno),
+            // initialDeposit mora biti > 0; null je tretiran kao "ne moze biti manje od nule".
             when(userResolver.resolveCurrent()).thenReturn(client(10L));
             CreateMarginAccountDto dto = new CreateMarginAccountDto(1L, null);
 
             assertThatThrownBy(() -> service.createForUser(dto))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Account id and initial deposit are required.");
+                    .hasMessage("Initial deposit must be greater than zero.");
         }
 
         @Test
@@ -256,6 +258,9 @@ class MarginAccountServiceExtendedTest {
         @Test
         @DisplayName("large deposit on blocked account reactivates it")
         void largeDepositReactivatesBlocked() {
+            // BE-STK-07: MM se NE preracunava na deposit (fixed pri kreiranju).
+            // Test verifikuje da deposit (a) inkrementira IM, (b) odblokirava racun
+            // kad IM predje MM, (c) NE menja MM.
             MarginAccount account = marginAccount(10L, "1000", "2000", MarginAccountStatus.BLOCKED);
 
             when(userResolver.resolveCurrent()).thenReturn(client(10L));
@@ -265,7 +270,7 @@ class MarginAccountServiceExtendedTest {
 
             assertThat(account.getStatus()).isEqualTo(MarginAccountStatus.ACTIVE);
             assertThat(account.getInitialMargin()).isEqualByComparingTo("51000");
-            assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("25500");
+            assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("2000"); // BE-STK-07: nepromenjeno
         }
 
         @Test
@@ -296,6 +301,7 @@ class MarginAccountServiceExtendedTest {
         @Test
         @DisplayName("withdraw exactly to maintenance margin boundary succeeds")
         void withdrawExactlyToMaintenance() {
+            // BE-STK-07: MM se NE preracunava na withdraw (fixed pri kreiranju).
             // initialMargin=10000, maintenanceMargin=5000 => max withdraw = 10000-5000 = 5000
             MarginAccount account = marginAccount(10L, "10000", "5000", MarginAccountStatus.ACTIVE);
 
@@ -305,8 +311,8 @@ class MarginAccountServiceExtendedTest {
             service.withdraw(1L, new BigDecimal("5000"));
 
             assertThat(account.getInitialMargin()).isEqualByComparingTo("5000");
-            // new maintenance = 5000 * 0.5 = 2500
-            assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("2500");
+            // BE-STK-07: MM ostaje 5000 (nepromenjeno).
+            assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("5000");
             verify(marginAccountRepository).save(account);
         }
 

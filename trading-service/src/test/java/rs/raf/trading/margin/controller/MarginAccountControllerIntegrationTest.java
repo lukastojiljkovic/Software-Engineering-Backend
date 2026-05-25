@@ -239,6 +239,8 @@ class MarginAccountControllerIntegrationTest {
 
     @Test
     void createMarginAccount_returnsBadRequest_whenPayloadInvalid() {
+        // BE-STK-07: u legacy putanji (bez IM/MM/BP), initialDeposit mora biti > 0.
+        // Bez polja u payload-u, service baca "Initial deposit must be greater than zero."
         String payload = """
                 {
                   "accountId": 1
@@ -252,7 +254,7 @@ class MarginAccountControllerIntegrationTest {
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("Pocetni depozit je obavezan");
+        assertThat(response.getBody()).contains("Initial deposit must be greater than zero");
     }
 
     // ── getMyMarginAccounts ──────────────────────────────────────────────────
@@ -307,6 +309,7 @@ class MarginAccountControllerIntegrationTest {
 
     @Test
     void deposit_returnsOK_andUpdatesMarginAccountValues() {
+        // BE-STK-07: deposit inkrementira IM, NE preracunava MM (MM fixed pri kreiranju).
         MarginAccount marginAccount = marginAccountRepository.save(marginAccount(
                 7791L, "777777777777777791", CLIENT_ID,
                 MarginAccountStatus.ACTIVE, "10000.0000", "5000.0000"));
@@ -322,7 +325,8 @@ class MarginAccountControllerIntegrationTest {
 
         MarginAccount updated = marginAccountRepository.findById(marginAccount.getId()).orElseThrow();
         assertThat(updated.getInitialMargin()).isEqualByComparingTo("12000.0000");
-        assertThat(updated.getMaintenanceMargin()).isEqualByComparingTo("6000.0000");
+        // BE-STK-07: MM nepromenjen.
+        assertThat(updated.getMaintenanceMargin()).isEqualByComparingTo("5000.0000");
         assertThat(marginTransactionRepository.count()).isEqualTo(1L);
         assertThat(marginTransactionRepository.findAll().get(0).getType())
                 .isEqualTo(MarginTransactionType.DEPOSIT);
@@ -417,6 +421,7 @@ class MarginAccountControllerIntegrationTest {
 
     @Test
     void withdraw_returnsOK_andUpdatesMarginAccountValues() {
+        // BE-STK-07: withdraw dekrementira IM, NE preracunava MM (MM fixed pri kreiranju).
         MarginAccount marginAccount = marginAccountRepository.save(marginAccount(
                 7801L, "777777777777777801", CLIENT_ID,
                 MarginAccountStatus.ACTIVE, "10000.0000", "5000.0000"));
@@ -432,7 +437,8 @@ class MarginAccountControllerIntegrationTest {
 
         MarginAccount updated = marginAccountRepository.findById(marginAccount.getId()).orElseThrow();
         assertThat(updated.getInitialMargin()).isEqualByComparingTo("8000.0000");
-        assertThat(updated.getMaintenanceMargin()).isEqualByComparingTo("4000.0000");
+        // BE-STK-07: MM nepromenjen.
+        assertThat(updated.getMaintenanceMargin()).isEqualByComparingTo("5000.0000");
         assertThat(marginTransactionRepository.count()).isEqualTo(1L);
         assertThat(marginTransactionRepository.findAll().get(0).getType())
                 .isEqualTo(MarginTransactionType.WITHDRAWAL);

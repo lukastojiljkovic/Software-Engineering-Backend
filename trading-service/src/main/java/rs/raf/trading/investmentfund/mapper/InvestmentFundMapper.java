@@ -41,7 +41,8 @@ public final class InvestmentFundMapper {
                 account.accountNumber(),
                 holdings,
                 performance,
-                fund.getInceptionDate());
+                fund.getInceptionDate(),
+                Boolean.TRUE.equals(fund.getReinvestDividends()));
     }
 
     public static InvestmentFundSummaryDto toSummaryDto(InvestmentFund fund,
@@ -56,6 +57,7 @@ public final class InvestmentFundMapper {
                 fundValue,
                 profit,
                 managerName,
-                fund.getInceptionDate());
+                fund.getInceptionDate(),
+                Boolean.TRUE.equals(fund.getReinvestDividends()));
     }
 }

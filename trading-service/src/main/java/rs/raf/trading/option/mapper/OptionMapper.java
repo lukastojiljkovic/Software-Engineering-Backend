@@ -43,6 +43,7 @@ public final class OptionMapper {
         dto.setVolume(option.getVolume());
         dto.setSettlementDate(option.getSettlementDate());
         dto.setContractSize(option.getContractSize());
+        dto.setMaintenanceMargin(option.getMaintenanceMargin());
         dto.setCreatedAt(option.getCreatedAt());
         dto.setCurrentStockPrice(currentPrice);
 

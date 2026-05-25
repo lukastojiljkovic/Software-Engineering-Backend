@@ -465,13 +465,25 @@ public class FundDividendService {
         return distributions;
     }
 
+    /**
+     * Dnevni catch-up scheduler (TODO_final C4 #14 / Sc 70): dispatch-uje
+     * preostale DIVIDEND_INFLOW transakcije po per-fund politici. Glavna
+     * dispatch logika sad zivi u {@code DividendService.dispatchFundDividendsByPolicy}
+     * koja se poziva odmah posle kvartalne isplate; ovaj scheduler je sigurnosna
+     * mreza za retry-ove (ako je primarni dispatch pao za neki fond, sledeci
+     * dan ovaj scheduler ce ga pokupiti).
+     */
     @Scheduled(cron = "0 30 2 * * *")
     public void scheduledDividendProcessing() {
         List<InvestmentFund> activeFunds = investmentFundRepository.findByActiveTrueOrderByNameAsc();
 
         for (InvestmentFund fund : activeFunds) {
             try {
-                reinvestDividends(fund.getId());
+                if (Boolean.TRUE.equals(fund.getReinvestDividends())) {
+                    reinvestDividends(fund.getId());
+                } else {
+                    distributeDividendsToClients(fund.getId());
+                }
             } catch (RuntimeException ex) {
                 log.error(
                         "B11 scheduled dividend processing failed for fund #{}: {}",

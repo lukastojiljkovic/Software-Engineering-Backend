@@ -293,7 +293,8 @@ class MarginAccountServiceTest {
     // ── deposit() tests ────────────────────────────────────────────────────────
 
     @Test
-    void deposit_success_increasesInitialMarginAndRecalculatesMaintenanceMargin() {
+    void deposit_success_increasesInitialMarginAndPreservesMaintenanceMargin() {
+        // BE-STK-07 (25.05.2026): MM je fiksiran pri kreiranju; deposit NE preracunava MM.
         MarginAccount account = activeMarginAccount(10L, "10000", "5000", MarginAccountStatus.ACTIVE);
 
         when(userResolver.resolveCurrent()).thenReturn(client(10L));
@@ -302,7 +303,8 @@ class MarginAccountServiceTest {
         marginAccountService.deposit(1L, new BigDecimal("2000"));
 
         assertThat(account.getInitialMargin()).isEqualByComparingTo("12000");
-        assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("6000");
+        // BE-STK-07: MM stays at 5000 (fixed pri kreiranju), nije preracunato u 6000.
+        assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("5000");
 
         verify(marginAccountRepository).save(account);
 
@@ -391,7 +393,8 @@ class MarginAccountServiceTest {
     // ── withdraw() tests ───────────────────────────────────────────────────────
 
     @Test
-    void withdraw_success_decreasesInitialMarginAndRecalculatesMaintenanceMargin() {
+    void withdraw_success_decreasesInitialMarginAndPreservesMaintenanceMargin() {
+        // BE-STK-07 (25.05.2026): MM je fiksiran pri kreiranju; withdraw NE preracunava MM.
         MarginAccount account = activeMarginAccount(10L, "10000", "5000", MarginAccountStatus.ACTIVE);
 
         when(userResolver.resolveCurrent()).thenReturn(client(10L));
@@ -400,7 +403,8 @@ class MarginAccountServiceTest {
         marginAccountService.withdraw(1L, new BigDecimal("2000"));
 
         assertThat(account.getInitialMargin()).isEqualByComparingTo("8000");
-        assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("4000");
+        // BE-STK-07: MM stays at 5000 (fixed pri kreiranju), nije preracunato u 4000.
+        assertThat(account.getMaintenanceMargin()).isEqualByComparingTo("5000");
 
         verify(marginAccountRepository).save(account);
 

@@ -11,6 +11,7 @@ import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.trading.client.BankaCoreClient;
 import rs.raf.trading.common.UserRole;
 import rs.raf.trading.investmentfund.service.FundLiquidationService;
+import rs.raf.trading.margin.service.MarginOrderSettlementService;
 import rs.raf.trading.notification.model.NotificationType;
 import rs.raf.trading.notification.service.NotificationService;
 import rs.raf.trading.order.event.OrderCompletedEvent;
@@ -84,6 +85,12 @@ public class OrderExecutionService {
     private final BankaCoreClient bankaCoreClient;
     private final ApplicationEventPublisher eventPublisher;
     private final NotificationService notificationService;
+    /**
+     * BE-STK-05: orchestrator za margin BUY/SELL split logiku. Optional dep —
+     * ako bean nije registrovan u test profilu, margin fill puca eksplicitno
+     * a regular path radi nesmetano.
+     */
+    private final MarginOrderSettlementService marginOrderSettlementService;
 
     /** Minimalan broj sekundi izmedju approval-a i prvog fill pokusaja (Phase 6). */
     @Value("${orders.execution.initial-delay-seconds:60}")
@@ -273,17 +280,27 @@ public class OrderExecutionService {
 
         // 5. Finansijske operacije preko banka-core internog seam-a (faza 2c rewire).
         //    Exception se propagira i @Transactional radi rollback.
+        // BE-STK-05: ako je margin order, settle ide kroz MarginOrderSettlementService
+        // (BUY split: bankPart→LoanValue+debit bankin racun, userPart→IM/reservedMargin).
+        int buyFillSeq = order.getQuantity()
+                - (order.getRemainingPortions() != null ? order.getRemainingPortions() : order.getQuantity());
         if (order.getDirection() == OrderDirection.BUY) {
-            // Pro-rata FX komisija za ovaj fill (iz order.fxCommission koji je bio
-            // rezervisan pri kreiranju/odobravanju). 0 za zaposlene ili single-currency.
-            BigDecimal fxForFill = proRataFxCommission(order, fillQuantity);
-            // Bank prihod = order commission + FX commission (oboje u valuti racuna/banke).
-            BigDecimal commissionForFill = commissionInAccount.add(fxForFill)
-                    .setScale(4, RoundingMode.HALF_UP);
-            // banka-core commit: zaduzi cenu fill-a sa rezervacije (cena -> trziste),
-            // kreditira bankin racun proviziom, proporcionalno smanji rezervaciju.
-            fundReservationService.consumeForBuyFill(order, fillQuantity, totalPriceInAccount, commissionForFill);
-            updatePortfolio(order, fillQuantity, executionPrice);
+            if (order.isMargin()) {
+                // BE-STK-05: margin BUY fill split.
+                marginOrderSettlementService.settleMarginBuyFill(order, buyFillSeq, totalPriceInAccount);
+                updatePortfolio(order, fillQuantity, executionPrice);
+            } else {
+                // Pro-rata FX komisija za ovaj fill (iz order.fxCommission koji je bio
+                // rezervisan pri kreiranju/odobravanju). 0 za zaposlene ili single-currency.
+                BigDecimal fxForFill = proRataFxCommission(order, fillQuantity);
+                // Bank prihod = order commission + FX commission (oboje u valuti racuna/banke).
+                BigDecimal commissionForFill = commissionInAccount.add(fxForFill)
+                        .setScale(4, RoundingMode.HALF_UP);
+                // banka-core commit: zaduzi cenu fill-a sa rezervacije (cena -> trziste),
+                // kreditira bankin racun proviziom, proporcionalno smanji rezervaciju.
+                fundReservationService.consumeForBuyFill(order, fillQuantity, totalPriceInAccount, commissionForFill);
+                updatePortfolio(order, fillQuantity, executionPrice);
+            }
         } else {
             // SELL: consumeForSellFill skida qty iz portfolia i reservedQuantity.
             // Prihod (totalPrice - commission) ide na racun naloga (reservedAccountId).
@@ -303,32 +320,40 @@ public class OrderExecutionService {
 
             fundReservationService.consumeForSellFill(order, portfolio, fillQuantity);
 
-            Long receivingAccountId = order.getReservedAccountId() != null
-                    ? order.getReservedAccountId()
-                    : order.getAccountId();
-            String receivingCurrencyCode = bankaCoreClient.getAccount(receivingAccountId).currencyCode();
-
-            BigDecimal netRevenueInAccount = totalPriceInAccount.subtract(commissionInAccount);
-
-            boolean multiCurrency = midRate.compareTo(BigDecimal.ONE) != 0
-                    && order.getListing().getListingType() != ListingType.FOREX;
-            BigDecimal fxFee = BigDecimal.ZERO;
-            if (!isEmployee && multiCurrency) {
-                fxFee = netRevenueInAccount.multiply(SELL_FX_MARGIN).setScale(4, RoundingMode.HALF_UP);
-                netRevenueInAccount = netRevenueInAccount.subtract(fxFee);
-            }
-
-            // banka-core credit: prihod ide prodavcu (cena "nastaje" iz trzista,
-            // verno monolitu), provizija + FX ide bankinom racunu (banka-core ga
-            // sam resolve-uje). banka-core pise audit Transaction.
             int sellFillSeq = order.getQuantity()
                     - (order.getRemainingPortions() != null ? order.getRemainingPortions() : order.getQuantity());
-            bankaCoreClient.creditFunds(
-                    "order-" + order.getId() + "-sell-fill-" + sellFillSeq,
-                    new CreditFundsRequest(receivingAccountId, netRevenueInAccount,
-                            commissionInAccount.add(fxFee), receivingCurrencyCode,
-                            "Order #" + order.getId() + " SELL fill " + sellFillSeq
-                                    + " (" + fillQuantity + " kom)"));
+
+            if (order.isMargin()) {
+                // BE-STK-05: margin SELL fill split.
+                // bankPart → smanjuje LoanValue (floor 0) + credit bankin trading racun
+                // userPart → add na IM
+                marginOrderSettlementService.settleMarginSellFill(order, sellFillSeq, totalPriceInAccount);
+            } else {
+                Long receivingAccountId = order.getReservedAccountId() != null
+                        ? order.getReservedAccountId()
+                        : order.getAccountId();
+                String receivingCurrencyCode = bankaCoreClient.getAccount(receivingAccountId).currencyCode();
+
+                BigDecimal netRevenueInAccount = totalPriceInAccount.subtract(commissionInAccount);
+
+                boolean multiCurrency = midRate.compareTo(BigDecimal.ONE) != 0
+                        && order.getListing().getListingType() != ListingType.FOREX;
+                BigDecimal fxFee = BigDecimal.ZERO;
+                if (!isEmployee && multiCurrency) {
+                    fxFee = netRevenueInAccount.multiply(SELL_FX_MARGIN).setScale(4, RoundingMode.HALF_UP);
+                    netRevenueInAccount = netRevenueInAccount.subtract(fxFee);
+                }
+
+                // banka-core credit: prihod ide prodavcu (cena "nastaje" iz trzista,
+                // verno monolitu), provizija + FX ide bankinom racunu (banka-core ga
+                // sam resolve-uje). banka-core pise audit Transaction.
+                bankaCoreClient.creditFunds(
+                        "order-" + order.getId() + "-sell-fill-" + sellFillSeq,
+                        new CreditFundsRequest(receivingAccountId, netRevenueInAccount,
+                                commissionInAccount.add(fxFee), receivingCurrencyCode,
+                                "Order #" + order.getId() + " SELL fill " + sellFillSeq
+                                        + " (" + fillQuantity + " kom)"));
+            }
         }
 
         // 6. Ažurirati nalog
@@ -445,7 +470,23 @@ public class OrderExecutionService {
         }
         try {
             if (order.getDirection() == OrderDirection.BUY) {
-                fundReservationService.releaseForBuy(order);
+                if (order.isMargin()) {
+                    // BE-STK-05: margin BUY rezervacija je u MarginAccount.reservedMargin,
+                    // ne u banka-core fund reservation. Rollback userPart koji je ostao u
+                    // reservedMargin posle parcijalnih fill-ova (visak).
+                    BigDecimal totalRemaining = order.getApproximatePrice() != null
+                            && order.getQuantity() != null && order.getRemainingPortions() != null
+                            ? order.getApproximatePrice()
+                                  .multiply(BigDecimal.valueOf(order.getRemainingPortions()))
+                                  .divide(BigDecimal.valueOf(order.getQuantity()), 4, java.math.RoundingMode.HALF_UP)
+                            : BigDecimal.ZERO;
+                    if (totalRemaining.signum() > 0) {
+                        marginOrderSettlementService.releaseMarginBuyReservation(order, totalRemaining);
+                    }
+                    order.setReservationReleased(true);
+                } else {
+                    fundReservationService.releaseForBuy(order);
+                }
             } else {
                 // Za fond-ordere: traži portfolio u FUND portfoliju, ne u supervizora
                 Long sellPortfolioUserId = order.getFundId() != null ? order.getFundId() : order.getUserId();

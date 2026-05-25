@@ -106,6 +106,20 @@ public class FundStatisticsService {
 
         BigDecimal averageMonthlyReturn = mean(monthlyReturns);
         BigDecimal annualizedReturn = computeAnnualizedReturn(averageMonthlyReturn);
+        if (annualizedReturn == null) {
+            // Fund bankrupt — avg monthly return <= -100%. Signal nedovoljne istorije
+            // (sufficientHistory=false) + log warning sa fund kontekstom. Sve ostale
+            // metrike (volatility / Sharpe) bi bile misleading bez return-a pa ih
+            // ne racunamo. maxDrawdown ostaje (vec smo ga setovali iznad) — on je
+            // historijski cinjenicni metrik nezavisan od return-a.
+            log.warn(
+                    "Fund statistics annualized return undefined (bankrupt path) "
+                            + "for fundId={}, fundName='{}', averageMonthlyReturn={}",
+                    fund.getId(), fund.getName(), averageMonthlyReturn);
+            return builder
+                    .sufficientHistory(false)
+                    .build();
+        }
         BigDecimal volatility = computeVolatility(monthlyReturns, averageMonthlyReturn);
         // Zaokruzi volatility PRE Sharpe racuna — ako je rounded volatility 0,
         // Sharpe je nedefinisan (uniform-growth slucaj). Sprecava BigDecimal precision
@@ -167,17 +181,22 @@ public class FundStatisticsService {
     /**
      * Annualized return iz prosecnog mesecnog prinosa (geometric):
      * {@code ((1 + avgMonthly)^12 - 1) * 100}. Vraca procenat.
+     *
+     * <p>Ako je {@code 1 + avgMonthly <= 0} (fond efektivno bankrupt — prosecan
+     * mesecni gubitak >= 100%), vraca {@code null} kao signal nedefinisanog
+     * return-a. Math.pow bi numericki radio (vraca neki broj za int exponent),
+     * ali rezultat bi bio misleading consumer-ima — bolje eksplicitan null signal
+     * koji {@link #computeStatistics(Long)} mapira u {@code sufficientHistory=false}
+     * + log warning, i koji FE MetricCell pravilno renderuje kao „—".</p>
      */
     BigDecimal computeAnnualizedReturn(BigDecimal averageMonthlyReturn) {
         BigDecimal base = ONE.add(averageMonthlyReturn, MC);
-        BigDecimal annualized;
         if (base.signum() <= 0) {
-            // pow sa BigDecimal radi za negative base + int exponent — ali da budemo
-            // safe, fallback na Math.pow (preciznost dovoljna za demo metrike)
-            annualized = BigDecimal.valueOf(Math.pow(base.doubleValue(), 12.0));
-        } else {
-            annualized = base.pow(12, MC);
+            // Fund bankrupt / near-bankrupt — vraca null kao signal nedefinisanog
+            // return-a (vidi BE-FND-02). Consumer (computeStatistics) hendluje.
+            return null;
         }
+        BigDecimal annualized = base.pow(12, MC);
         return annualized.subtract(ONE, MC).multiply(HUNDRED, MC);
     }
 

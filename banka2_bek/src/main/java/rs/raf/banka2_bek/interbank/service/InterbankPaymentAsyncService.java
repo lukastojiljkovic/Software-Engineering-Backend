@@ -33,6 +33,23 @@ public class InterbankPaymentAsyncService {
     @Async("interbankTaskExecutor")
     @Transactional(propagation = Propagation.NEVER)
     public void executeAsync(Long paymentId, Transaction tx) {
+        // BE-INT-04: idempotency guard.
+        // Spring @Async ne garantuje at-most-once preko app restart-a; ako se
+        // posle restart-a executor task queue rehydrate-uje, re-invoked async
+        // job moze flipnuti vec-terminal Payment (npr. COMPLETED → REJECTED).
+        // Guard: ako Payment vise nije u PROCESSING stanju, ovo je replay i
+        // izlazimo bez modifikacije stanja.
+        Payment current = paymentRepository.findById(paymentId).orElse(null);
+        if (current == null) {
+            log.warn("Skipping async settlement: payment {} not found (replay or deleted)", paymentId);
+            return;
+        }
+        if (current.getStatus() != PaymentStatus.PROCESSING) {
+            log.debug("Skipping async settlement for payment {} — already in terminal state {}",
+                    paymentId, current.getStatus());
+            return;
+        }
+
         try {
             transactionExecutorService.execute(tx);
         } catch (Exception e) {

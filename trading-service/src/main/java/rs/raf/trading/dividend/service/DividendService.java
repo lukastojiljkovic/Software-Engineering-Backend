@@ -18,6 +18,8 @@ import rs.raf.trading.dividend.dto.DividendPayoutDto;
 import rs.raf.trading.dividend.model.DividendPayout;
 import rs.raf.trading.dividend.repository.DividendPayoutRepository;
 import rs.raf.trading.investmentfund.model.ClientFundTransaction;
+import rs.raf.trading.investmentfund.model.InvestmentFund;
+import rs.raf.trading.investmentfund.repository.InvestmentFundRepository;
 import rs.raf.trading.investmentfund.service.FundDividendService;
 import rs.raf.trading.order.service.CurrencyConversionService;
 import rs.raf.trading.portfolio.model.Portfolio;
@@ -64,6 +66,7 @@ public class DividendService {
     private final TradingUserResolver userResolver;
     private final CurrencyConversionService currencyConversionService;
     private final FundDividendService fundDividendService;
+    private final InvestmentFundRepository investmentFundRepository;
 
     /**
      * Self-injection (lazy) sluzi da AOP proxy uhvati {@code @Transactional} u
@@ -140,6 +143,43 @@ public class DividendService {
 
         log.info("DividendService: kvartalna isplata zavrsena — isplaceno={}, preskoceno={}",
                 paid, skipped);
+
+        // TODO_final C4 #14 / Sc 70: posle DIVIDEND_INFLOW kreditiranja, dispatch
+        // svake fondovske dividende po politici fonda (reinvest vs distribute).
+        dispatchFundDividendsByPolicy();
+    }
+
+    /**
+     * TODO_final C4 #14 / Sc 70: itera kroz sve aktivne fondove i, za svaki sa
+     * pending DIVIDEND_INFLOW transakcijama, poziva odgovarajuci handler:
+     * <ul>
+     *   <li>{@code fund.reinvestDividends == true} —
+     *       {@link FundDividendService#reinvestDividends(Long)} kreira auto-BUY
+     *       ordere za top holdings fonda.</li>
+     *   <li>{@code fund.reinvestDividends == false} (default) —
+     *       {@link FundDividendService#distributeDividendsToClients(Long)}
+     *       prebacuje cash klijentima srazmerno totalInvested.</li>
+     * </ul>
+     *
+     * <p>Best-effort per fond — greska u jednom fondu ne blokira ostale.
+     * Idempotency je pokriven u FundDividendService preko ClientFundTransaction
+     * status tranzicije (DIVIDEND_INFLOW → REINVESTED/DISTRIBUTED).
+     */
+    public void dispatchFundDividendsByPolicy() {
+        List<InvestmentFund> activeFunds = investmentFundRepository.findByActiveTrueOrderByNameAsc();
+        for (InvestmentFund fund : activeFunds) {
+            try {
+                if (Boolean.TRUE.equals(fund.getReinvestDividends())) {
+                    fundDividendService.reinvestDividends(fund.getId());
+                } else {
+                    fundDividendService.distributeDividendsToClients(fund.getId());
+                }
+            } catch (Exception ex) {
+                log.error("TODO_final C4 #14: dispatch dividendi za fond #{} ({}) propao: {}",
+                        fund.getId(), fund.getName(), ex.getMessage(), ex);
+                // Nastavljamo — jedna greska ne sme da blokira ostale fondove.
+            }
+        }
     }
 
     // ── Jedna transakciona isplata ────────────────────────────────────────────

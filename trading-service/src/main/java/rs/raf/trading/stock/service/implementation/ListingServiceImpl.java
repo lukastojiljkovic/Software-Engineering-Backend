@@ -526,8 +526,14 @@ public class ListingServiceImpl implements ListingService {
         } else {
             ListingDailyPriceInfo existing = existingToday.get(0);
             existing.setPrice(newPrice);
-            if (high.compareTo(existing.getHigh()) > 0) existing.setHigh(high);
-            if (low.compareTo(existing.getLow()) < 0) existing.setLow(low);
+            // BE-STK-03 fix: null guard pre compareTo da spreci NPE kad prvi
+            // refresh ne persistuje high/low ili upstream snapshot ima null vrednosti
+            if (high != null && (existing.getHigh() == null || high.compareTo(existing.getHigh()) > 0)) {
+                existing.setHigh(high);
+            }
+            if (low != null && (existing.getLow() == null || low.compareTo(existing.getLow()) < 0)) {
+                existing.setLow(low);
+            }
             existing.setChange(priceChange);
             existing.setVolume(volume);
             dailyPriceRepository.save(existing);

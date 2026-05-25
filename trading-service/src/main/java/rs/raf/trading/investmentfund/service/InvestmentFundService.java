@@ -110,6 +110,8 @@ public class InvestmentFundService {
         fund.setCreatedAt(LocalDateTime.now());
         fund.setInceptionDate(LocalDate.now());
         fund.setActive(true);
+        // TODO_final C4 #14 / Sc 70: politika dividendi (default false = distribute klijentima).
+        fund.setReinvestDividends(Boolean.TRUE.equals(dto.getReinvestDividends()));
         fund = investmentFundRepository.save(fund);
 
         FundValueSnapshot initialSnapshot = new FundValueSnapshot();
@@ -914,6 +916,48 @@ public class InvestmentFundService {
     private record InvestorIdentity(Long userId, String userRole) {}
 
     private record InvestmentAmounts(BigDecimal amountRsd, BigDecimal debitAmount, BigDecimal fxCommission) {}
+
+    /**
+     * TODO_final C4 #14 / Sc 70: prebacuje fond izmedju distribute-to-clients
+     * i reinvest-via-orders politike obrade dividendi.
+     *
+     * <p>Authorization: ADMIN ili SUPERVISOR (fund manager). Provera role je
+     * na controller sloju ({@code @PreAuthorize}). Service dodatno proverava
+     * da je supervizor stvarno manager ovog fonda; admin nema to ogranicenje.
+     *
+     * @param fundId id fonda
+     * @param reinvest {@code true} za reinvest mod, {@code false} za distribute
+     * @param actorId id pozivaoca (employee id)
+     * @param isAdminActor da li pozivac ima ADMIN authority (override fund manager check)
+     * @return azurirani fund detail (sa novim {@code reinvestDividends} flag-om)
+     */
+    @Transactional
+    public InvestmentFundDetailDto updateDividendPolicy(Long fundId, Boolean reinvest, Long actorId, boolean isAdminActor) {
+        if (fundId == null) {
+            throw new IllegalArgumentException("Fund id must not be null");
+        }
+        if (reinvest == null) {
+            throw new IllegalArgumentException("Reinvest flag is required");
+        }
+
+        InvestmentFund fund = investmentFundRepository.findById(fundId)
+                .orElseThrow(() -> new EntityNotFoundException("Investment fund #" + fundId + " not found"));
+
+        // Non-admin supervisor mora biti manager ovog fonda. Admin moze za bilo koji.
+        if (!isAdminActor) {
+            if (actorId == null || !actorId.equals(fund.getManagerEmployeeId())) {
+                throw new AccessDeniedException("Samo admin ili menadzer fonda moze menjati politiku dividendi.");
+            }
+        }
+
+        fund.setReinvestDividends(reinvest);
+        investmentFundRepository.save(fund);
+
+        log.info("TODO_final C4 #14 / Sc 70: dividend policy updated for fund #{} -> reinvest={} (actor={}, admin={})",
+                fundId, reinvest, actorId, isAdminActor);
+
+        return getFundDetails(fundId);
+    }
 
     @Transactional
     public int reassignFundManager(Long oldSupervisorId, Long newAdminId) {

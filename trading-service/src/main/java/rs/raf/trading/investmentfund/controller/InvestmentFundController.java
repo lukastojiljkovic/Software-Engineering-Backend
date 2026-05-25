@@ -136,4 +136,40 @@ public class InvestmentFundController {
         return ResponseEntity.ok(
                 investmentFundService.reassignSingleFundManager(id, dto.getNewManagerEmployeeId()));
     }
+
+    /**
+     * TODO_final C4 #14 / Sc 70: politika obrade dividendi za fond.
+     *
+     * <p>Authorization: ADMIN ili SUPERVISOR. Service dodatno proverava da je
+     * non-admin supervizor stvarno manager ovog fonda.
+     *
+     * @param id fund id
+     * @param dto {@link UpdateDividendPolicyDto} sa {@code reinvest: boolean}
+     * @return azurirani fund detail
+     */
+    @PatchMapping("/{id}/dividend-policy")
+    @PreAuthorize("hasAnyAuthority('ROLE_ADMIN', 'ADMIN', 'SUPERVISOR')")
+    public ResponseEntity<InvestmentFundDetailDto> updateDividendPolicy(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateDividendPolicyDto dto) {
+        UserContext current = userResolver.resolveCurrent();
+        boolean isAdmin = hasAdminAuthority();
+        return ResponseEntity.ok(
+                investmentFundService.updateDividendPolicy(id, dto.getReinvest(), current.userId(), isAdmin));
+    }
+
+    /**
+     * Helper: proverava da li trenutni pozivac ima ADMIN authority. Ne mozemo
+     * koristiti {@code @PreAuthorize} samo za ADMIN jer endpoint dozvoljava i
+     * SUPERVISOR-a — service treba da zna da li je pozivac admin (override fund
+     * manager check) ili supervizor (mora biti manager fonda).
+     */
+    private boolean hasAdminAuthority() {
+        org.springframework.security.core.Authentication auth =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getAuthorities() == null) return false;
+        return auth.getAuthorities().stream()
+                .map(a -> a.getAuthority() == null ? "" : a.getAuthority())
+                .anyMatch(a -> a.equals("ROLE_ADMIN") || a.equals("ADMIN"));
+    }
 }

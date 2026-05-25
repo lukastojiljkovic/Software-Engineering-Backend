@@ -25,6 +25,8 @@ public final class InvestmentFundDtos {
         private BigDecimal profit;
         private String managerName;
         private LocalDate inceptionDate;
+        /** TODO_final C4 #14 / Sc 70: politika obrade dividendi (false=distribute, true=reinvest). */
+        private Boolean reinvestDividends;
     }
 
     /** Detaljan prikaz fonda */
@@ -44,6 +46,8 @@ public final class InvestmentFundDtos {
         private List<FundHoldingDto> holdings;
         private List<FundPerformancePointDto> performance;
         private LocalDate inceptionDate;
+        /** TODO_final C4 #14 / Sc 70: politika obrade dividendi (false=distribute, true=reinvest). */
+        private Boolean reinvestDividends;
     }
 
     /** Jedna hartija u fondu */
@@ -74,6 +78,29 @@ public final class InvestmentFundDtos {
         @NotBlank @Size(min = 3, max = 128) private String name;
         @Size(max = 1024) private String description;
         @NotNull @Positive private BigDecimal minimumContribution;
+        /** TODO_final C4 #14 / Sc 70: opciono — true znaci reinvest, false (default) znaci distribute. */
+        private Boolean reinvestDividends;
+
+        /** Backwards-compat 3-arg ctor (pre uvodjenja reinvestDividends polja). */
+        public CreateFundDto(String name, String description, BigDecimal minimumContribution) {
+            this.name = name;
+            this.description = description;
+            this.minimumContribution = minimumContribution;
+            this.reinvestDividends = null;
+        }
+    }
+
+    /**
+     * TODO_final C4 #14 / Sc 70: politika obrade dividendi.
+     *
+     * <p>Body za {@code PATCH /funds/{id}/dividend-policy}. Admin ili supervizor
+     * (fund manager) prebacuje fond izmedju "distribuiraj klijentima" i
+     * "reinvestiraj kroz auto-BUY ordere".
+     */
+    @Data @NoArgsConstructor @AllArgsConstructor
+    public static class UpdateDividendPolicyDto {
+        @NotNull
+        private Boolean reinvest;
     }
 
     /** Investicija u fond */

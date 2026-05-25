@@ -1,5 +1,7 @@
 package rs.raf.banka2_bek.auth.config;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import jakarta.servlet.FilterChain;
@@ -16,8 +18,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Per-IP rate limiting na auth endpoint-ima koji uzimaju kredencijale ili token-e:
@@ -58,8 +58,31 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
         this.capacity = capacity;
     }
 
-    /** IP → Bucket. ConcurrentHashMap dovoljan za few-thousand IP scale. */
-    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+    /**
+     * IP → Bucket cache.
+     *
+     * BE-AUTH-08 fix: prethodno je bila {@code ConcurrentHashMap} koja nikad nije
+     * evict-ovala unose, sto pod botnet napadom (1000 razlicitih source IP-ova
+     * iz iste mreze, ili spoofed XFF header-ima) raste neograniceno → memory leak.
+     *
+     * Caffeine cache sa {@code expireAfterAccess(15min)} (~3x window) i
+     * {@code maximumSize(50_000)} resava oba problema:
+     * <ul>
+     *   <li>idle IP-ovi koji nisu udarili u zadnjih 15min se brisu (3x bigger od
+     *       60s window-a — sigurno duže od bilo kog rate-limit zahteva)</li>
+     *   <li>maximumSize bound osigurava da napad sa milionima jedinstvenih IP-ova
+     *       ne moze da rasporedi sve dostupne memorije (Caffeine LRU evicts najstarije)</li>
+     * </ul>
+     *
+     * Side-effect (acceptable): napadac koji sa istim IP-em udari samo jednom u
+     * 15min i onda 60s+ kasnije ponovo, dobija fresh bucket — ali to je manje strogo
+     * od originalnog ponasanja samo na granici (15min idle). U praksi: brute-force
+     * pokusaji su sustained, evict nije problem.
+     */
+    private final Cache<String, Bucket> buckets = Caffeine.newBuilder()
+            .expireAfterAccess(Duration.ofMinutes(15))
+            .maximumSize(50_000)
+            .build();
 
     private static final java.util.Set<String> RATE_LIMITED_PATHS = java.util.Set.of(
             "/auth/login",
@@ -86,7 +109,9 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
         }
 
         String clientIp = resolveClientIp(request);
-        Bucket bucket = buckets.computeIfAbsent(clientIp, ip -> newBucket());
+        // BE-AUTH-08: Caffeine.get(key, fn) je atomic + thread-safe; null vrednost
+        // se nikad ne kesira jer newBucket() uvek vraca non-null.
+        Bucket bucket = buckets.get(clientIp, ip -> newBucket());
 
         if (bucket.tryConsume(1)) {
             chain.doFilter(request, response);
