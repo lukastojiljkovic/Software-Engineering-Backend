@@ -18,8 +18,33 @@ public interface OrderService {
      * 5. Klijentovi orderi su automatski APPROVED
      * 6. Izracunati approximatePrice = contractSize * pricePerUnit * quantity
      * 7. Provizija: Market 14% ili $7 (manje), Limit 24% ili $12 (manje)
+     *
+     * <p>Default flow (public REST): {@code internalActor=false}. Vidi
+     * {@link #createOrder(CreateOrderDto, boolean)} za interne pozivace
+     * koji preskacu OTP guard (npr. RecurringOrderService scheduler).
      */
-    OrderDto createOrder(CreateOrderDto dto);
+    default OrderDto createOrder(CreateOrderDto dto) {
+        return createOrder(dto, false);
+    }
+
+    /**
+     * Kreiranje ordera sa eksplicitnim {@code internalActor} flag-om.
+     *
+     * <p>{@code internalActor=false} (default, public REST flow): OTP guard u
+     * {@code OrderController} verifikuje {@code dto.otpCode} kroz banka-core
+     * pre nego sto se ova metoda pozove. OTP validaciju radi controller, ne servis.
+     *
+     * <p>{@code internalActor=true} (scheduler / system-initiated flow): pozivac
+     * je trading-service interni servis (npr. {@link rs.raf.trading.recurringorder.service.RecurringOrderService}),
+     * OTP guard se NE primenjuje (sistemska akcija, nema realnog korisnika
+     * koji moze da unese TOTP kod). Bilo koja eventualna pre-check validacija
+     * vezana za OTP/identitet (sad ili u buducnosti) treba da preskoci proveru.
+     *
+     * <p>Vazno: biznis logika (limit / approval / fund reservation / notify)
+     * je identicna za oba flag-a — flag samo dokumentuje da OTP guard ne stoji
+     * uzvodno od ovog poziva.
+     */
+    OrderDto createOrder(CreateOrderDto dto, boolean internalActor);
 
     /**
      * Supervizor odobrava order.

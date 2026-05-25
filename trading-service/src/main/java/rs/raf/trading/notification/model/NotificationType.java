@@ -9,36 +9,48 @@ import lombok.Getter;
  * Ostali tipovi (PAYMENT, TRANSFER, LIMIT_CHANGE, CARD_*, LOAN_*, ACCOUNT_LOCKED)
  * zive u banka2_bek/notification/model i nisu deo trgovinskog domena.
  *
- * <p>Trading {@code NotificationServiceImpl} svaki event publish-uje na RabbitMQ
- * kao {@code IN_APP_GENERIC} (best-effort, bez perzistencije — banka2_bek je
- * vlasnik {@code notifications} tabele).
+ * <p>Dva nezavisna flag-a:
+ * <ul>
+ *   <li>{@code sendsEmail} — kontrolise RabbitMQ {@code IN_APP_GENERIC} publish ka
+ *       {@code notification-service} (email kanal).</li>
+ *   <li>{@code sendsInApp} — kontrolise cross-DB poziv ka banka-core
+ *       {@code POST /internal/notifications}, sto perzistira notifikaciju u
+ *       {@code notifications} tabelu i pojavljuje je u FE NotificationBell-u.
+ *       Svi user-facing eventi imaju {@code true}; izrazito interni/debug
+ *       eventi imaju {@code false}.</li>
+ * </ul>
  */
 @Getter
 public enum NotificationType {
 
-    // Order lifecycle events
-    ORDER_PENDING(false),
-    ORDER_APPROVED(false),
-    ORDER_DECLINED(false),
-    ORDER_EXECUTED(false),
-    ORDER_PARTIAL_FILL(false),
-    ORDER_CANCELLED(false),
+    // Order lifecycle events — TODO_final C3 #5 trazi email obavestenja
+    ORDER_PENDING(true, true),
+    ORDER_APPROVED(true, true),
+    ORDER_DECLINED(true, true),
+    ORDER_EXECUTED(true, true),
+    ORDER_PARTIAL_FILL(true, true),
+    ORDER_CANCELLED(true, true),
 
-    // OTC events
-    OTC_COUNTER_OFFER(false),
-    OTC_ACCEPTED(false),
-    OTC_DECLINED(false),
-    OTC_CONTRACT_EXPIRING(false),
+    // OTC events — TODO_final C4 #12 trazi email obavestenja
+    OTC_COUNTER_OFFER(true, true),
+    OTC_ACCEPTED(true, true),
+    OTC_DECLINED(true, true),
+    OTC_CONTRACT_EXPIRING(true, true),
 
     // [B8 — Nikola Djurovic] Recurring order events
-    RECURRING_ORDER_SKIPPED(false),
+    RECURRING_ORDER_SKIPPED(true, true),
 
-    // Fallback
-    GENERAL(false);
+    // [B5 — Aleksa Vucinic] Price Alert okidan — TODO_final C3 #6 trazi email obavestenje
+    PRICE_ALERT_TRIGGERED(true, true),
+
+    // Fallback — interni, ne salje email niti in-app (debug/sysadmin)
+    GENERAL(false, false);
 
     private final boolean sendsEmail;
+    private final boolean sendsInApp;
 
-    NotificationType(boolean sendsEmail) {
+    NotificationType(boolean sendsEmail, boolean sendsInApp) {
         this.sendsEmail = sendsEmail;
+        this.sendsInApp = sendsInApp;
     }
 }

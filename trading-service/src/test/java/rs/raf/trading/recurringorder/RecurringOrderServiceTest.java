@@ -34,7 +34,9 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -352,11 +354,13 @@ public class RecurringOrderServiceTest {
         recurringOrderService.executeOne(order);
 
         ArgumentCaptor<CreateOrderDto> captor = ArgumentCaptor.forClass(CreateOrderDto.class);
-        verify(orderService).createOrder(captor.capture());
+        verify(orderService).createOrder(captor.capture(), eq(true));
         CreateOrderDto created = captor.getValue();
         assertThat(created.getQuantity()).isEqualTo(5);
         assertThat(created.getOrderType()).isEqualTo("MARKET");
         assertThat(created.getDirection()).isEqualTo("BUY");
+        // Internal actor flow ne setuje otpCode (sistemska akcija, nema TOTP koda)
+        assertThat(created.getOtpCode()).isNull();
     }
 
     @Test
@@ -389,9 +393,10 @@ public class RecurringOrderServiceTest {
         recurringOrderService.executeOne(order);
 
         ArgumentCaptor<CreateOrderDto> captor = ArgumentCaptor.forClass(CreateOrderDto.class);
-        verify(orderService).createOrder(captor.capture());
+        verify(orderService).createOrder(captor.capture(), eq(true));
         CreateOrderDto created = captor.getValue();
         assertThat(created.getQuantity()).isEqualTo(5); // floor(1000/200) = 5
+        assertThat(created.getOtpCode()).isNull();
     }
 
     @Test
@@ -423,7 +428,7 @@ public class RecurringOrderServiceTest {
 
         recurringOrderService.executeOne(order);
 
-        verify(orderService, never()).createOrder(any());
+        verify(orderService, never()).createOrder(any(), anyBoolean());
         verify(recurringOrderRepo).save(any());
     }
 
@@ -453,7 +458,44 @@ public class RecurringOrderServiceTest {
 
         recurringOrderService.executeOne(order);
 
-        verify(orderService, never()).createOrder(any());
+        verify(orderService, never()).createOrder(any(), anyBoolean());
         verify(recurringOrderRepo).save(any());
+    }
+
+    @Test
+    void executeOne_callsOrderServiceWithInternalActorTrue() {
+        // Verifikuje da RecurringOrderService scheduler poziva
+        // OrderService.createOrder sa internalActor=true (bypass OTP guard-a).
+        Listing listing = new Listing();
+        listing.setId(1L);
+        listing.setTicker("AAPL");
+        listing.setPrice(new BigDecimal("150"));
+        when(listingRepository.findById(1L)).thenReturn(Optional.of(listing));
+
+        when(bankaCoreClient.getAccount(1L))
+                .thenReturn(clientAccount(1L, 1L, new BigDecimal("1000")));
+
+        RecurringOrder order = RecurringOrder.builder()
+                .id(1L)
+                .ownerId(1L)
+                .ownerType("CLIENT")
+                .listingId(1L)
+                .direction("BUY")
+                .mode(RecurringMode.BY_QUANTITY)
+                .value(new BigDecimal("3"))
+                .accountId(1L)
+                .cadence(RecurringCadence.DAILY)
+                .nextRun(LocalDateTime.now(ZoneOffset.UTC))
+                .active(true)
+                .build();
+
+        when(recurringOrderRepo.save(any())).thenReturn(order);
+
+        recurringOrderService.executeOne(order);
+
+        // KRITICNO: internalActor flag mora biti true
+        verify(orderService).createOrder(any(CreateOrderDto.class), eq(true));
+        // I NIKAD ne sme da se zove sa false (public flow)
+        verify(orderService, never()).createOrder(any(CreateOrderDto.class), eq(false));
     }
 }

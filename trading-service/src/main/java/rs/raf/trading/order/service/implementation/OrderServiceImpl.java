@@ -115,7 +115,17 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional
-    public OrderDto createOrder(CreateOrderDto dto) {
+    public OrderDto createOrder(CreateOrderDto dto, boolean internalActor) {
+        // NOTE: OTP guard za public REST flow se izvrsava u OrderController-u
+        // (banka-core /internal/otp/verify) PRE poziva ove metode. Za interne
+        // pozivace (RecurringOrderService scheduler), internalActor=true
+        // dokumentuje da OTP guard ne stoji uzvodno i NE smemo da pretpostavimo
+        // realan korisnik koji je uneo TOTP kod (sistemska akcija).
+        if (internalActor) {
+            org.slf4j.LoggerFactory.getLogger(OrderServiceImpl.class)
+                    .info("createOrder: internal actor flow (OTP guard preskocen)");
+        }
+
         // Step 1: Validate input
         orderValidationService.validate(dto);
 

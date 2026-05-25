@@ -264,6 +264,10 @@ public class RecurringOrderService {
             //    ne dupliramo proveru ovde — exception ce nas dovesti u catch granu.
 
             // f. Kreiraj Market Order
+            //    Scheduler je sistemska akcija — nema realnog korisnika koji
+            //    moze da unese TOTP kod. Pozivamo overload sa internalActor=true
+            //    sto OrderServiceImpl prepoznaje kao bypass za OTP guard koji
+            //    bi inace stigao iz OrderController-a (public REST flow).
             CreateOrderDto orderDto = new CreateOrderDto();
             orderDto.setOrderType("MARKET");
             orderDto.setDirection(recurringOrder.getDirection());
@@ -272,9 +276,9 @@ public class RecurringOrderService {
             orderDto.setAccountId(recurringOrder.getAccountId());
             orderDto.setAllOrNone(false);
             orderDto.setMargin(false);
-            orderDto.setOtpCode("auto-generated-for-recurring");
+            // NE postavljamo otpCode — internalActor=true znaci da OTP guard ne stoji.
 
-            orderService.createOrder(orderDto);
+            orderService.createOrder(orderDto, true);
 
             log.info("Scheduler: Market order kreiran iz trajnog naloga id={}, quantity={}, listing={}",
                     recurringOrder.getId(), quantity, listing.getTicker());

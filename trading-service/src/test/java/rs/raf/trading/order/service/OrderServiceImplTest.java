@@ -248,6 +248,79 @@ class OrderServiceImplTest {
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    @Nested
+    @DisplayName("createOrder — internalActor overload (RecurringOrderService bypass)")
+    class InternalActorOverload {
+
+        @Test
+        @DisplayName("createOrder(dto) — default delegate poziva createOrder(dto, false)")
+        void defaultDelegate_invokesWithInternalActorFalse() {
+            // Public REST flow: OrderController poziva 1-arg createOrder(dto).
+            // Interface default delegate prosledjuje internalActor=false.
+            // Verifikujemo da rezultujuci order ima isti status kao kad
+            // se direktno pozove 2-arg overload sa internalActor=false.
+            CreateOrderDto dto = validMarketBuyDto();
+            asClient();
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            stubPriceServices("151", "755.0000");
+            when(orderStatusService.determineStatus("CLIENT", CLIENT_ID, new BigDecimal("755.0000")))
+                    .thenReturn(OrderStatus.APPROVED);
+            stubSave();
+
+            OrderDto resultViaDefault = orderService.createOrder(dto);
+
+            assertNotNull(resultViaDefault);
+            assertEquals("APPROVED", resultViaDefault.getStatus());
+            verify(orderRepository).save(any(Order.class));
+        }
+
+        @Test
+        @DisplayName("createOrder(dto, true) — internal actor flow uspesno kreira order (OTP bypass)")
+        void internalActorTrue_skipsOtpAndCreatesOrder() {
+            // RecurringOrderService scheduler poziva orderService.createOrder(dto, true).
+            // Nema OTP guard-a (sistemska akcija). Order se kreira isto kao
+            // i public flow — internalActor flag samo dokumentuje semantiku.
+            CreateOrderDto dto = validMarketBuyDto();
+            // NE postavljamo otpCode — sistemska akcija nema TOTP
+            asClient();
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            stubPriceServices("151", "755.0000");
+            when(orderStatusService.determineStatus("CLIENT", CLIENT_ID, new BigDecimal("755.0000")))
+                    .thenReturn(OrderStatus.APPROVED);
+            stubSave();
+
+            OrderDto result = orderService.createOrder(dto, true);
+
+            assertNotNull(result);
+            assertEquals("APPROVED", result.getStatus());
+            assertEquals("CLIENT", result.getUserRole());
+            verify(orderRepository).save(any(Order.class));
+        }
+
+        @Test
+        @DisplayName("createOrder(dto, false) — public flow, biznis logika identicna internal flow-u")
+        void internalActorFalse_sameBusinessLogicAsInternalTrue() {
+            // Public REST flow (OTP vec verifikovan u OrderController-u).
+            // Biznis logika je ista za oba flag-a — verifikujemo da i flow
+            // sa explicit internalActor=false uspesno kreira order.
+            CreateOrderDto dto = validMarketBuyDto();
+            dto.setOtpCode("123456"); // public flow obicno ima otpCode
+            asClient();
+            when(listingRepository.findById(1L)).thenReturn(Optional.of(testListing));
+            stubPriceServices("151", "755.0000");
+            when(orderStatusService.determineStatus("CLIENT", CLIENT_ID, new BigDecimal("755.0000")))
+                    .thenReturn(OrderStatus.APPROVED);
+            stubSave();
+
+            OrderDto result = orderService.createOrder(dto, false);
+
+            assertNotNull(result);
+            assertEquals("APPROVED", result.getStatus());
+            verify(orderRepository).save(any(Order.class));
+        }
+    }
+
     @Nested
     @DisplayName("AGENT kreiranje ordera")
     class AgentCreateOrder {
