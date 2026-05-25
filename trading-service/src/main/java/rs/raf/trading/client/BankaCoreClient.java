@@ -1,5 +1,6 @@
 package rs.raf.trading.client;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -11,6 +12,7 @@ import rs.raf.banka2.contracts.internal.CreditFundsResponse;
 import rs.raf.banka2.contracts.internal.DebitFundsRequest;
 import rs.raf.banka2.contracts.internal.DebitFundsResponse;
 import rs.raf.banka2.contracts.internal.InternalAccountDto;
+import rs.raf.banka2.contracts.internal.InternalNotificationRequest;
 import rs.raf.banka2.contracts.internal.InternalOtpVerifyRequest;
 import rs.raf.banka2.contracts.internal.InternalOtpVerifyResponse;
 import rs.raf.banka2.contracts.internal.InternalUserDto;
@@ -31,6 +33,7 @@ import java.util.List;
  * HTTP klijent ka banka-core internom /internal/funds SAGA API-ju (Korak 0).
  * Trgovinske SAGA operacije (2c+) ga koriste za novcane noge.
  */
+@Slf4j
 @Component
 public class BankaCoreClient {
 
@@ -251,6 +254,37 @@ public class BankaCoreClient {
      */
     public TaxCollectResponse collectTax(String idempotencyKey, TaxCollectRequest req) {
         return post("/internal/funds/tax-collect", idempotencyKey, req, TaxCollectResponse.class);
+    }
+
+    /**
+     * Cross-DB perzistencija in-app notifikacije u banka-core
+     * {@code notifications} tabelu. Best-effort: bilo koja greska (broker down,
+     * banka-core 5xx, mrezni timeout) se loguje na WARN i NE ruzi pozivni
+     * business flow. Trading-service nezavisno publishuje RabbitMQ email
+     * event, tako da nestanak in-app notifikacije nije fatalan.
+     *
+     * <p>Idempotency: {@link InternalNotificationRequest#idempotencyKey()} (obicno
+     * UUID); banka-core kesira odgovor i pri retry-u vraca 200 OK bez novog
+     * upisa u {@code notifications}. Pozivalac generise nov UUID po pozivu.
+     */
+    public void postNotification(InternalNotificationRequest req) {
+        try {
+            client.post()
+                    .uri("/internal/notifications")
+                    .body(req)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, (request, response) -> {
+                        throw new BankaCoreClientException(response.getStatusCode().value(),
+                                "banka-core POST /internal/notifications → " + response.getStatusCode());
+                    })
+                    .toBodilessEntity();
+        } catch (Exception ex) {
+            log.warn("Failed to persist in-app notification in banka-core (recipient={} {}, type={}): {}",
+                    req != null ? req.recipientType() : null,
+                    req != null ? req.recipientId() : null,
+                    req != null ? req.type() : null,
+                    ex.getMessage());
+        }
     }
 
     private static void addQueryParamIfPresent(UriBuilder builder, String name, String value) {

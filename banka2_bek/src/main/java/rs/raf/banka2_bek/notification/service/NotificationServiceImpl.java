@@ -9,6 +9,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import rs.raf.banka2.contracts.internal.InternalNotificationRequest;
 import rs.raf.banka2_bek.auth.util.UserRole;
 import rs.raf.banka2_bek.client.model.Client;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
@@ -76,6 +77,38 @@ public class NotificationServiceImpl implements NotificationService {
         if (notificationType.isSendsEmail()) {
             queueEmail(recipientId, recipientType, notificationType, title, body);
         }
+    }
+
+    /**
+     * Cross-DB ulaz za trading-service in-app notifikacije. Mapira string
+     * {@code type} u {@link NotificationType}; ako vrednost ne postoji u
+     * banka-core enum-u, koristi {@link NotificationType#GENERAL} kao fallback
+     * (logujemo WARN da znamo sta nedostaje). NE okida email — trading-service
+     * paralelno publishuje RabbitMQ event.
+     */
+    @Transactional
+    @Override
+    public void createInternalNotification(InternalNotificationRequest request) {
+        NotificationType type;
+        try {
+            type = NotificationType.valueOf(request.type());
+        } catch (IllegalArgumentException | NullPointerException ex) {
+            log.warn("Unknown NotificationType '{}' from trading-service, falling back to GENERAL",
+                    request.type());
+            type = NotificationType.GENERAL;
+        }
+
+        Notification notification = Notification.builder()
+                .recipientId(request.recipientId())
+                .recipientType(request.recipientType())
+                .notificationType(type)
+                .title(request.title() != null ? request.title() : "")
+                .body(request.message() != null ? request.message() : "")
+                .read(false)
+                .referenceType(request.referenceType())
+                .referenceId(request.referenceId())
+                .build();
+        notificationRepository.save(notification);
     }
 
     @Transactional(readOnly = true)

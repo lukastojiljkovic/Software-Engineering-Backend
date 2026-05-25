@@ -1,10 +1,20 @@
 package rs.raf.banka2_bek.notification.service;
 
 import org.springframework.data.domain.Page;
+import rs.raf.banka2.contracts.internal.InternalNotificationRequest;
 import rs.raf.banka2_bek.notification.dto.NotificationDto;
 import rs.raf.banka2_bek.notification.model.NotificationType;
 
 public interface NotificationService {
+
+    /**
+     * Cross-DB ulaz za in-app notifikacije iz trading-service-a (i drugih
+     * mikroservisa). Mapira string {@code type} u {@link NotificationType}
+     * (fallback {@code GENERAL} ako enum vrednost ne postoji u banka-core) i
+     * perzistira u {@code notifications} tabelu. NE okida email — trading-service
+     * vec publishuje RabbitMQ event paralelno.
+     */
+    void createInternalNotification(InternalNotificationRequest request);
 
     /**
      * [B1 — Foundation] Single entry point for raising a notification: persists
