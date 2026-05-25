@@ -153,17 +153,24 @@ class OrderServiceImplTest {
 
     private void asClient() {
         when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(CLIENT_ID, "CLIENT"));
+        // BE-ORD-02 fix: ensureTradingAccess zahteva TRADE_STOCKS za klijenta.
+        securityAuthorities("ROLE_CLIENT", "TRADE_STOCKS");
     }
 
     private void asEmployee() {
         when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(EMPLOYEE_ID, "EMPLOYEE"));
+        // BE-ORD-02 fix: ensureTradingAccess zahteva SUPERVISOR / ADMIN / AGENT za zaposlene.
+        // U OrderServiceImplTest postojeci scenariji su uglavnom AGENT-i (limit + needApproval).
+        securityAuthorities("ROLE_EMPLOYEE", "AGENT");
     }
 
     /** SecurityContext samo za getOrderById supervizorsku proveru authorities-a. */
-    private void securityAuthorities(String authority) {
+    private void securityAuthorities(String... authorities) {
+        List<SimpleGrantedAuthority> auths = java.util.Arrays.stream(authorities)
+                .map(SimpleGrantedAuthority::new)
+                .toList();
         SecurityContextHolder.getContext().setAuthentication(
-                new UsernamePasswordAuthenticationToken("user@test.com", null,
-                        List.of(new SimpleGrantedAuthority(authority))));
+                new UsernamePasswordAuthenticationToken("user@test.com", null, auths));
     }
 
     private CreateOrderDto validMarketBuyDto() {

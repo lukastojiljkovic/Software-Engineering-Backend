@@ -15,6 +15,12 @@ public class CardResponseDto {
     private Long id;
     private String cardNumber;
     private String cardName;
+    /**
+     * BE-ACC-01 (PCI-DSS): CVV se NIKAD ne vraca u response-u (uvek {@code null}).
+     * Polje je zadrzano radi backwards-compat sa starim FE/Mobile klijentima
+     * koji deserialize-uju DTO, ali serveri-side se uvek setuje na {@code null}
+     * (svi create/get/update/top-up endpoint-i).
+     */
     private String cvv;
     private CardType cardType;
     /** Kategorija: DEBIT / CREDIT / INTERNET_PREPAID. */

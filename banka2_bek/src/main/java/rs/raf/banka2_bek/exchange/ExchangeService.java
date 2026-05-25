@@ -1,5 +1,8 @@
 package rs.raf.banka2_bek.exchange;
 
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -13,9 +16,11 @@ import java.util.Map;
 @Service
 public class ExchangeService {
 
+    private static final Logger log = LoggerFactory.getLogger(ExchangeService.class);
+
     private final RestTemplate restTemplate;
 
-    @Value("${exchange.api.key}")
+    @Value("${exchange.api.key:}")
     private String apiKey;
 
     @Value("${exchange.api.url}")
@@ -30,6 +35,15 @@ public class ExchangeService {
         this.restTemplate = restTemplate;
     }
 
+    @PostConstruct
+    void warnIfApiKeyMissing() {
+        if (apiKey == null || apiKey.isBlank()) {
+            log.warn("SEC-01: exchange.api.key is empty — Fixer.io poziv se nece izvrsavati, "
+                    + "ExchangeService koristi fallback (NBS) kurseve. Postavi EXCHANGE_API_KEY "
+                    + "env var za live FX kurseve (production deployment MORA da setuje ovaj key).");
+        }
+    }
+
     public List<ExchangeRateDto> getAllRates() {
         if (cachedRates != null && (System.currentTimeMillis() - cacheTimestamp) < CACHE_TTL_MS) {
             return cachedRates;
@@ -40,6 +54,13 @@ public class ExchangeService {
     private synchronized List<ExchangeRateDto> fetchAndCacheRates() {
         // Double-check after acquiring lock
         if (cachedRates != null && (System.currentTimeMillis() - cacheTimestamp) < CACHE_TTL_MS) {
+            return cachedRates;
+        }
+
+        // SEC-01: ne salji zahtev ka Fixer.io bez validnog key-a — odmah fallback.
+        if (apiKey == null || apiKey.isBlank()) {
+            cachedRates = getFallbackRates();
+            cacheTimestamp = System.currentTimeMillis();
             return cachedRates;
         }
 

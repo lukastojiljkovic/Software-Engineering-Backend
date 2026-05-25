@@ -69,6 +69,7 @@ class PaymentServiceImplCoverageTest {
     @Mock private InterbankPaymentAsyncService interbankPaymentAsyncService;
     @Mock private InterbankTransactionRepository interbankTransactionRepository;
     @Mock private NotificationService notificationService;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     private PaymentServiceImpl paymentService;
 
@@ -80,7 +81,7 @@ class PaymentServiceImplCoverageTest {
                 exchangeService, notificationPublisher,
                 bankRoutingService, transactionExecutorService,
                 interbankPaymentAsyncService, interbankTransactionRepository,
-                "22200022", notificationService);
+                "22200022", notificationService, auditLogService);
         lenient().when(bankRoutingService.isLocalAccount(any())).thenReturn(true);
     }
 

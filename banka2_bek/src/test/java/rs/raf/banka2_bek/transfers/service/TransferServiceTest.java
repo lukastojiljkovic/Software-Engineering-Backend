@@ -55,6 +55,9 @@ public class TransferServiceTest {
     @Mock
     private NotificationService notificationService;
 
+    @Mock
+    private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
+
     private TransferService transferService;
 
     private Account fromAccount;
@@ -79,7 +82,7 @@ public class TransferServiceTest {
         SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_GLOBAL);
         transferService = new TransferService(
                 transferRepository, accountRepository, exchangeService,
-                clientRepository, notificationService);
+                clientRepository, notificationService, auditLogService);
         java.lang.reflect.Field field = TransferService.class.getDeclaredField("bankRegistrationNumber");
         field.setAccessible(true);
         field.set(transferService, "22200022");

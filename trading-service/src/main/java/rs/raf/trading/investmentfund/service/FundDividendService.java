@@ -284,6 +284,24 @@ public class FundDividendService {
         return createdOrders;
     }
 
+    /**
+     * Raspodeljuje preostali cash u fondu klijentima srazmerno {@code totalInvested}.
+     *
+     * <p><b>Concurrency / atomicnost (BE-FND-01):</b> Cela metoda je u jednom
+     * {@code @Transactional} bloku, ali svaki per-klijent {@code transferFunds}
+     * je nezavisna banka-core operacija. Da bi se izbeglo da concurrent
+     * withdrawal izmedju pre-check-a i finalnog transfer-a izazove 409 nakon
+     * sto su prethodni transferi vec uspeli (parcijalna raspodela →
+     * orphan funds), pre svake iteracije re-fetch-ujemo fund account i
+     * proveravamo {@code availableBalance}. Ako sredstva nedostaju, NE
+     * pokusavamo dalje da prebacujemo (ostala raspodela ostaje kao
+     * pending — log + early exit), tako da reconciler / sledeci poziv
+     * pokupi preostale ClientFundPosition-e bez double-debit-ovanja.
+     *
+     * <p>Idempotency kljucevi su deterministicki po
+     * {@code ClientFundTransaction.id} — ponovni poziv NE prebacuje dvaput
+     * isti red (banka-core idempotency cache).
+     */
     @Transactional
     public List<ClientFundTransaction> distributeDividendsToClients(Long fundId) {
         InvestmentFund fund = getActiveFund(fundId);
@@ -333,6 +351,7 @@ public class FundDividendService {
 
         List<ClientFundTransaction> distributions = new java.util.ArrayList<>();
         BigDecimal distributedSoFar = BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        boolean partialDistribution = false;
 
         for (int i = 0; i < positions.size(); i++) {
             ClientFundPosition position = positions.get(i);
@@ -357,6 +376,23 @@ public class FundDividendService {
                 continue;
             }
 
+            // BE-FND-01: re-fetch fund account pre svake per-iteration provere.
+            // Ako concurrent withdrawal smanji availableBalance, ne pokusavamo
+            // transfer (izbegava partial distribution + 409 mid-loop).
+            InternalAccountDto refreshedFundAccount = getFundAccount(fund);
+            if (scale(refreshedFundAccount.availableBalance()).compareTo(clientAmount) < 0) {
+                log.warn("B11 distribution prekinut: fund={} availableBalance={} pao ispod "
+                                + "potrebnog clientAmount={} (iteration={} of {}). Preostale pozicije "
+                                + "ostaju u pendingDividends za naredni run.",
+                        fundId,
+                        refreshedFundAccount.availableBalance(),
+                        clientAmount,
+                        i,
+                        positions.size());
+                partialDistribution = true;
+                break;
+            }
+
             InternalAccountDto destinationAccount = resolveClientRsdAccount(position.getUserId());
 
             ClientFundTransaction distribution = new ClientFundTransaction();
@@ -374,7 +410,8 @@ public class FundDividendService {
             ClientFundTransaction savedDistribution = clientFundTransactionRepository.save(distribution);
 
             // banka-core transfer: fond racun (RSD) -> klijentov RSD racun.
-            // Idempotency kljuc je deterministicki po ClientFundTransaction id-u.
+            // Idempotency kljuc je deterministicki po ClientFundTransaction id-u
+            // (ponovni poziv NE prebacuje dvaput isti red).
             try {
                 bankaCoreClient.transferFunds(
                         "fund-dividend-distribution-" + savedDistribution.getId(),
@@ -385,6 +422,13 @@ public class FundDividendService {
                                 "B11 dividenda fundId=" + fundId + " clientTx#" + savedDistribution.getId()));
             } catch (BankaCoreClientException ex) {
                 if (ex.getHttpStatus() == 409) {
+                    // Concurrent withdrawal je uspeo izmedju mid-loop check-a i
+                    // ovog transfera. Bacamo InsufficientFundsException pa cela
+                    // {@code @Transactional} radi rollback — prethodno
+                    // perzistirane ClientFundTransaction redove brisemo zajedno
+                    // sa banka-core transferima (transferi su vec commit-ovani
+                    // u banka-core; idempotency kljucevi sprecavaju duplikate
+                    // pri retry-u, a reconciler resi orphans).
                     throw new InsufficientFundsException(
                             "Nedovoljno sredstava na racunu fonda za raspodelu dividende."
                     );
@@ -395,20 +439,27 @@ public class FundDividendService {
             distributions.add(savedDistribution);
         }
 
-        for (ClientFundTransaction pending : pendingDividends) {
-            pending.setStatus(ClientFundTransactionStatus.DIVIDEND_DISTRIBUTED);
-            pending.setCompletedAt(LocalDateTime.now());
-            pending.setFailureReason("DIVIDEND_DISTRIBUTED totalAmount=" + totalDividend);
-            clientFundTransactionRepository.save(pending);
+        // Pending dividende oznacavamo DIVIDEND_DISTRIBUTED SAMO ako je raspodela
+        // u potpunosti zavrsena. Pri parcijalnoj raspodeli ostavljamo ih kao
+        // DIVIDEND_INFLOW da ih sledeci run pokupi (idempotentni kljucevi
+        // spreceavaju double-pay onih klijenata koji su vec dobili svoj deo).
+        if (!partialDistribution) {
+            for (ClientFundTransaction pending : pendingDividends) {
+                pending.setStatus(ClientFundTransactionStatus.DIVIDEND_DISTRIBUTED);
+                pending.setCompletedAt(LocalDateTime.now());
+                pending.setFailureReason("DIVIDEND_DISTRIBUTED totalAmount=" + totalDividend);
+                clientFundTransactionRepository.save(pending);
+            }
         }
 
         fundValueSnapshotScheduler.snapshotFundIfMissing(fund);
 
         log.info(
-                "B11 dividends distributed: fund={}, total={}, clients={}",
+                "B11 dividends distributed: fund={}, total={}, clients={}, partial={}",
                 fundId,
                 totalDividend,
-                distributions.size()
+                distributions.size(),
+                partialDistribution
         );
 
         return distributions;

@@ -36,6 +36,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -49,6 +51,8 @@ class LoanServiceImplTest {
     @Mock private CurrencyRepository currencyRepository;
     @Mock private NotificationPublisher notificationPublisher;
     @Mock private NotificationService notificationService;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
+    @Mock private rs.raf.banka2_bek.employee.repository.EmployeeRepository employeeRepository;
 
     private LoanServiceImpl loanService;
 
@@ -62,7 +66,8 @@ class LoanServiceImplTest {
         loanService = new LoanServiceImpl(
                 loanRequestRepository, loanRepository, installmentRepository,
                 accountRepository, clientRepository, currencyRepository,
-                notificationPublisher, "22200022", notificationService);
+                notificationPublisher, "22200022", notificationService,
+                auditLogService, employeeRepository);
 
         rsd = new Currency();
         rsd.setId(8L);
@@ -252,6 +257,40 @@ class LoanServiceImplTest {
             assertThatThrownBy(() -> loanService.approveLoanRequest(1L))
                     .isInstanceOf(RuntimeException.class)
                     .hasMessageContaining("vec obradjen");
+        }
+
+        @Test
+        @DisplayName("BE-PAY-01: audit hook firing for LOAN_APPROVED")
+        void firesLoanApprovedAuditHook() {
+            // Verifikuje da approveLoanRequest okida AuditLogService.record sa
+            // LOAN_APPROVED action type-om.
+            LoanRequest request = LoanRequest.builder()
+                    .id(5L).loanType(LoanType.CASH).interestType(InterestType.FIXED)
+                    .amount(BigDecimal.valueOf(50000)).currency(rsd)
+                    .repaymentPeriod(12).account(account).client(client)
+                    .status(LoanStatus.PENDING).build();
+
+            when(loanRequestRepository.findById(5L)).thenReturn(Optional.of(request));
+            when(loanRequestRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(loanRepository.save(any(Loan.class))).thenAnswer(inv -> {
+                Loan l = inv.getArgument(0);
+                l.setId(5L);
+                return l;
+            });
+            when(accountRepository.findForUpdateById(1L)).thenReturn(Optional.of(account));
+            when(accountRepository.findBankAccountForUpdateByCurrency("22200022", "RSD")).thenReturn(Optional.of(bankAccount));
+            when(accountRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(installmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            loanService.approveLoanRequest(5L);
+
+            verify(auditLogService).record(
+                    any(),
+                    any(),
+                    eq(rs.raf.banka2_bek.audit.model.AuditActionType.LOAN_APPROVED),
+                    anyString(),
+                    eq("LOAN"),
+                    eq(5L));
         }
     }
 

@@ -50,6 +50,8 @@ class LoanServiceImplCoverageTest {
     @Mock private CurrencyRepository currencyRepository;
     @Mock private NotificationPublisher notificationPublisher;
     @Mock private NotificationService notificationService;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
+    @Mock private rs.raf.banka2_bek.employee.repository.EmployeeRepository employeeRepository;
 
     private LoanServiceImpl loanService;
 
@@ -63,7 +65,8 @@ class LoanServiceImplCoverageTest {
         loanService = new LoanServiceImpl(
                 loanRequestRepository, loanRepository, installmentRepository,
                 accountRepository, clientRepository, currencyRepository,
-                notificationPublisher, "22200022", notificationService);
+                notificationPublisher, "22200022", notificationService,
+                auditLogService, employeeRepository);
 
         rsd = new Currency();
         rsd.setId(8L);

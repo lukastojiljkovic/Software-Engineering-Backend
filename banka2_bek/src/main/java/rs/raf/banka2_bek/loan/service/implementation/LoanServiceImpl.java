@@ -21,6 +21,11 @@ import rs.raf.banka2_bek.loan.repository.LoanRequestRepository;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.notification.model.NotificationType;
 import rs.raf.banka2_bek.notification.service.NotificationService;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -43,6 +48,9 @@ public class LoanServiceImpl implements LoanService {
     private final NotificationPublisher notificationPublisher;
     private final String bankRegistrationNumber;
     private final NotificationService notificationService;
+    // BE-PAY-01: audit hooks za loan lifecycle (approve/reject/early-repay)
+    private final AuditLogService auditLogService;
+    private final EmployeeRepository employeeRepository;
 
     public LoanServiceImpl(LoanRequestRepository loanRequestRepository,
                            LoanRepository loanRepository,
@@ -52,7 +60,9 @@ public class LoanServiceImpl implements LoanService {
                            CurrencyRepository currencyRepository,
                            NotificationPublisher notificationPublisher,
                            @Value("${bank.registration-number}") String bankRegistrationNumber,
-                           NotificationService notificationService) {
+                           NotificationService notificationService,
+                           AuditLogService auditLogService,
+                           EmployeeRepository employeeRepository) {
         this.loanRequestRepository = loanRequestRepository;
         this.loanRepository = loanRepository;
         this.installmentRepository = installmentRepository;
@@ -62,6 +72,37 @@ public class LoanServiceImpl implements LoanService {
         this.notificationPublisher = notificationPublisher;
         this.bankRegistrationNumber = bankRegistrationNumber;
         this.notificationService = notificationService;
+        this.auditLogService = auditLogService;
+        this.employeeRepository = employeeRepository;
+    }
+
+    /**
+     * BE-PAY-01 audit hook: best-effort — ne sme da fail-uje pozivajucu transakciju.
+     */
+    private void recordAuditSafe(Long actorId, String actorType, AuditActionType action,
+                                 String description, String targetType, Long targetId) {
+        try {
+            auditLogService.record(actorId, actorType, action, description, targetType, targetId);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action={} target={}/{}: {}",
+                    action, targetType, targetId, e.getMessage());
+        }
+    }
+
+    /**
+     * Resolve trenutno autentifikovanog employee-ja (za approve/reject). Vraca null
+     * ako ne moze da resolve-uje — auditing se moze i bez actorId-ja.
+     */
+    private Long resolveCurrentEmployeeId() {
+        try {
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getName() != null) {
+                return employeeRepository.findByEmail(auth.getName())
+                        .map(rs.raf.banka2_bek.employee.model.Employee::getId)
+                        .orElse(null);
+            }
+        } catch (RuntimeException ignored) {}
+        return null;
     }
 
     @Override
@@ -261,6 +302,16 @@ public class LoanServiceImpl implements LoanService {
             log.warn("Failed to send loan approved notification: {}", e.getMessage());
         }
 
+        // BE-PAY-01: audit hook za loan approval
+        Long actorId = resolveCurrentEmployeeId();
+        recordAuditSafe(
+                actorId != null ? actorId : request.getClient().getId(),
+                actorId != null ? "EMPLOYEE" : "CLIENT",
+                AuditActionType.LOAN_APPROVED,
+                "Loan " + loan.getLoanNumber() + " (" + loan.getAmount() + " "
+                        + loan.getCurrency().getCode() + ") approved for client " + request.getClient().getId(),
+                "LOAN", loan.getId());
+
         return toLoanResponse(loan);
     }
 
@@ -286,6 +337,16 @@ public class LoanServiceImpl implements LoanService {
         } catch (Exception e) {
             log.warn("Failed to send loan rejection notification email", e);
         }
+
+        // BE-PAY-01: audit hook za loan rejection
+        Long actorId = resolveCurrentEmployeeId();
+        recordAuditSafe(
+                actorId != null ? actorId : request.getClient().getId(),
+                actorId != null ? "EMPLOYEE" : "CLIENT",
+                AuditActionType.LOAN_REJECTED,
+                "Loan request #" + requestId + " (" + request.getAmount() + " "
+                        + request.getCurrency().getCode() + ") rejected for client " + request.getClient().getId(),
+                "LOAN_REQUEST", requestId);
 
         return response;
     }
@@ -400,6 +461,14 @@ public class LoanServiceImpl implements LoanService {
         loan.setStatus(LoanStatus.PAID_OFF);
         loan.setEndDate(today);
         loanRepository.save(loan);
+
+        // BE-PAY-01: audit hook za early repayment
+        recordAuditSafe(
+                client.getId(), "CLIENT",
+                AuditActionType.LOAN_EARLY_REPAYMENT,
+                "Early repayment of loan " + loan.getLoanNumber() + " (payoff=" + payoffAmount
+                        + " " + loan.getCurrency().getCode() + ")",
+                "LOAN", loan.getId());
 
         return toLoanResponse(loan);
     }

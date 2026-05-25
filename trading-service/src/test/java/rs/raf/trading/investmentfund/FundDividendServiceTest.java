@@ -423,6 +423,78 @@ class FundDividendServiceTest {
         verify(fundValueSnapshotScheduler, never()).snapshotFundIfMissing(fund);
     }
 
+    /**
+     * BE-FND-01 regression test: ako concurrent withdrawal smanji
+     * availableBalance na fond racunu izmedju iteracija, distribute mora da
+     * EARLY EXIT-uje (ne pokusava sledeci transfer) i NE sme da markira
+     * pendingDividends kao DISTRIBUTED — sledeci run pokuplja preostale
+     * pozicije bez double-pay-a (idempotency kljucevi to dodatno cuvaju).
+     */
+    @Test
+    @DisplayName("distributeDividendsToClients_concurrentWithdrawalMidLoop_exitsEarlyAndKeepsPending")
+    void distributeDividendsToClients_concurrentWithdrawalMidLoop_exitsEarlyAndKeepsPending() {
+        InvestmentFund fund = activeFund(1L, 100L);
+        // Pretpocetni snimak fund racuna: 2000 raspolozivo (pre-check prolazi).
+        InternalAccountDto initialFundAccount = fundAccountDto(100L, "2000.0000", "2000.0000");
+        // Drugi snimak (refresh PRE prve iteracije) i dalje 2000 — prvi klijent prolazi.
+        // Treci snimak (refresh PRE druge iteracije) je vec smanjen na 100 — DRUGI klijent fail-uje (100 < 300).
+        InternalAccountDto drainedFundAccount = fundAccountDto(100L, "100.0000", "100.0000");
+
+        InternalAccountDto clientOneAccount = clientAccountDto(201L, 11L);
+
+        ClientFundTransaction pendingDividend = dividendTx(
+                1L,
+                10L,
+                "1000.0000",
+                ClientFundTransactionStatus.DIVIDEND_INFLOW
+        );
+
+        ClientFundPosition positionOne = position(1L, 1L, 11L, "700.0000");
+        ClientFundPosition positionTwo = position(2L, 1L, 22L, "300.0000");
+
+        when(investmentFundRepository.findById(1L)).thenReturn(Optional.of(fund));
+        // 1. poziv pri ulasku (pre-check totalDividend vs available)
+        // 2. poziv refresh pre 1. iteracije (700 RSD, prolazi)
+        // 3. poziv refresh pre 2. iteracije (100 RSD, fail - early exit)
+        when(bankaCoreClient.getAccount(100L))
+                .thenReturn(initialFundAccount, initialFundAccount, drainedFundAccount);
+        when(clientFundTransactionRepository.findByFundIdAndStatusOrderByCreatedAtAsc(
+                1L,
+                ClientFundTransactionStatus.DIVIDEND_INFLOW
+        )).thenReturn(List.of(pendingDividend));
+        when(clientFundPositionRepository.findByFundId(1L))
+                .thenReturn(List.of(positionOne, positionTwo));
+
+        when(bankaCoreClient.getPreferredAccount(UserRole.CLIENT, 11L, "RSD"))
+                .thenReturn(clientOneAccount);
+
+        when(clientFundTransactionRepository.save(any(ClientFundTransaction.class)))
+                .thenAnswer(invocation -> {
+                    ClientFundTransaction tx = invocation.getArgument(0);
+                    if (tx.getId() == null) {
+                        tx.setId(950L);
+                    }
+                    return tx;
+                });
+
+        List<ClientFundTransaction> distributions = service.distributeDividendsToClients(1L);
+
+        // Samo prva isplata prosla (klijent 11), druga (klijent 22) NIJE pokusana.
+        assertEquals(1, distributions.size());
+        verify(bankaCoreClient, org.mockito.Mockito.times(1))
+                .transferFunds(anyString(), any(TransferFundsRequest.class));
+
+        // KRITICNO: pendingDividends NIJE oznacen DIVIDEND_DISTRIBUTED — ostaje INFLOW
+        // za sledeci run koji ce pokupiti klijenta 22.
+        assertEquals(ClientFundTransactionStatus.DIVIDEND_INFLOW, pendingDividend.getStatus());
+
+        // resolveClientRsdAccount za klijenta 22 NIKAD nije pozvan (early exit pre toga).
+        verify(bankaCoreClient, never())
+                .getPreferredAccount(eq(UserRole.CLIENT), eq(22L), anyString());
+
+        verify(fundValueSnapshotScheduler).snapshotFundIfMissing(fund);
+    }
+
     @Test
     @DisplayName("scheduledDividendProcessing continues with other funds if one fund fails")
     void scheduledDividendProcessing_exceptionInOneFund_continuesOthers() {

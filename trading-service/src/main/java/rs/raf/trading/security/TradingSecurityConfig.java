@@ -9,6 +9,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import rs.raf.trading.internalapi.config.InternalAuthFilter;
 
 /**
@@ -104,6 +105,21 @@ public class TradingSecurityConfig {
                         "ROLE_ADMIN", "ADMIN", "SUPERVISOR")
                 .requestMatchers("/dividends/**").authenticated()          // B9
                 .anyRequest().authenticated())
+            // CI-05: defense-in-depth security response headers (paritet sa
+            // banka2_bek GlobalSecurityConfig). Gateway (nginx) takodje setuje
+            // ove header-e na egress, ali trading-service moze biti direktno
+            // pristupljen za debug (host port 8082) — bez ovoga su odgovori
+            // bez nosniff/HSTS/frame-deny po default-u.
+            .headers(headers -> headers
+                    .contentTypeOptions(c -> {})       // X-Content-Type-Options: nosniff
+                    .frameOptions(f -> f.deny())       // X-Frame-Options: DENY (clickjacking)
+                    .httpStrictTransportSecurity(hsts -> hsts
+                            .includeSubDomains(true)
+                            .maxAgeInSeconds(31_536_000)) // 1 godina HSTS
+                    .referrerPolicy(r -> r.policy(
+                            ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                    .permissionsPolicyHeader(p -> p.policy(
+                            "geolocation=(), microphone=(), camera=()")))
             .addFilterBefore(internalAuthFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

@@ -1,5 +1,6 @@
 package rs.raf.trading.dividend;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -7,6 +8,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.test.util.ReflectionTestUtils;
 import rs.raf.banka2.contracts.internal.CreditFundsRequest;
 import rs.raf.banka2.contracts.internal.InternalAccountDto;
 import rs.raf.trading.client.BankaCoreClient;
@@ -73,6 +75,21 @@ class DividendServiceTest {
 
     @Mock
     private CurrencyConversionService currencyConversionService;
+
+    /**
+     * BE-FND-03 fix: {@code DividendService} ima self-injected proxy field
+     * (@code self}) preko kog ide poziv {@code payDividendForOwner} iz
+     * {@code processQuarterlyDividends} (bez toga intra-class self-invoke
+     * zaobilazi {@code @Transactional} AOP). Mockito {@code @InjectMocks} ne
+     * popunjava ovaj field — pa ga rucno setujemo na sam SUT instance u
+     * {@link #setUpSelfProxy()}. U test okruzenju nemamo Spring kontekst,
+     * pa nema pravog proxy-ja — ali za potrebe verify-ja poziva ovo je
+     * dovoljno (test pokrivenost transakcionog ponasanja je odvojena).
+     */
+    @BeforeEach
+    void setUpSelfProxy() {
+        ReflectionTestUtils.setField(dividendService, "self", dividendService);
+    }
 
     // ── Pomocni byggeri ───────────────────────────────────────────────────────
 

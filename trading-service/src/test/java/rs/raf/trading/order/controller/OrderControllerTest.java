@@ -284,4 +284,35 @@ class OrderControllerTest {
                     .andExpect(jsonPath("$.error").value("Listing not found"));
         }
     }
+
+    @Nested
+    @DisplayName("403 — AccessDenied (BE-ORD-02 trading access gate)")
+    class AccessDeniedCases {
+
+        @Test
+        @DisplayName("CLIENT bez TRADE_STOCKS → 403")
+        void clientWithoutTradeStocksReturns403() throws Exception {
+            when(orderService.createOrder(any()))
+                    .thenThrow(new org.springframework.security.access.AccessDeniedException(
+                            "Nemate dozvolu za trgovinu hartijama (TRADE_STOCKS permisija nije dodeljena)."));
+
+            mockMvc.perform(post("/orders")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(validMarketBuyJson()))
+                    .andExpect(status().isForbidden());
+        }
+
+        @Test
+        @DisplayName("Zaposleni bez SUPERVISOR/ADMIN/AGENT → 403")
+        void employeeWithoutTradeAuthorityReturns403() throws Exception {
+            when(orderService.createOrder(any()))
+                    .thenThrow(new org.springframework.security.access.AccessDeniedException(
+                            "Zaposleni mora imati SUPERVISOR, ADMIN ili AGENT autoritet za trgovinu."));
+
+            mockMvc.perform(post("/orders")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(validMarketBuyJson()))
+                    .andExpect(status().isForbidden());
+        }
+    }
 }

@@ -210,12 +210,77 @@ public class ListingServiceImpl implements ListingService {
         return dailyPrices.stream().map(ListingMapper::toDailyPriceDto).toList();
     }
 
+    /**
+     * Osvezavanje cena svih listinga.
+     *
+     * <p><b>NE @Transactional na celoj metodi.</b> Razlog: Alpha Vantage besplatni
+     * tier dozvoljava 5 poziva/min, pa {@link #fetchAlphaVantagePrice} drzi
+     * {@code Thread.sleep(12_000)} izmedju poziva. Sa N STOCK listinga,
+     * trajanje petlje je N×12s (1-6 min). Ako je ova metoda jedan veliki
+     * {@code @Transactional}, HikariCP connection se drzi celo to vreme i
+     * connection pool se iscrpljuje pod manjim opterecenjem.
+     *
+     * <p>Refaktor (BE-STK-01 fix): split u dve faze:
+     * <ol>
+     *   <li><b>Phase A (no Tx)</b> — {@link #fetchPricesForListings} cita
+     *       sve listing-e (readOnly Tx, drzi se kratko), pa van Tx iterira i
+     *       fetch-uje cene sa AV / fixer.io (sa sleep-ovima). Mutira detached
+     *       {@code Listing} objekte in-memory.</li>
+     *   <li><b>Phase B (writable Tx)</b> — {@link #persistRefreshedPrices}
+     *       u jednoj kratkoj transakciji {@code saveAll(listings)} +
+     *       {@code saveDailyPriceSnapshot(...)} za svaki ne-null listing.
+     *       Tx traje samo dok DB ne potvrdi save (sekunde, ne minute).</li>
+     * </ol>
+     */
     @Override
-    @Transactional
     public void refreshPrices() {
-        List<Listing> listings = listingRepository.findAll();
+        // Phase A: load listings + fetch external prices VAN Tx (Thread.sleep ne blokira DB).
+        List<Listing> listings = loadListingsForRefresh();
         Map<String, Boolean> testModeByAcronym = loadExchangeTestModeMap();
+        fetchPricesForListings(listings, testModeByAcronym);
 
+        // Phase B: persist u maloj writable Tx. saveAll + dnevni snapshot-i.
+        persistRefreshedPrices(listings);
+
+        // B5 — Cenovni alarmi: posle osvezenja cena pozovi PriceAlertService
+        // da evaluira sve aktivne alarme za promenjene listinge. Best-effort —
+        // greska ne sme da prekine refresh-prices ciklus. PriceAlertScheduler
+        // u pozadini i dalje radi na 60s kao primarni mehanizam (ovde je hook
+        // za brzu reakciju cim se cena osvezi).
+        try {
+            PriceAlertService priceAlertService = priceAlertServiceProvider != null
+                    ? priceAlertServiceProvider.getIfAvailable() : null;
+            if (priceAlertService != null && !listings.isEmpty()) {
+                int triggered = priceAlertService.checkAlerts(listings);
+                if (triggered > 0) {
+                    log.info("B5 PriceAlert hook: triggered {} alerts after price refresh", triggered);
+                }
+            }
+        } catch (RuntimeException ex) {
+            log.warn("B5 PriceAlert evaluation hook pukao: {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * Phase A.1: load all listings. Kratak readOnly Tx — drzi konekciju samo
+     * dok JPA ne materijalizuje rezultat, pa se vraca pre nego sto pocnu AV
+     * sleep-ovi. Objekti se vracaju kao detached entiteti.
+     */
+    @Transactional(readOnly = true)
+    public List<Listing> loadListingsForRefresh() {
+        return listingRepository.findAll();
+    }
+
+    /**
+     * Phase A.2 (NE @Transactional): For each listing, fetch external price
+     * data (Alpha Vantage / fixer.io / random) and mutate the {@code Listing}
+     * objects in-memory. Thread.sleep poziva BezNet ne drzi DB konekciju.
+     *
+     * <p>Package-private za testabilnost — direktno se moze pozvati u unit
+     * testovima sa unapred pripremljenom listom listing-a (postojeci testovi
+     * pozivaju {@link #refreshPrices} koje delega ovde + persistRefreshedPrices).
+     */
+    void fetchPricesForListings(List<Listing> listings, Map<String, Boolean> testModeByAcronym) {
         for (Listing listing : listings) {
             BigDecimal currentPrice = listing.getPrice();
             if (currentPrice == null) continue;
@@ -309,9 +374,6 @@ public class ListingServiceImpl implements ListingService {
             listing.setLastRefresh(LocalDateTime.now());
             listing.setVolume(newVolume);
 
-            // Save daily price snapshot for history chart
-            saveDailyPriceSnapshot(listing, newPrice, newAsk, newBid, priceChange, newVolume);
-
             // Time-series tick u InfluxDB. ObjectProvider gracefuly vraca null
             // ako banka2.influx.enabled=false (trading-service i dalje radi bez Influx-a).
             // Null check za testove koji konstrukcijom rucnim ne prosledjuju provider.
@@ -335,25 +397,26 @@ public class ListingServiceImpl implements ListingService {
                 );
             }
         }
+    }
 
+    /**
+     * Phase B: persist mutated listings + dnevne snapshot-e u jednoj
+     * kratkoj writable Tx. Konekcija se drzi samo dok save-ovi ne zavrse —
+     * nema Thread.sleep-a u ovom obimu.
+     */
+    @Transactional
+    public void persistRefreshedPrices(List<Listing> listings) {
         listingRepository.saveAll(listings);
 
-        // B5 — Cenovni alarmi: posle osvezenja cena pozovi PriceAlertService
-        // da evaluira sve aktivne alarme za promenjene listinge. Best-effort —
-        // greska ne sme da prekine refresh-prices ciklus. PriceAlertScheduler
-        // u pozadini i dalje radi na 60s kao primarni mehanizam (ovde je hook
-        // za brzu reakciju cim se cena osvezi).
-        try {
-            PriceAlertService priceAlertService = priceAlertServiceProvider != null
-                    ? priceAlertServiceProvider.getIfAvailable() : null;
-            if (priceAlertService != null && !listings.isEmpty()) {
-                int triggered = priceAlertService.checkAlerts(listings);
-                if (triggered > 0) {
-                    log.info("B5 PriceAlert hook: triggered {} alerts after price refresh", triggered);
-                }
-            }
-        } catch (RuntimeException ex) {
-            log.warn("B5 PriceAlert evaluation hook pukao: {}", ex.getMessage());
+        // Daily snapshot tek nakon save-a — saveDailyPriceSnapshot interno radi
+        // findByListingIdAndDate + save (insert/update). Ovo je manja Tx pa
+        // saveAll prvi da garantujemo listing id (ako je novi listing) — u
+        // praksi su svi listings vec persistovani, ovo je samo refresh.
+        for (Listing listing : listings) {
+            if (listing.getPrice() == null) continue;
+            saveDailyPriceSnapshot(listing, listing.getPrice(), listing.getAsk(),
+                    listing.getBid(), listing.getPriceChange(),
+                    listing.getVolume() != null ? listing.getVolume() : 0L);
         }
     }
 

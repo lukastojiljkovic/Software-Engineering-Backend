@@ -202,16 +202,22 @@ class InterbankMessageServiceTest {
     }
 
     @Test
-    @DisplayName("markOutboundSent with 202 keeps status PENDING and increments retryCount")
-    void markOutboundSent_202_staysPendingAndIncrementsRetry() {
+    @DisplayName("markOutboundSent with 202 sets status=SENT_WAITING_ASYNC (BE-INT-02 fix)")
+    void markOutboundSent_202_setsStatusSentWaitingAsync() {
+        // BE-INT-02 fix: pre fix-a, 202 je drzao status=PENDING + inkrementirao
+        // retryCount, sto je gurnulo poruku u retry ciklus → MAX=5 → STUCK.
+        // Sad ide u SENT_WAITING_ASYNC — partner asinhrono obradjuje, nemamo
+        // sta retry-ovati.
         InterbankMessage msg = pendingMessage();
         when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
                 .thenReturn(Optional.of(msg));
 
         service.markOutboundSent(KEY, 202, null);
 
-        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.PENDING);
-        assertThat(msg.getRetryCount()).isEqualTo(1);
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.SENT_WAITING_ASYNC);
+        assertThat(msg.getHttpStatus()).isEqualTo(202);
+        // retryCount ostaje 0 — ne tretiramo 202 kao failed pokusaj.
+        assertThat(msg.getRetryCount()).isEqualTo(0);
     }
 
     @Test

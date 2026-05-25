@@ -10,6 +10,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
+import org.mockito.ArgumentMatchers;
 import rs.raf.trading.common.UserContext;
 import rs.raf.trading.common.UserRole;
 import rs.raf.trading.notification.model.NotificationType;
@@ -327,15 +328,15 @@ class PriceAlertServiceTest {
                 .threshold(new BigDecimal("150.00")).active(true).build();
         when(alertRepository.findByActiveTrueAndListingIdIn(List.of(10L)))
                 .thenReturn(List.of(alert));
+        // BE-FND-04: atomic deactivate vraca 1 — prvi koji je deaktivirao alarm.
+        when(alertRepository.deactivateAlertIfActive(eq(1L), ArgumentMatchers.any()))
+                .thenReturn(1);
 
         int triggered = priceAlertService.checkAlerts(List.of(aapl));
 
         assertThat(triggered).isEqualTo(1);
-        ArgumentCaptor<PriceAlert> savedCaptor = ArgumentCaptor.forClass(PriceAlert.class);
-        verify(alertRepository).save(savedCaptor.capture());
-        PriceAlert saved = savedCaptor.getValue();
-        assertThat(saved.getActive()).isFalse();
-        assertThat(saved.getTriggeredAt()).isNotNull();
+        verify(alertRepository, times(1))
+                .deactivateAlertIfActive(eq(1L), ArgumentMatchers.any());
         verify(notificationService, times(1)).notify(
                 eq(42L), eq(UserRole.CLIENT),
                 eq(NotificationType.PRICE_ALERT_TRIGGERED),
@@ -352,6 +353,8 @@ class PriceAlertServiceTest {
                 .threshold(new BigDecimal("100.00")).active(true).build();
         when(alertRepository.findByActiveTrueAndListingIdIn(List.of(10L)))
                 .thenReturn(List.of(alert));
+        when(alertRepository.deactivateAlertIfActive(eq(2L), ArgumentMatchers.any()))
+                .thenReturn(1);
 
         int triggered = priceAlertService.checkAlerts(List.of(aapl));
 
@@ -371,11 +374,42 @@ class PriceAlertServiceTest {
                 .threshold(new BigDecimal("150.00")).active(true).build();
         when(alertRepository.findByActiveTrueAndListingIdIn(List.of(10L)))
                 .thenReturn(List.of(alert));
+        when(alertRepository.deactivateAlertIfActive(eq(3L), ArgumentMatchers.any()))
+                .thenReturn(1);
 
         int triggered = priceAlertService.checkAlerts(List.of(aapl));
 
         // >= za ABOVE okida i pri jednakim vrednostima
         assertThat(triggered).isEqualTo(1);
+    }
+
+    /**
+     * BE-FND-04: ako paralelni worker (scheduler ili refresh hook) vec deaktivira
+     * alarm, atomic UPDATE vraca 0 — tada NE smemo da publish-ujemo
+     * notifikaciju (sprecava double-fire).
+     */
+    @Test
+    @DisplayName("checkAlerts_alreadyDeactivatedByAnotherWorker_doesNotPublishNotification")
+    void checkAlerts_alreadyDeactivatedByAnotherWorker_doesNotPublishNotification() {
+        aapl.setPrice(new BigDecimal("160.00"));
+        PriceAlert alert = PriceAlert.builder()
+                .id(7L).ownerId(42L).ownerType(UserRole.CLIENT)
+                .listingId(10L).condition(PriceAlertCondition.ABOVE)
+                .threshold(new BigDecimal("150.00")).active(true).build();
+        when(alertRepository.findByActiveTrueAndListingIdIn(List.of(10L)))
+                .thenReturn(List.of(alert));
+        // Race condition: drugi worker je vec deaktivirao alarm.
+        when(alertRepository.deactivateAlertIfActive(eq(7L), ArgumentMatchers.any()))
+                .thenReturn(0);
+
+        int triggered = priceAlertService.checkAlerts(List.of(aapl));
+
+        // Publish notifikacije NE sme da se desi — drugi worker je vec to uradio.
+        assertThat(triggered).isEqualTo(0);
+        verify(notificationService, never()).notify(
+                anyLong(), anyString(),
+                ArgumentMatchers.any(NotificationType.class),
+                anyString(), anyString(), anyString(), anyLong());
     }
 
     @Test
@@ -393,6 +427,8 @@ class PriceAlertServiceTest {
 
         assertThat(triggered).isEqualTo(0);
         verify(alertRepository, never()).save(any());
+        verify(alertRepository, never())
+                .deactivateAlertIfActive(anyLong(), ArgumentMatchers.any());
         verifyNoInteractions(notificationService);
     }
 
@@ -431,6 +467,8 @@ class PriceAlertServiceTest {
 
         assertThat(triggered).isEqualTo(0);
         verify(alertRepository, never()).save(any());
+        verify(alertRepository, never())
+                .deactivateAlertIfActive(anyLong(), ArgumentMatchers.any());
         verifyNoInteractions(notificationService);
     }
 

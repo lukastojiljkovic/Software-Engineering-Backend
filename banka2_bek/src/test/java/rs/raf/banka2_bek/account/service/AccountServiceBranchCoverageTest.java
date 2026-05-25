@@ -68,6 +68,7 @@ class AccountServiceBranchCoverageTest {
     @Mock private UserRepository userRepository;
     @Mock private CardService cardService;
     @Mock private NotificationPublisher notificationPublisher;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     private AccountServiceImplementation accountService;
 
@@ -76,7 +77,7 @@ class AccountServiceBranchCoverageTest {
         accountService = new AccountServiceImplementation(
                 accountRepository, clientRepository, currencyRepository,
                 companyRepository, employeeRepository, userRepository,
-                cardService, notificationPublisher, "22200011"
+                cardService, notificationPublisher, "22200011", auditLogService
         );
     }
 

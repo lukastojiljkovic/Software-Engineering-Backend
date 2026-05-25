@@ -91,11 +91,14 @@ class JwtServiceTest {
     }
 
     @Test
-    void generateAccessToken_user_doesNotContainRefreshType() {
+    void generateAccessToken_user_containsAccessTypeClaim() {
+        // SEC-03: access tokeni sad imaju explicit "type=access" claim. To
+        // sluzi JwtAuthenticationFilter-u da odbije pokusaje koriscenja
+        // refresh tokena (`type=refresh`) kao Bearer access tokena.
         User user = createUser("marko@banka.rs", "CLIENT", true);
         String token = jwtService.generateAccessToken(user);
 
-        assertThat(parseClaims(token).get("type", String.class)).isNull();
+        assertThat(parseClaims(token).get("type", String.class)).isEqualTo("access");
     }
 
     // ============================================================

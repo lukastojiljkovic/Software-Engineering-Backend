@@ -40,6 +40,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -481,13 +482,21 @@ class AuthServiceTest {
     }
 
     @Test
-    void requestPasswordResetThrowsForUnknownEmail() {
+    void requestPasswordResetReturnsGenericResponseForUnknownEmail() {
+        // SEC-07 (Email enumeration mitigation): endpoint UVEK vraca generic
+        // success poruku, bez obzira da li email postoji ili ne. Pre fix-a je
+        // bacao RuntimeException ("User with this email does not exist") koji
+        // se mapirao u 400 i otkrivao da li nalog postoji. Sad: log internal
+        // i vrati generic message — UI ne razlikuje "valid" od "unknown".
         when(userRepository.findByEmail("unknown@test.com")).thenReturn(Optional.empty());
         when(employeeRepository.findByEmail("unknown@test.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> authService.requestPasswordReset(new PasswordResetRequestDto("unknown@test.com")))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("User with this email does not exist");
+        String response = authService.requestPasswordReset(new PasswordResetRequestDto("unknown@test.com"));
+
+        assertThat(response).contains("If an account");
+        // Token NE sme da bude generisan za nepostojeci email.
+        verify(passwordResetTokenRepository, never()).save(any(PasswordResetToken.class));
+        verify(notificationPublisher, never()).sendPasswordResetMail(anyString(), anyString());
     }
 
     // ===== Employee login with null active field =====

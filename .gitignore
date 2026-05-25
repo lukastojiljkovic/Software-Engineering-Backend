@@ -35,3 +35,9 @@ build/
 
 ### Mac OS ###
 **/.DS_Store
+
+### SEC-02 — env fajlovi sa secret-ima (samo .env.example ide u repo) ###
+.env
+.env.local
+.env.*.local
+!.env.example

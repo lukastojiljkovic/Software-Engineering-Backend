@@ -383,15 +383,16 @@ public class TransactionExecutorService {
                     "transaction.postings is required and must contain at least one balanced double-entry pair");
         }
 
-        Optional<String> cached = messageService.findCachedResponse(key);
-        if (cached.isPresent()) {
-            try {
-                return objectMapper.readValue(cached.get(), TransactionVote.class);
-            } catch (JsonProcessingException e) {
-                throw new InterbankExceptions.InterbankProtocolException(
-                        "Failed to parse cached vote: " + e.getMessage());
-            }
-        }
+        // BE-INT-01 fix: idempotency replay je obavljen na dispatch nivou
+        // (InterbankInboundController.receiveMessage:100-114) gde se cached
+        // response parsira kao Object (Map/List/String/Number) — sto preserve-uje
+        // originalni JSON shape bez obzira na messageType. Redundantan lookup
+        // u service handler-u je bio bug: parsirao je response u TransactionVote.class
+        // bez obzira da li je messageType bio NEW_TX, COMMIT_TX ili ROLLBACK_TX,
+        // sto bi za COMMIT_TX/ROLLBACK_TX replay (cached response je prazan string "")
+        // bacalo JsonProcessingException. Sad se oslanjamo na dispatch-level cache —
+        // ako dosegnemo handleNewTx, znaci cache je miss i moramo da obradimo
+        // transakciju od pocetka.
 
         saveRecipientState(tx);
 
@@ -409,6 +410,12 @@ public class TransactionExecutorService {
                     objectMapper.writeValueAsString(tx), 200,
                     objectMapper.writeValueAsString(vote),
                     tx.transactionId().id());
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            // Race condition: drugi paralelni request je vec snimio cache zapis sa
+            // istim idempotency key-em. Vratimo vote koji smo izracunali — handleNewTx
+            // je deterministicki (isti input → isti output), pa nasa kalkulacija
+            // matchuje sa onom koja je vec u cache-u (modulo race window).
+            log.debug("handleNewTx race: cache vec popunjen za key={}, vracamo izracunatu vote", key);
         } catch (JsonProcessingException e) {
             throw new InterbankExceptions.InterbankProtocolException(
                     "Failed to serialize handleNewTx response: " + e.getMessage());
@@ -419,17 +426,28 @@ public class TransactionExecutorService {
 
     /**
      * §2.12.2: inbound COMMIT_TX handler. Atomically commits and caches the response.
+     *
+     * BE-INT-01 fix: redundantan cache lookup uklonjen — idempotency je obavljen na
+     * dispatch nivou (InterbankInboundController.receiveMessage). Ako dosegnemo
+     * ovaj handler, znaci da je cache miss. Ako se kasnije ispostavi da neko drugi
+     * vec ima zapis (race), DataIntegrityViolationException u recordInboundResponse
+     * (zbog UNIQUE constraint-a na (sender_routing_number, locally_generated_key))
+     * bice mapiran u 409 ili tretiran kao no-op (vidi catch ispod).
      */
     @Transactional
     public void handleCommitTx(CommitTransaction body, IdempotenceKey key) {
-        if (messageService.findCachedResponse(key).isPresent()) return;
-
         commitLocal(body.transactionId()); // direct call — joins this @Transactional
 
         try {
             messageService.recordInboundResponse(key, MessageType.COMMIT_TX,
                     objectMapper.writeValueAsString(body), 204, "",
                     body.transactionId().id());
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            // Race condition: drugi paralelni request je vec snimio cache zapis za
+            // isti idempotency key. Ovo je no-op — odgovor je vec memorisan, mi
+            // smo radili commit redundantno (commitLocal je idempotent — vraca
+            // ranije ako je vec COMMITTED).
+            log.debug("handleCommitTx race: cache vec popunjen za key={}", key);
         } catch (JsonProcessingException e) {
             throw new InterbankExceptions.InterbankProtocolException(
                     "Failed to serialize handleCommitTx response: " + e.getMessage());
@@ -438,17 +456,21 @@ public class TransactionExecutorService {
 
     /**
      * §2.12.3: inbound ROLLBACK_TX handler. Atomically rolls back and caches the response.
+     *
+     * BE-INT-01 fix: redundantan cache lookup uklonjen — vidi handleCommitTx.
      */
     @Transactional
     public void handleRollbackTx(RollbackTransaction body, IdempotenceKey key) {
-        if (messageService.findCachedResponse(key).isPresent()) return;
-
         rollbackLocal(body.transactionId()); // direct call — joins this @Transactional
 
         try {
             messageService.recordInboundResponse(key, MessageType.ROLLBACK_TX,
                     objectMapper.writeValueAsString(body), 204, "",
                     body.transactionId().id());
+        } catch (org.springframework.dao.DataIntegrityViolationException race) {
+            // Race condition: drugi paralelni request je vec snimio cache zapis.
+            // rollbackLocal je idempotent — no-op u tom slucaju.
+            log.debug("handleRollbackTx race: cache vec popunjen za key={}", key);
         } catch (JsonProcessingException e) {
             throw new InterbankExceptions.InterbankProtocolException(
                     "Failed to serialize handleRollbackTx response: " + e.getMessage());

@@ -139,10 +139,26 @@ class OrderServiceImplCoverageTest {
 
     private void asClient() {
         when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(CLIENT_ID, "CLIENT"));
+        // BE-ORD-02 fix: trading access guard zahteva TRADE_STOCKS za klijenta.
+        setAuthorities("ROLE_CLIENT", "TRADE_STOCKS");
     }
 
     private void asSupervisor() {
         when(tradingUserResolver.resolveCurrent()).thenReturn(new UserContext(SUPERVISOR_ID, "EMPLOYEE"));
+        // BE-ORD-02 fix: trading access guard zahteva SUPERVISOR / ADMIN / AGENT.
+        setAuthorities("ROLE_EMPLOYEE", "SUPERVISOR");
+    }
+
+    private void setAuthorities(String... authorities) {
+        java.util.List<org.springframework.security.core.GrantedAuthority> auths =
+                java.util.Arrays.stream(authorities)
+                        .map(org.springframework.security.core.authority.SimpleGrantedAuthority::new)
+                        .map(a -> (org.springframework.security.core.GrantedAuthority) a)
+                        .toList();
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken token =
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        "test@example.com", null, auths);
+        SecurityContextHolder.getContext().setAuthentication(token);
     }
 
     private Listing listing(ListingType type, String acronym) {

@@ -21,6 +21,8 @@
     <properties>
         <java.version>25</java.version>
         <influxdb-client.version>7.3.0</influxdb-client.version>
+        <!-- DB-01: usaglaseno sa banka2_bek-om (oba modula koriste isti JaCoCo). -->
+        <jacoco.version>0.8.14</jacoco.version>
     </properties>
 
     <dependencies>
@@ -153,6 +155,86 @@
                         </exclude>
                     </excludes>
                 </configuration>
+            </plugin>
+
+            <!-- DB-01: trading-service je do sada bio "tamna" tacka za coverage —
+                 ceo trgovinski domen (orderi, portfolio, OTC, fondovi, porez,
+                 aktuari, opcije, margin) nije imao mereno pokrice. Plugin block
+                 je preslikan iz banka2_bek/pom.xml; excludes adaptirani na
+                 `rs/raf/trading/**` paket. Pocetni prag je 0.50 (low) da bi
+                 podlaska bila prosirenja, ne blokada — sledeci ciklus podigne
+                 na 0.70 → 0.77 (paritet sa banka2_bek). -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <configuration>
+                    <excludes>
+                        <exclude>sun/**</exclude>
+                        <exclude>jdk/**</exclude>
+                        <exclude>com/sun/**</exclude>
+                        <!-- App entrypoint / DTOs / config / exceptions / mapper-i
+                             nisu meta za coverage (paritet sa banka2_bek). -->
+                        <exclude>rs/raf/trading/TradingServiceApplication.class</exclude>
+                        <exclude>rs/raf/trading/**/dto/**</exclude>
+                        <exclude>rs/raf/trading/**/config/**</exclude>
+                        <exclude>rs/raf/trading/**/exception/**</exclude>
+                        <exclude>rs/raf/trading/**/mapper/**</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <inclBootstrapClasses>false</inclBootstrapClasses>
+                            <excludes>
+                                <exclude>sun.*</exclude>
+                                <exclude>jdk.*</exclude>
+                                <exclude>com.sun.*</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <!--
+                        DB-01: pocetni prag 0.50 (low) — trading-service ima
+                        bogato test-pokrice ali nije ranije bilo mereno, pa
+                        je realno da prvi run prelazi 0.50. Plan: 0.50 → 0.70
+                        u sledecem ciklusu, pa onda 0.77 (paritet sa
+                        banka2_bek). Ako neko cumadji testove i padne ispod
+                        0.50, build PUCA — KT3 enforcement.
+                    -->
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <haltOnFailure>true</haltOnFailure>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.50</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

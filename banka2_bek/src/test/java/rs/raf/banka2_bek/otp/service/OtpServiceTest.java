@@ -147,7 +147,7 @@ class OtpServiceTest {
         }
 
         @Test
-        @DisplayName("returns verified=false when TOTP code mismatches")
+        @DisplayName("returns verified=false, blocked=false sa attempts=1 na prvom mismatch-u")
         void verifiedFalse() {
             when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user()));
             when(totpService.verify(USER_ID, "999999")).thenReturn(false);
@@ -156,24 +156,72 @@ class OtpServiceTest {
 
             assertThat(result.get("verified")).isEqualTo(false);
             assertThat(result.get("blocked")).isEqualTo(false);
+            assertThat(result.get("attempts")).isEqualTo(1);
+            assertThat(result.get("maxAttempts")).isEqualTo(3);
             assertThat((String) result.get("message")).contains("Pogresan");
         }
 
         @Test
-        @DisplayName("returns 'nije pronadjen' when user not found")
-        void userNotFound() {
-            when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.empty());
+        @DisplayName("BE-AUTH-01: blokira transakciju posle 3 uzastopna mismatch-a")
+        void blocksAfterThreeFailures() {
+            when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user()));
+            when(totpService.verify(USER_ID, "999999")).thenReturn(false);
 
-            Map<String, Object> result = otpService.verify(EMAIL, "123456");
+            Map<String, Object> first = otpService.verify(EMAIL, "999999");
+            assertThat(first.get("blocked")).isEqualTo(false);
+            assertThat(first.get("attempts")).isEqualTo(1);
 
-            assertThat(result.get("verified")).isEqualTo(false);
-            assertThat((String) result.get("message")).contains("nije pronadjen");
-            verifyNoInteractions(totpService);
+            Map<String, Object> second = otpService.verify(EMAIL, "999999");
+            assertThat(second.get("blocked")).isEqualTo(false);
+            assertThat(second.get("attempts")).isEqualTo(2);
+
+            Map<String, Object> third = otpService.verify(EMAIL, "999999");
+            assertThat(third.get("verified")).isEqualTo(false);
+            assertThat(third.get("blocked")).isEqualTo(true);
+            assertThat(third.get("attempts")).isEqualTo(3);
+            assertThat((String) third.get("message")).contains("Prekoracen");
         }
 
         @Test
-        @DisplayName("returns 'nije pronadjen' when no TOTP secret configured")
-        void noSecret() {
+        @DisplayName("BE-AUTH-01: posle blokade naredne provere ostaju blocked=true i NE povecavaju counter")
+        void stickyBlockedAfterThreeFailures() {
+            when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user()));
+            when(totpService.verify(USER_ID, "999999")).thenReturn(false);
+
+            otpService.verify(EMAIL, "999999");
+            otpService.verify(EMAIL, "999999");
+            otpService.verify(EMAIL, "999999");
+
+            Map<String, Object> fourth = otpService.verify(EMAIL, "999999");
+
+            assertThat(fourth.get("verified")).isEqualTo(false);
+            assertThat(fourth.get("blocked")).isEqualTo(true);
+            // counter ostaje 3 (cap), ne penje se na 4 — block je stabilan u prozoru TTL-a.
+            assertThat(fourth.get("attempts")).isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("BE-AUTH-01: uspesna verifikacija resetuje counter (sledeci fail je opet attempts=1)")
+        void successResetsCounter() {
+            when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user()));
+            when(totpService.verify(USER_ID, "999999")).thenReturn(false);
+            when(totpService.verify(USER_ID, "123456")).thenReturn(true);
+
+            otpService.verify(EMAIL, "999999");
+            otpService.verify(EMAIL, "999999");
+
+            Map<String, Object> success = otpService.verify(EMAIL, "123456");
+            assertThat(success.get("verified")).isEqualTo(true);
+            assertThat(success.get("attempts")).isEqualTo(0);
+
+            Map<String, Object> nextFail = otpService.verify(EMAIL, "999999");
+            assertThat(nextFail.get("attempts")).isEqualTo(1);
+            assertThat(nextFail.get("blocked")).isEqualTo(false);
+        }
+
+        @Test
+        @DisplayName("BE-AUTH-01: missing TOTP secret takodje broji u failed attempts")
+        void missingSecretCountsAsFailure() {
             when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user()));
             when(totpService.verify(USER_ID, "123456"))
                     .thenThrow(new IllegalStateException("TOTP nije podesen za korisnika " + USER_ID));
@@ -181,7 +229,21 @@ class OtpServiceTest {
             Map<String, Object> result = otpService.verify(EMAIL, "123456");
 
             assertThat(result.get("verified")).isEqualTo(false);
+            assertThat(result.get("attempts")).isEqualTo(1);
             assertThat((String) result.get("message")).contains("nije pronadjen");
+        }
+
+        @Test
+        @DisplayName("returns 'nije pronadjen' when user not found i NE inkrementira counter za nepoznate email-ove")
+        void userNotFound() {
+            when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.empty());
+
+            Map<String, Object> result = otpService.verify(EMAIL, "123456");
+
+            assertThat(result.get("verified")).isEqualTo(false);
+            assertThat(result.get("attempts")).isEqualTo(0);
+            assertThat((String) result.get("message")).contains("nije pronadjen");
+            verifyNoInteractions(totpService);
         }
     }
 }

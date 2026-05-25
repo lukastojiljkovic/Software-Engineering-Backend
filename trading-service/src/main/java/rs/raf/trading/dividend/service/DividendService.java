@@ -2,6 +2,8 @@ package rs.raf.trading.dividend.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
@@ -63,6 +65,17 @@ public class DividendService {
     private final CurrencyConversionService currencyConversionService;
     private final FundDividendService fundDividendService;
 
+    /**
+     * Self-injection (lazy) sluzi da AOP proxy uhvati {@code @Transactional} u
+     * {@link #payDividendForOwner}. Bez ovoga, intra-class poziv iz
+     * {@link #processQuarterlyDividends} bi zaobisao proxy → ako banka-core
+     * kredit uspe ali repo.save fail-uje, izostao bi rollback i sledeci kvartal
+     * bi platili dva puta (BE-FND-03).
+     */
+    @Lazy
+    @Autowired
+    private DividendService self;
+
     // ── Kvartalna obrada ──────────────────────────────────────────────────────
 
     /**
@@ -112,7 +125,11 @@ public class DividendService {
             }
 
             try {
-                DividendPayout result = payDividendForOwner(position, paymentDate);
+                // KRITICNO (BE-FND-03): pozivamo preko self proxy-ja da bi
+                // {@code @Transactional} na payDividendForOwner bio aktivan.
+                // Direktan poziv (this.payDividendForOwner) bi bio intra-class
+                // self-invoke koji zaobilazi Spring AOP, pa rollback ne bi radio.
+                DividendPayout result = self.payDividendForOwner(position, paymentDate);
                 if (result != null) paid++;
             } catch (Exception ex) {
                 log.error("DividendService: greska pri isplati dividende listing={} owner={}/{}: {}",

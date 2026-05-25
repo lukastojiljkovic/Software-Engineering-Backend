@@ -810,7 +810,8 @@ class TransactionExecutorServiceTest {
     void handleNewTx_cleanTx_yesVoteAndSavesRecipient() throws Exception {
         Transaction tx = localMonasTx();
         IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "k1");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.empty());
+        // BE-INT-01: handler vise ne radi cache lookup interno — idempotency je
+        // na dispatch nivou (InterbankInboundController).
         stubMonasAccounts("RSD");
         stubTxSave();
 
@@ -832,7 +833,7 @@ class TransactionExecutorServiceTest {
     void handleNewTx_violation_noVoteStillRecorded() throws Exception {
         Transaction tx = unbalancedTx();
         IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "k2");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.empty());
+        // BE-INT-01: handler vise ne radi cache lookup interno.
         stubTxSave();
 
         TransactionVote vote = service.handleNewTx(tx, key);
@@ -843,18 +844,22 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("handleNewTx: second call with same key returns cached vote without any DB writes")
-    void handleNewTx_idempotent_returnsCachedVote() throws Exception {
+    @DisplayName("handleNewTx: race - DataIntegrityViolation on recordInboundResponse swallowed, vote returned (BE-INT-01)")
+    void handleNewTx_raceOnCacheInsert_swallowed() throws Exception {
+        // BE-INT-01: ako dva paralelna request-a sa istim key-em istovremeno udju
+        // u handler, drugi ce dobiti DataIntegrityViolationException pri save-u
+        // (UNIQUE constraint). Mi to swallow-ujemo i vracamo izracunatu vote —
+        // jer je handler deterministicki, vote je isti.
         Transaction tx = localMonasTx();
-        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "k3");
-        String cachedJson = objectMapper.writeValueAsString(yesVote());
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.of(cachedJson));
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "race-k1");
+        stubMonasAccounts("RSD");
+        stubTxSave();
+        doThrow(new org.springframework.dao.DataIntegrityViolationException("UNIQUE violation"))
+                .when(messageService).recordInboundResponse(eq(key), any(), any(), anyInt(), any(), any());
 
         TransactionVote vote = service.handleNewTx(tx, key);
 
         assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.YES);
-        verify(txRepo, never()).save(any());
-        verifyNoInteractions(accountRepository, reservationApplier);
     }
 
     @Test
@@ -862,7 +867,7 @@ class TransactionExecutorServiceTest {
     void handleNewTx_yesVote_responseBodyContainsYes() throws Exception {
         Transaction tx = localMonasTx();
         IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "k4");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.empty());
+        // BE-INT-01: handler vise ne radi cache lookup interno.
         stubMonasAccounts("RSD");
         stubTxSave();
 
@@ -883,7 +888,7 @@ class TransactionExecutorServiceTest {
     void handleCommitTx_commitsAndRecords204() throws Exception {
         Transaction tx = localMonasTx();
         IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "ck1");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.empty());
+        // BE-INT-01: handler vise ne radi cache lookup interno.
 
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
@@ -898,14 +903,21 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("handleCommitTx: second call with same key is a no-op (idempotent)")
-    void handleCommitTx_idempotent() {
-        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "ck2");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.of("cached"));
+    @DisplayName("handleCommitTx: race - DataIntegrityViolation on recordInboundResponse swallowed (BE-INT-01)")
+    void handleCommitTx_raceOnCacheInsert_swallowed() throws Exception {
+        // BE-INT-01: commitLocal je idempotent (vraca ranije ako je COMMITTED),
+        // pa race na cache insert se safe-ly handle-uje swallow-om.
+        Transaction tx = localMonasTx();
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "ck-race");
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+        doThrow(new org.springframework.dao.DataIntegrityViolationException("UNIQUE violation"))
+                .when(messageService).recordInboundResponse(eq(key), any(), any(), anyInt(), any(), any());
 
-        service.handleCommitTx(new CommitTransaction(new ForeignBankId(REMOTE_RN, "x")), key);
-
-        verifyNoInteractions(txRepo, reservationApplier, accountRepository);
+        // Ne baca exception — race je swallow-an.
+        service.handleCommitTx(new CommitTransaction(tx.transactionId()), key);
     }
 
     // =========================================================================
@@ -917,7 +929,7 @@ class TransactionExecutorServiceTest {
     void handleRollbackTx_rollsBackAndRecords204() throws Exception {
         Transaction tx = localMonasTx();
         IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "rk1");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.empty());
+        // BE-INT-01: handler vise ne radi cache lookup interno.
 
         InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
         when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
@@ -932,14 +944,20 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("handleRollbackTx: second call with same key is a no-op (idempotent)")
-    void handleRollbackTx_idempotent() {
-        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "rk2");
-        when(messageService.findCachedResponse(key)).thenReturn(Optional.of("cached"));
+    @DisplayName("handleRollbackTx: race - DataIntegrityViolation on recordInboundResponse swallowed (BE-INT-01)")
+    void handleRollbackTx_raceOnCacheInsert_swallowed() throws Exception {
+        // BE-INT-01: rollbackLocal je idempotent, pa race se swallow-uje.
+        Transaction tx = localMonasTx();
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "rk-race");
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+        doThrow(new org.springframework.dao.DataIntegrityViolationException("UNIQUE violation"))
+                .when(messageService).recordInboundResponse(eq(key), any(), any(), anyInt(), any(), any());
 
-        service.handleRollbackTx(new RollbackTransaction(new ForeignBankId(REMOTE_RN, "x")), key);
-
-        verifyNoInteractions(txRepo, reservationApplier, accountRepository);
+        service.handleRollbackTx(new RollbackTransaction(tx.transactionId()), key);
+        // Ne baca — race je swallow-an.
     }
 
     // =========================================================================

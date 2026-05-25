@@ -6,6 +6,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -120,6 +122,14 @@ public class OrderServiceImpl implements OrderService {
         // Step 4: Resolve current user
         UserContext userContext = resolveCurrentUser();
         boolean isEmployee = UserRole.isEmployee(userContext.userRole());
+
+        // Step 4b: Trading access gate (spec Celina 3 §6 / Celina 4 §137-141).
+        //   - klijent: mora imati TRADE_STOCKS permisiju
+        //   - zaposleni: mora biti SUPERVISOR, ADMIN ili AGENT
+        // Bez ovog guard-a TradingSecurityConfig.POST /orders je samo authenticated()
+        // pa bi klijent bez TRADE_STOCKS, ili agent bez AGENT/SUPERVISOR autoriteta,
+        // mogli da prodju do biznis logike i (potencijalno) izvrsavanja ordera.
+        ensureTradingAccess(userContext);
 
         // Step 5: Resolve account.
         //   Klijent: licni racun
@@ -799,6 +809,50 @@ public class OrderServiceImpl implements OrderService {
      */
     private UserContext resolveCurrentUser() {
         return tradingUserResolver.resolveCurrent();
+    }
+
+    /**
+     * Provera autorizacije za POST /orders (spec Celina 3 §6 / Celina 4 §137-141).
+     * <ul>
+     *   <li>Klijent mora imati {@code TRADE_STOCKS} permisiju (autoritet).
+     *       AuthContext na FE-u mapira {@code Client.canTradeStocks=true} u
+     *       {@code TRADE_STOCKS} autoritet. Bez te permisije → 403.</li>
+     *   <li>Zaposleni mora imati bar jedan od: {@code SUPERVISOR}, {@code ADMIN},
+     *       {@code AGENT} (svi su validni za trgovinu). Zaposleni bez tih
+     *       autoriteta (npr. obican operater) → 403.</li>
+     * </ul>
+     * Paritet sa {@code OtcService.ensureOtcAccess} obrascem, ali za order endpoint.
+     */
+    private void ensureTradingAccess(UserContext user) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) {
+            throw new AccessDeniedException("Niste autentifikovani.");
+        }
+        String role = user.userRole();
+        if (UserRole.isClient(role)) {
+            boolean hasTradeStocks = auth.getAuthorities().stream()
+                    .map(GrantedAuthority::getAuthority)
+                    .anyMatch("TRADE_STOCKS"::equals);
+            if (!hasTradeStocks) {
+                throw new AccessDeniedException(
+                        "Nemate dozvolu za trgovinu hartijama (TRADE_STOCKS permisija nije dodeljena).");
+            }
+            return;
+        }
+        if (UserRole.isEmployee(role)) {
+            boolean canTrade = auth.getAuthorities().stream()
+                    .map(GrantedAuthority::getAuthority)
+                    .anyMatch(a -> UserRole.SUPERVISOR.equals(a)
+                            || UserRole.ADMIN.equals(a)
+                            || UserRole.AGENT.equals(a)
+                            || UserRole.ROLE_ADMIN.equals(a));
+            if (!canTrade) {
+                throw new AccessDeniedException(
+                        "Zaposleni mora imati SUPERVISOR, ADMIN ili AGENT autoritet za trgovinu.");
+            }
+            return;
+        }
+        throw new AccessDeniedException("Nepoznata uloga ne moze da trguje hartijama.");
     }
 
     private boolean computeAfterHours(Listing listing) {

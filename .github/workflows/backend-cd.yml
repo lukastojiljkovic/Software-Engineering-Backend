@@ -1,8 +1,15 @@
 name: backend-cd
 
+# CI-02: CD ne sme da push-uje `:latest` image ako CI nije prosao.
+# `workflow_run` trigger ceka da `backend-ci` workflow zavrsi sa
+# `conclusion == 'success'` pa onda pokreneme build & push. Time se
+# eliminise race condition u kojem broken commit pushuje broken sliku
+# pre nego sto CI uopste stigne da fail-uje (npr. compile/test/lint).
 on:
-  push:
+  workflow_run:
+    workflows: ["backend-ci"]
     branches: [main]
+    types: [completed]
 
 permissions:
   contents: read
@@ -18,6 +25,10 @@ jobs:
   backend:
     name: Build & Push banka2-backend
     runs-on: ubuntu-latest
+    # CI-02: pokrece se SAMO ako je upstream `backend-ci` workflow uspesan.
+    # `workflow_run` event uvek fire-uje (success ili failure), pa job-ovi
+    # moraju eksplicitno da provere conclusion preko `github.event.workflow_run`.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +66,8 @@ jobs:
   tools:
     name: Build & Push ${{ matrix.image }}
     runs-on: ubuntu-latest
+    # CI-02: gate na uspesan backend-ci.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +115,8 @@ jobs:
   ollama:
     name: Build & Push banka2-ollama (pre-baked Gemma)
     runs-on: ubuntu-latest
+    # CI-02: gate na uspesan backend-ci.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +163,8 @@ jobs:
   monitoring:
     name: Build & Push banka2-alert-router
     runs-on: ubuntu-latest
+    # CI-02: gate na uspesan backend-ci.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 

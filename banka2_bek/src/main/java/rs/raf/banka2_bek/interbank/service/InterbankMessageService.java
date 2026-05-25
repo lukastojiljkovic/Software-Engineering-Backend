@@ -130,7 +130,14 @@ public class InterbankMessageService {
             ibMessage.setLastAttemptAt(LocalDateTime.now());
             repository.save(ibMessage);
         } else if (httpStatus.equals(HttpStatus.ACCEPTED.value())) {
-            ibMessage.setRetryCount(ibMessage.getRetryCount() + 1);
+            // BE-INT-02 fix: 202 Accepted znaci da je partner prihvatio poruku i
+            // obradjuje je asinhrono. Pre fix-a status je ostajao PENDING, sto je
+            // gurnulo poruku u retry ciklus → MAX_RETRY=5 → STUCK (lazno alarm).
+            // Sad markiramo SENT_WAITING_ASYNC — partner ce nas obavestiti kasnije
+            // sopstvenim COMMIT_TX/ROLLBACK_TX porukom; retry scheduler ovo preskace.
+            ibMessage.setStatus(InterbankMessageStatus.SENT_WAITING_ASYNC);
+            ibMessage.setHttpStatus(httpStatus);
+            ibMessage.setResponseBody(responseBody);
             ibMessage.setLastAttemptAt(LocalDateTime.now());
             repository.save(ibMessage);
         } else if (httpStatus >= 400 && httpStatus < 500 && !isTransient4xx(httpStatus)) {

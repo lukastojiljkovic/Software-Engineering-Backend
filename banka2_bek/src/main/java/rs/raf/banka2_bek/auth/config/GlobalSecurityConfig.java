@@ -152,6 +152,13 @@ public class GlobalSecurityConfig  {
                         .requestMatchers(HttpMethod.POST, "/savings/deposits/*/withdraw-early").authenticated()
                         .requestMatchers(HttpMethod.GET, "/savings/rates").authenticated()
                         .requestMatchers("/admin/savings/**").hasAnyAuthority("ROLE_ADMIN", "ADMIN", "SUPERVISOR")
+                        // SEC-04: Audit log (B7) — citanje je strogo ograniceno na
+                        // ADMIN i SUPERVISOR. Bez ovog matcher-a, generic
+                        // anyRequest().authenticated() pravilo bi dozvolilo svakom
+                        // klijentskom JWT-u da reach-uje /audit/** rute (CLIENT je
+                        // authenticated() ali NE sme da vidi revizioni dnevnik).
+                        // MORA biti deklarisan PRE anyRequest() matcher-a.
+                        .requestMatchers("/audit/**").hasAnyAuthority("ROLE_ADMIN", "ADMIN", "SUPERVISOR")
                         // Interni API (Faza 2 - SAGA seam ka trading-service).
                         // InternalAuthFilter validira X-Internal-Key i postavlja ROLE_INTERNAL.
                         // MORA biti deklarisan PRE anyRequest() matcher-a.

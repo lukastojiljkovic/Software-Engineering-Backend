@@ -52,6 +52,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         try {
+            // SEC-03: odbaci refresh tokene — oni imaju 7-dnevni TTL i sluze SAMO za
+            // /auth/refresh endpoint. Ako neko pokusa da koristi refresh token kao
+            // Bearer access token, oborimo zahtev sa 401. Tokeni generisani pre fix-a
+            // nemaju "type" claim — tretiraju se kao access (backwards-compat).
+            if (jwtService.isRefreshToken(token)) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                return;
+            }
+
             String email = jwtService.extractEmail(token);
 
             if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {

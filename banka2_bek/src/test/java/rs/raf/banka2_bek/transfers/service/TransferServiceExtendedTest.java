@@ -49,6 +49,7 @@ class TransferServiceExtendedTest {
     @Mock private ExchangeService exchangeService;
     @Mock private ClientRepository clientRepository;
     @Mock private NotificationService notificationService;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     private TransferService transferService;
 
@@ -73,7 +74,8 @@ class TransferServiceExtendedTest {
     void setUp() throws Exception {
         SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_GLOBAL);
         transferService = new TransferService(
-                transferRepository, accountRepository, exchangeService, clientRepository, notificationService);
+                transferRepository, accountRepository, exchangeService, clientRepository,
+                notificationService, auditLogService);
         java.lang.reflect.Field field = TransferService.class.getDeclaredField("bankRegistrationNumber");
         field.setAccessible(true);
         field.set(transferService, "22200022");

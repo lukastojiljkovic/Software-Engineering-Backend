@@ -1,5 +1,7 @@
 package rs.raf.banka2_bek.auth.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +36,8 @@ import java.util.UUID;
 
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UserRepository userRepository;
     private final EmployeeRepository employeeRepository;
@@ -235,6 +239,12 @@ public class AuthService {
     }
 
     public String requestPasswordReset(PasswordResetRequestDto request) {
+        // SEC-07: Email enumeration mitigation — endpoint UVEK vraca isti generic
+        // odgovor (200 OK + generic message), bez obzira da li email postoji ili ne.
+        // Napadac vise ne moze da iz HTTP status-a / response body-ja zakljuci da li
+        // je email registrovan. Ako email NE postoji, samo logujemo interno i
+        // tihovljeno vracamo success — UI prikazuje istu poruku "Ako nalog postoji,
+        // poslat ti je email sa linkom za reset lozinke."
         User user = userRepository.findByEmail(request.getEmail()).orElse(null);
         Employee employee = null;
 
@@ -243,7 +253,10 @@ public class AuthService {
         }
 
         if (user == null && employee == null) {
-            throw new RuntimeException("User with this email does not exist");
+            // Interno logujemo, ali UI vraca generic success — bez 400/404 leakage.
+            log.info("SEC-07: Password reset requested for unknown email (no account exists): {}",
+                    request.getEmail());
+            return "If an account with that email exists, a password reset link has been sent.";
         }
 
         String tokenValue = UUID.randomUUID().toString();
@@ -263,7 +276,9 @@ public class AuthService {
         String targetEmail = user != null ? user.getEmail() : employee.getEmail();
         notificationPublisher.sendPasswordResetMail(targetEmail, tokenValue);
 
-        return "Password reset token generated and email event emitted";
+        // Generic poruka — ista kao za nepostojeci email — da BE odgovor ne otkriva
+        // da li nalog postoji.
+        return "If an account with that email exists, a password reset link has been sent.";
     }
 
     @Transactional

@@ -5,7 +5,11 @@ services:
     environment:
       POSTGRES_DB: banka2
       POSTGRES_USER: banka2user
-      POSTGRES_PASSWORD: banka2pass
+      # SEC-02: lozinka MORA biti postavljena kroz env (.env ili shell var).
+      # `:?required` sintaksa: docker compose pada sa jasnim error-om ako var
+      # nije set — niko ne moze slucajno da podigne stack sa hard-coded "banka2pass".
+      # Dev placeholders su u `.env.example` (ne commit-uj `.env`).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - cp .env.example .env then edit}
     ports:
       # 5433 je rezervisan od Hyper-V port range-a na nekim Windows masinama —
       # 6433 host-side mapira na 5432 u kontejneru. BE komunicira preko Docker
@@ -51,9 +55,10 @@ services:
       # ih kreira). Vidi bootstrap-replica.sh `ensure_replication_setup`.
       PRIMARY_DB: banka2
       PRIMARY_USER: banka2user
-      PRIMARY_PASSWORD: banka2pass
+      # SEC-02: deli isti env kao primary (db servis iznad).
+      PRIMARY_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - cp .env.example .env then edit}
       REPLICATION_USER: replicator
-      REPLICATION_PASSWORD: replicator_pass
+      REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator_pass}
       REPLICATION_SLOT: banka2_replica_slot
     volumes:
       - postgres_replica_data:/var/lib/postgresql/data
@@ -79,7 +84,9 @@ services:
     environment:
       POSTGRES_DB: trading
       POSTGRES_USER: tradinguser
-      POSTGRES_PASSWORD: tradingpass
+      # SEC-02: lozinka MORA biti postavljena kroz env (.env ili shell var).
+      # Vidi `.env.example` za dev placeholder.
+      POSTGRES_PASSWORD: ${POSTGRES_TRADING_PASSWORD:?POSTGRES_TRADING_PASSWORD required - cp .env.example .env then edit}
     ports:
       - "6435:5432"
     volumes:
@@ -118,14 +125,15 @@ services:
       # Primary (read-write) — DDL + INSERT/UPDATE/DELETE + bilo sta van readOnly transakcija.
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/banka2
       SPRING_DATASOURCE_USERNAME: banka2user
-      SPRING_DATASOURCE_PASSWORD: banka2pass
+      # SEC-02: backend cita istu lozinku kao db servis.
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - cp .env.example .env then edit}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       # Read replica — koristi se za @Transactional(readOnly=true) putem
       # AbstractRoutingDataSource. Ako ${REPLICA_*} env vars nisu setovani,
       # Spring ce padnuti routing i sve ide na primary (graceful fallback).
       BANKA2_DATASOURCE_REPLICA_URL: jdbc:postgresql://db_replica:5432/banka2
       BANKA2_DATASOURCE_REPLICA_USERNAME: banka2user
-      BANKA2_DATASOURCE_REPLICA_PASSWORD: banka2pass
+      BANKA2_DATASOURCE_REPLICA_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - cp .env.example .env then edit}
       BANKA2_DATASOURCE_REPLICA_ENABLED: "true"
       # Pod-faza 2f cutover: InfluxDB (OHLCV time-series) je presao u
       # trading-service zajedno sa `timeseries` paketom — monolit (banka-core)
@@ -243,7 +251,8 @@ services:
     volumes:
       - ./seed.sql:/seed.sql:ro
     environment:
-      PGPASSWORD: banka2pass
+      # SEC-02: deli isti env kao db servis.
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - cp .env.example .env then edit}
     entrypoint:
       - sh
       - -c
@@ -271,7 +280,8 @@ services:
     volumes:
       - ./trading-seed.sql:/trading-seed.sql:ro
     environment:
-      PGPASSWORD: tradingpass
+      # SEC-02: deli isti env kao trading_db servis.
+      PGPASSWORD: ${POSTGRES_TRADING_PASSWORD:?POSTGRES_TRADING_PASSWORD required - cp .env.example .env then edit}
     entrypoint:
       - sh
       - -c
@@ -317,7 +327,11 @@ services:
     healthcheck:
       # 127.0.0.1 (ne localhost): busybox wget bi za `localhost` probao IPv6 ::1,
       # a nginx slusa samo IPv4 0.0.0.0:80 -> healthcheck bi "Connection refused"-ovao.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/v3/api-docs > /dev/null || exit 1"]
+      # CI-04: `--spider` mode eksplicitno prosledjuje HTTP status kod kao exit code
+      # — `wget -qO-` exit-uje 0 na 404 (samo prazno body output-uje), pa je
+      # ranija varijanta laznja zelena za nedostupan endpoint. `--spider` rejecta
+      # 4xx/5xx (exit 1) i samo 2xx/3xx je healthy.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/v3/api-docs || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -336,7 +350,8 @@ services:
     environment:
       TRADING_DB_URL: jdbc:postgresql://trading_db:5432/trading
       TRADING_DB_USER: tradinguser
-      TRADING_DB_PASSWORD: tradingpass
+      # SEC-02: trading-service cita istu lozinku kao trading_db servis.
+      TRADING_DB_PASSWORD: ${POSTGRES_TRADING_PASSWORD:?POSTGRES_TRADING_PASSWORD required - cp .env.example .env then edit}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-do-not-use-in-prod-rotate-via-env-var-on-each-deploy}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key-rotate-in-prod}
       BANKACORE_BASE_URL: http://backend:8080

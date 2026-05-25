@@ -137,6 +137,12 @@ public class PriceAlertService {
      *
      * <p>Poziva se iz {@code PriceAlertScheduler} sa SVEZE ucitanih listinga
      * (tj. cene su trenutno aktuelne u DB).
+     *
+     * <p><b>Concurrency:</b> Scheduler (60s) i {@code ListingServiceImpl} hook
+     * pozivaju ovaj metod paralelno. Da bi se izbeglo dvostruko publish-ovanje
+     * notifikacije, deaktivacija koristi atomicni JPQL UPDATE
+     * ({@code deactivateAlertIfActive}) — samo prvi pozivalac dobija
+     * {@code rowsAffected == 1} i publish-uje notifikaciju.
      */
     @Transactional
     public int checkAlerts(List<Listing> updatedListings) {
@@ -157,9 +163,19 @@ public class PriceAlertService {
                     continue;
                 }
                 if (shouldTrigger(alert.getCondition(), listing.getPrice(), alert.getThreshold())) {
+                    LocalDateTime triggeredAt = LocalDateTime.now();
+                    int rowsAffected = alertRepository
+                            .deactivateAlertIfActive(alert.getId(), triggeredAt);
+                    if (rowsAffected != 1) {
+                        // Drugi worker (scheduler / refresh hook) je vec deaktivirao alarm.
+                        // Ne publish-uj notifikaciju ponovo — sprecavamo duplikate.
+                        log.debug("PriceAlert id={} vec deaktiviran u medjuvremenu — preskacem publish",
+                                alert.getId());
+                        continue;
+                    }
+                    // Lokalno reflektuj stanje za publishTriggerNotification consumer.
                     alert.setActive(false);
-                    alert.setTriggeredAt(LocalDateTime.now());
-                    alertRepository.save(alert);
+                    alert.setTriggeredAt(triggeredAt);
                     publishTriggerNotification(alert, listing);
                     triggered++;
                     log.info("PriceAlert triggered: id={}, ownerId={}, ticker={}, price={}, threshold={}, condition={}",

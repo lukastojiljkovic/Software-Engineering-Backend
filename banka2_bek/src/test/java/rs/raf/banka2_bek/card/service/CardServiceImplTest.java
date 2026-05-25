@@ -167,6 +167,29 @@ class CardServiceImplTest {
             CardResponseDto result = cardService.createCard(dto);
             assertThat(result.getCardLimit()).isEqualByComparingTo("100000");
         }
+
+        @Test
+        @DisplayName("BE-ACC-01 (PCI-DSS): createCard NIKAD ne vraca raw CVV u response-u")
+        void createCardNeverLeaksCvv() {
+            mockAuth("stefan@test.com");
+            when(clientRepository.findByEmail("stefan@test.com")).thenReturn(Optional.of(client));
+            when(accountRepository.findById(1L)).thenReturn(Optional.of(personalAccount));
+            when(cardRepository.countByAccountIdAndStatusNot(1L, CardStatus.DEACTIVATED)).thenReturn(0L);
+            when(cardRepository.findByCardNumber(anyString())).thenReturn(Optional.empty());
+            when(cardRepository.save(any(Card.class))).thenAnswer(inv -> {
+                Card c = inv.getArgument(0);
+                c.setId(1L);
+                // simuliramo da entity ima plaintext CVV (kao realan flow) —
+                // DTO ipak mora da vrati null.
+                return c;
+            });
+
+            CreateCardRequestDto dto = new CreateCardRequestDto();
+            dto.setAccountId(1L);
+
+            CardResponseDto result = cardService.createCard(dto);
+            assertThat(result.getCvv()).as("CVV NIKAD ne sme da napusti BE u response-u (PCI-DSS)").isNull();
+        }
     }
 
     @Nested

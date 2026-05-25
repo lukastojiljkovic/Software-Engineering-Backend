@@ -222,18 +222,41 @@ class OrderValidationServiceTest {
     }
 
     @Nested
-    @DisplayName("accountId")
-    class AccountId {
+    @DisplayName("accountId / fundId — XOR (BE-ORD-01 fix)")
+    class AccountIdXor {
 
         @Test
-        @DisplayName("null accountId baca grešku")
-        void nullAccountId() {
+        @DisplayName("null accountId i null fundId baca grešku (XOR neispunjen)")
+        void nullAccountIdAndNullFundId() {
             CreateOrderDto dto = validMarketBuyDto();
             dto.setAccountId(null);
+            dto.setFundId(null);
 
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> service.validate(dto));
-            assertEquals("Account ID is required", ex.getMessage());
+            assertEquals("Either accountId or fundId is required", ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("FUND BUY supervizora: samo fundId, bez accountId — prolazi validaciju")
+        void fundIdOnly_validates() {
+            CreateOrderDto dto = validMarketBuyDto();
+            dto.setAccountId(null);
+            dto.setFundId(7L);
+
+            assertDoesNotThrow(() -> service.validate(dto));
+        }
+
+        @Test
+        @DisplayName("oba postavljena (accountId + fundId) → IllegalArgumentException (mutually exclusive)")
+        void bothSet_rejected() {
+            CreateOrderDto dto = validMarketBuyDto();
+            dto.setAccountId(100L);
+            dto.setFundId(7L);
+
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.validate(dto));
+            assertEquals("accountId and fundId are mutually exclusive", ex.getMessage());
         }
     }
 

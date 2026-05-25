@@ -32,6 +32,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -54,6 +56,8 @@ public class AccountServiceImplementation implements AccountService {
     private final CardService cardService;
     private final NotificationPublisher notificationPublisher;
     private final String bankRegistrationNumber;
+    // BE-PAY-01: audit hooks za status/limits change
+    private final AuditLogService auditLogService;
 
     public AccountServiceImplementation(AccountRepository accountRepository,
                                          ClientRepository clientRepository,
@@ -63,7 +67,8 @@ public class AccountServiceImplementation implements AccountService {
                                          UserRepository userRepository,
                                          @Lazy CardService cardService,
                                          NotificationPublisher notificationPublisher,
-                                         @Value("${bank.registration-number}") String bankRegistrationNumber) {
+                                         @Value("${bank.registration-number}") String bankRegistrationNumber,
+                                         AuditLogService auditLogService) {
         this.accountRepository = accountRepository;
         this.clientRepository = clientRepository;
         this.currencyRepository = currencyRepository;
@@ -73,6 +78,7 @@ public class AccountServiceImplementation implements AccountService {
         this.cardService = cardService;
         this.notificationPublisher = notificationPublisher;
         this.bankRegistrationNumber = bankRegistrationNumber;
+        this.auditLogService = auditLogService;
     }
 
     @Override
@@ -252,12 +258,29 @@ public class AccountServiceImplementation implements AccountService {
     public AccountResponseDto changeAccountStatus(Long accountId, String newStatus) {
         Account account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new RuntimeException("Racun sa ID " + accountId + " nije pronadjen"));
+        AccountStatus oldStatus = account.getStatus();
         try {
             account.setStatus(AccountStatus.valueOf(newStatus.toUpperCase()));
         } catch (IllegalArgumentException e) {
             throw new RuntimeException("Nepoznat status: " + newStatus);
         }
         account = accountRepository.save(account);
+
+        // BE-PAY-01: audit hook za account status change
+        Long ownerId = account.getClient() != null ? account.getClient().getId() : null;
+        try {
+            auditLogService.record(
+                    ownerId, "EMPLOYEE",
+                    AuditActionType.ACCOUNT_STATUS_CHANGED,
+                    "Account " + accountId + " status changed",
+                    "ACCOUNT", accountId,
+                    oldStatus != null ? oldStatus.name() : null,
+                    account.getStatus() != null ? account.getStatus().name() : null);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action=ACCOUNT_STATUS_CHANGED target=ACCOUNT/{}: {}",
+                    accountId, e.getMessage());
+        }
+
         return toResponse(account);
     }
 
@@ -345,6 +368,8 @@ public class AccountServiceImplementation implements AccountService {
     @Transactional
     public AccountResponseDto updateAccountLimits(Long accountId, BigDecimal dailyLimit, BigDecimal monthlyLimit) {
         Account account = checkAuth(accountId);
+        BigDecimal oldDaily = account.getDailyLimit();
+        BigDecimal oldMonthly = account.getMonthlyLimit();
 
         // Verifikacija promene limita (Celina 2 — "Promena limita (zahteva verifikaciju)").
         // Mobilni OTP flow je vec implementiran kao VerificationModal komponenta na FE-u
@@ -361,6 +386,21 @@ public class AccountServiceImplementation implements AccountService {
         }
 
         accountRepository.save(account);
+
+        // BE-PAY-01: audit hook za account limits change
+        Long ownerId = account.getClient() != null ? account.getClient().getId() : null;
+        try {
+            auditLogService.record(
+                    ownerId, "CLIENT",
+                    AuditActionType.ACCOUNT_LIMITS_CHANGED,
+                    "Account " + accountId + " limits changed",
+                    "ACCOUNT", accountId,
+                    "daily=" + oldDaily + ",monthly=" + oldMonthly,
+                    "daily=" + dailyLimit + ",monthly=" + monthlyLimit);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action=ACCOUNT_LIMITS_CHANGED target=ACCOUNT/{}: {}",
+                    accountId, e.getMessage());
+        }
 
         return toResponse(account);
     }

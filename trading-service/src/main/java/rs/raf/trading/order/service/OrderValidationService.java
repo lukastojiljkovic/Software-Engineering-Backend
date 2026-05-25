@@ -31,8 +31,16 @@ public class OrderValidationService {
             }
         }
 
-        if (dto.getAccountId() == null) {
-            throw new IllegalArgumentException("Account ID is required");
+        // XOR enforcement: order mora imati ili accountId (klijent/zaposleni
+        // direktan order) ili fundId (supervizor kupuje u ime fonda — P3 /
+        // Celina 4 (Nova) §3883-3964), ali NE oba (kontradikcija).
+        // Bez ovog XOR-a se FUND BUY supervizora gusi pre nego sto OrderServiceImpl
+        // stigne da resolve-uje fund.accountId.
+        if (dto.getAccountId() == null && dto.getFundId() == null) {
+            throw new IllegalArgumentException("Either accountId or fundId is required");
+        }
+        if (dto.getAccountId() != null && dto.getFundId() != null) {
+            throw new IllegalArgumentException("accountId and fundId are mutually exclusive");
         }
     }
 

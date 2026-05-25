@@ -135,4 +135,21 @@ class JwtAuthenticationFilterTest {
         assertThat(response.getStatus()).isEqualTo(401);
         verify(filterChain, never()).doFilter(request, response);
     }
+
+    @Test
+    void doFilterInternal_refreshTokenAsBearer_returns401() throws ServletException, IOException {
+        // SEC-03: refresh token ne sme da prodje kao access token kroz Bearer
+        // header. Filter mora vratiti 401 i NE zvati doFilter za downstream.
+        String refreshToken = "refresh.jwt.token";
+        request.addHeader("Authorization", "Bearer " + refreshToken);
+
+        when(jwtService.isRefreshToken(refreshToken)).thenReturn(true);
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        verify(filterChain, never()).doFilter(request, response);
+        // extractEmail i loadUserByUsername se NE smeju zvati za refresh tokene.
+        verify(jwtService, never()).extractEmail(anyString());
+    }
 }

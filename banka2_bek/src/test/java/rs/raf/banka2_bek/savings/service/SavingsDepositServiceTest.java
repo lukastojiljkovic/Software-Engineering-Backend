@@ -55,6 +55,7 @@ class SavingsDepositServiceTest {
     @Mock AccountRepository accountRepo;
     @Mock UserResolver userResolver;
     @Mock OtpService otpService;
+    @Mock rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     @InjectMocks SavingsDepositService service;
 

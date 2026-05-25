@@ -80,6 +80,8 @@ class PaymentServiceImplTest {
     private InterbankTransactionRepository interbankTransactionRepository;
     @Mock
     private NotificationService notificationService;
+    @Mock
+    private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     private PaymentServiceImpl paymentService;
 
@@ -97,7 +99,7 @@ class PaymentServiceImplTest {
                 exchangeService, notificationPublisher,
                 bankRoutingService, transactionExecutorService,
                 interbankPaymentAsyncService, interbankTransactionRepository,
-                "22200022", notificationService);
+                "22200022", notificationService, auditLogService);
 
         lenient().when(bankRoutingService.isLocalAccount(any())).thenReturn(true);
 
@@ -728,6 +730,48 @@ class PaymentServiceImplTest {
         ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getPaymentCode()).isNull();
+    }
+
+    // ========== BE-PAY-01 audit hook tests ==========
+
+    @Test
+    void recordAbortedPayment_firesAuditHookForPaymentAborted() {
+        // BE-PAY-01: kad placanje bude abort-ovano (3 OTP fails / OTP isteka),
+        // mora se zabeleziti audit log entry sa PAYMENT_ABORTED akcijom.
+        when(accountRepository.findByAccountNumber(request.getFromAccount())).thenReturn(Optional.of(fromAccount));
+        when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            p.setId(123L);
+            return p;
+        });
+
+        paymentService.recordAbortedPayment(request, "OTP max retries");
+
+        verify(auditLogService).record(
+                eq(client.getId()),
+                eq("CLIENT"),
+                eq(rs.raf.banka2_bek.audit.model.AuditActionType.PAYMENT_ABORTED),
+                argThat(desc -> desc != null && desc.contains("OTP max retries")),
+                eq("PAYMENT"),
+                eq(123L));
+    }
+
+    @Test
+    void recordAbortedPayment_auditHookFailureDoesNotFailPayment() {
+        // BE-PAY-01: audit log je best-effort — ako baci, payment treba da prodje.
+        when(accountRepository.findByAccountNumber(request.getFromAccount())).thenReturn(Optional.of(fromAccount));
+        when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            p.setId(456L);
+            return p;
+        });
+        doThrow(new RuntimeException("audit DB unreachable"))
+                .when(auditLogService).record(any(), any(), any(), any(), any(), any());
+
+        Long id = paymentService.recordAbortedPayment(request, "OTP failed");
+
+        // Payment se i dalje uspesno cuva
+        assertThat(id).isEqualTo(456L);
     }
 
     private void authenticateAs(String email) {

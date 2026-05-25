@@ -23,6 +23,8 @@ import rs.raf.banka2_bek.account.repository.AccountRepository;
 import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.transfers.repository.TransferRepository;
 import rs.raf.banka2_bek.exchange.ExchangeService;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +40,8 @@ public class TransferService {
     private final ClientRepository clientRepository;
 
     private final NotificationService notificationService;
+    // BE-PAY-01: audit hooks za transfer flow
+    private final AuditLogService auditLogService;
 
     @Value("${bank.registration-number}")
     private String bankRegistrationNumber;
@@ -46,12 +50,27 @@ public class TransferService {
                            AccountRepository accountRepository,
                            ExchangeService exchangeService,
                            ClientRepository clientRepository,
-                           NotificationService notificationService) {
+                           NotificationService notificationService,
+                           AuditLogService auditLogService) {
         this.transferRepository = transferRepository;
         this.accountRepository = accountRepository;
         this.exchangeService = exchangeService;
         this.clientRepository = clientRepository;
         this.notificationService = notificationService;
+        this.auditLogService = auditLogService;
+    }
+
+    /**
+     * BE-PAY-01 audit hook helper: best-effort.
+     */
+    private void recordAuditSafe(Long actorId, String actorType, AuditActionType action,
+                                 String description, String targetType, Long targetId) {
+        try {
+            auditLogService.record(actorId, actorType, action, description, targetType, targetId);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action={} target={}/{}: {}",
+                    action, targetType, targetId, e.getMessage());
+        }
     }
 
     private TransferResponseDto mapToDto(Transfer transfer) {
@@ -149,6 +168,14 @@ public class TransferService {
         } catch (Exception e) {
             log.warn("Failed to send transfer notification: {}", e.getMessage());
         }
+
+        // BE-PAY-01: audit hook za internal transfer
+        recordAuditSafe(
+                actor.getId(), "CLIENT",
+                AuditActionType.TRANSFER_INTERNAL,
+                "Internal transfer " + request.getAmount() + " " + fromAccount.getCurrency().getCode()
+                        + " from " + fromAccount.getAccountNumber() + " to " + toAccount.getAccountNumber(),
+                "TRANSFER", transfer.getId());
 
         return mapToDto(transfer);
     }
@@ -267,6 +294,15 @@ public class TransferService {
         } catch (Exception e) {
             log.warn("Failed to send FX transfer notification: {}", e.getMessage());
         }
+
+        // BE-PAY-01: audit hook za FX transfer
+        recordAuditSafe(
+                actor.getId(), "CLIENT",
+                AuditActionType.TRANSFER_FX,
+                "FX transfer " + request.getAmount() + " " + fromCurrencyCode
+                        + " -> " + toAmount + " " + toCurrencyCode + " (rate=" + exchangeRate
+                        + ", commission=" + commissionAmount + ")",
+                "TRANSFER", transfer.getId());
 
         return mapToDto(transfer);
     }

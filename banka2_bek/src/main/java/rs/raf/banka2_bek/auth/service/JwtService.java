@@ -27,6 +27,7 @@ public class JwtService {
     public String generateAccessToken(User user) {
         return Jwts.builder()
                 .subject(user.getEmail())
+                .claim("type", "access") // SEC-03: explicit type guard against refresh-token reuse
                 .claim("role", user.getRole())
                 .claim("active", user.isActive())
                 .issuedAt(new Date())
@@ -41,6 +42,7 @@ public class JwtService {
                 ? "ADMIN" : "EMPLOYEE";
         return Jwts.builder()
                 .subject(employee.getEmail())
+                .claim("type", "access") // SEC-03: explicit type guard against refresh-token reuse
                 .claim("role", role)
                 .claim("active", employee.getActive())
                 .issuedAt(new Date())

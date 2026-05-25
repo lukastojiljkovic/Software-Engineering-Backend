@@ -65,7 +65,14 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
             "/auth/login",
             "/auth/refresh",
             "/auth/password_reset/request",
-            "/auth-employee/activate"
+            "/auth-employee/activate",
+            // SEC-09: rate-limit OTP verifikacije po IP-u — kombinovano sa per-email
+            // counter-om u OtpService (3 fail -> blocked=true). Filter koristi isti
+            // capacity (default 10/min), gadja oba glavna OTP entry-point-a:
+            // - /payments/verify: klijentski payment OTP flow (PaymentController)
+            // - /otp/verify: alias / forward-compat (ako BE doda public route)
+            "/payments/verify",
+            "/otp/verify"
     );
 
     @Override

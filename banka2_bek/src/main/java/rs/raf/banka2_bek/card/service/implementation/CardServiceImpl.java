@@ -23,6 +23,8 @@ import rs.raf.banka2_bek.client.repository.ClientRepository;
 import rs.raf.banka2_bek.notification.NotificationPublisher;
 import rs.raf.banka2_bek.notification.model.NotificationType;
 import rs.raf.banka2_bek.notification.service.NotificationService;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -40,6 +42,21 @@ public class CardServiceImpl implements CardService {
     private final ClientRepository clientRepository;
     private final NotificationPublisher notificationPublisher;
     private final NotificationService notificationService;
+    // BE-PAY-01: audit log za card lifecycle (block/unblock/limit change)
+    private final AuditLogService auditLogService;
+
+    /**
+     * BE-PAY-01 audit hook helper: best-effort.
+     */
+    private void recordAuditSafe(Long actorId, String actorType, AuditActionType action,
+                                 String description, String targetType, Long targetId) {
+        try {
+            auditLogService.record(actorId, actorType, action, description, targetType, targetId);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action={} target={}/{}: {}",
+                    action, targetType, targetId, e.getMessage());
+        }
+    }
 
     @Override
     @Transactional
@@ -170,6 +187,14 @@ public class CardServiceImpl implements CardService {
             }
         }
 
+        // BE-PAY-01: audit hook za card block
+        Long ownerId = card.getClient() != null ? card.getClient().getId() : null;
+        recordAuditSafe(
+                ownerId, "CLIENT",
+                AuditActionType.CARD_BLOCKED,
+                "Card " + cardId + " blocked",
+                "CARD", cardId);
+
         return response;
     }
 
@@ -209,6 +234,14 @@ public class CardServiceImpl implements CardService {
             }
         }
 
+        // BE-PAY-01: audit hook za card unblock
+        Long ownerId = card.getClient() != null ? card.getClient().getId() : null;
+        recordAuditSafe(
+                ownerId, "EMPLOYEE",
+                AuditActionType.CARD_UNBLOCKED,
+                "Card " + cardId + " unblocked",
+                "CARD", cardId);
+
         return response;
     }
 
@@ -235,6 +268,7 @@ public class CardServiceImpl implements CardService {
         if (card.getStatus() == CardStatus.DEACTIVATED) {
             throw new RuntimeException("Ne moze se menjati limit deaktivirane kartice");
         }
+        BigDecimal oldLimit = card.getCardLimit();
         card.setCardLimit(newLimit);
         CardResponseDto limitResponse = toMaskedResponse(cardRepository.save(card));
 
@@ -252,6 +286,20 @@ public class CardServiceImpl implements CardService {
             } catch (Exception e) {
                 log.warn("Failed to send card limit change notification: {}", e.getMessage());
             }
+        }
+
+        // BE-PAY-01: audit hook za card limit change
+        Long ownerId = card.getClient() != null ? card.getClient().getId() : null;
+        try {
+            auditLogService.record(
+                    ownerId, "CLIENT",
+                    AuditActionType.CARD_LIMIT_CHANGED,
+                    "Card " + cardId + " limit changed",
+                    "CARD", cardId,
+                    String.valueOf(oldLimit), String.valueOf(newLimit));
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action=CARD_LIMIT_CHANGED target=CARD/{}: {}",
+                    cardId, e.getMessage());
         }
 
         return limitResponse;
@@ -372,12 +420,21 @@ public class CardServiceImpl implements CardService {
         return resolveCardName(cardType, CardCategory.DEBIT);
     }
 
+    /**
+     * BE-ACC-01 (PCI-DSS): CVV nikad ne sme da napusti server posle izdavanja
+     * kartice. Iako entity {@code Card.cvv} cuva plaintext za internu verifikaciju
+     * (TODO: hash), DTO uvek vraca {@code null} bez obzira na endpoint
+     * (create / get / top-up / withdraw). {@code cardNumber} se vraca u
+     * punom obliku samo na createCard/createCardForAccount (jednom — posiljaocu
+     * obavestenja); maskirani prikaz koristi {@link #toMaskedResponse(Card)}.
+     */
     private CardResponseDto toResponse(Card card) {
         return CardResponseDto.builder()
                 .id(card.getId())
                 .cardNumber(card.getCardNumber())
                 .cardName(card.getCardName())
-                .cvv(card.getCvv())
+                // BE-ACC-01: CVV nikad ne izlazi sa BE-a (PCI-DSS).
+                .cvv(null)
                 .cardType(card.getCardType())
                 .cardCategory(card.getCardCategory())
                 .accountId(card.getAccount().getId())
@@ -464,7 +521,10 @@ public class CardServiceImpl implements CardService {
             }
         }
 
-        Account sourceAccount = accountRepository.findById(sourceAccountId)
+        // BE-ACC-03: pessimistic lock na sourceAccount sprecava lost-update race
+        // pri paralelnim top-up zahtevima za isti racun (read→check→write bez
+        // lock-a bi dozvolio overdraft).
+        Account sourceAccount = accountRepository.findForUpdateById(sourceAccountId)
                 .orElseThrow(() -> new RuntimeException("Racun nije pronadjen"));
         // Vlasnik racuna mora biti vlasnik kartice.
         if (sourceAccount.getClient() == null
@@ -506,7 +566,10 @@ public class CardServiceImpl implements CardService {
             }
         }
 
-        Account targetAccount = accountRepository.findById(targetAccountId)
+        // BE-ACC-03: pessimistic lock na targetAccount za simetricnost sa
+        // top-up putanjom — sprecava lost-update race kad paralelni withdraw-i
+        // pisu na isti racun (read→add→write je non-atomic bez lock-a).
+        Account targetAccount = accountRepository.findForUpdateById(targetAccountId)
                 .orElseThrow(() -> new RuntimeException("Racun nije pronadjen"));
         if (targetAccount.getClient() == null
                 || !targetAccount.getClient().getId().equals(card.getClient().getId())) {

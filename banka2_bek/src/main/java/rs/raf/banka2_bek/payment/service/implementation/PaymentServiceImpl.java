@@ -45,6 +45,8 @@ import rs.raf.banka2_bek.transaction.dto.TransactionListItemDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionResponseDto;
 import rs.raf.banka2_bek.transaction.dto.TransactionType;
 import rs.raf.banka2_bek.transaction.service.TransactionService;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -70,6 +72,9 @@ public class PaymentServiceImpl implements PaymentService {
     private final InterbankTransactionRepository interbankTransactionRepository;
     private final String bankRegistrationNumber;
     private final NotificationService notificationService;
+    // BE-PAY-01: audit log za payment lifecycle. Optional via @Autowired(required=false)
+    // bi bilo bolje, ali polje je final pa rezolvujemo kroz field setter kasnije.
+    private final AuditLogService auditLogService;
 
     private static final int ORDER_NUMBER_MAX_RETRIES = 5;
     private static final BigDecimal COMMISSION_RATE = new BigDecimal("0.005"); // 0.5%
@@ -87,7 +92,8 @@ public class PaymentServiceImpl implements PaymentService {
                               InterbankPaymentAsyncService interbankPaymentAsyncService,
                               InterbankTransactionRepository interbankTransactionRepository,
                               @Value("${bank.registration-number}") String bankRegistrationNumber,
-                              NotificationService notificationService) {
+                              NotificationService notificationService,
+                              AuditLogService auditLogService) {
         this.paymentRepository = paymentRepository;
         this.paymentAccountRepository = paymentAccountRepository;
         this.accountRepository = accountRepository;
@@ -102,6 +108,23 @@ public class PaymentServiceImpl implements PaymentService {
         this.interbankTransactionRepository = interbankTransactionRepository;
         this.bankRegistrationNumber = bankRegistrationNumber;
         this.notificationService = notificationService;
+        this.auditLogService = auditLogService;
+    }
+
+    /**
+     * BE-PAY-01: best-effort audit hook. Ne baca exception ako AuditLogService
+     * fails — auditing je best-effort i ne sme da fail-uje payment flow.
+     * AuditLogService.record je @Transactional(REQUIRES_NEW), pa njegova greska
+     * ne pravi rollback nase pozivajuce transakcije.
+     */
+    private void recordAuditSafe(Long actorId, String actorType, AuditActionType action,
+                                 String description, String targetType, Long targetId) {
+        try {
+            auditLogService.record(actorId, actorType, action, description, targetType, targetId);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action={} target={}/{}: {}",
+                    action, targetType, targetId, e.getMessage());
+        }
     }
 
     /**
@@ -278,6 +301,15 @@ public class PaymentServiceImpl implements PaymentService {
         } catch (Exception e) {
             log.warn("Failed to send payment notification: {}", e.getMessage());
         }
+
+        // BE-PAY-01: audit hook za uspesno placanje
+        String currencyCode = fromAccount.getCurrency() != null ? fromAccount.getCurrency().getCode() : "";
+        recordAuditSafe(
+                client.getId(), "CLIENT",
+                AuditActionType.PAYMENT_CREATED,
+                "Payment " + amount + " " + currencyCode + " "
+                        + fromAccount.getAccountNumber() + " -> " + request.getToAccount(),
+                "PAYMENT", savedPayment.getId());
 
         return toResponse(savedPayment, client.getId(), null);
     }
@@ -578,6 +610,13 @@ public class PaymentServiceImpl implements PaymentService {
             for (int attempt = 1; attempt <= ORDER_NUMBER_MAX_RETRIES; attempt++) {
                 try {
                     Payment saved = paymentRepository.saveAndFlush(payment);
+                    // BE-PAY-01: audit hook za ABORTED placanje (3 OTP fails ili timeout)
+                    recordAuditSafe(
+                            client.getId(), "CLIENT",
+                            AuditActionType.PAYMENT_ABORTED,
+                            "Payment aborted: " + (reason != null ? reason : "unspecified")
+                                    + " (amount=" + request.getAmount() + ")",
+                            "PAYMENT", saved.getId());
                     return saved.getId();
                 } catch (DataIntegrityViolationException ex) {
                     payment.setOrderNumber(generateOrderNumber());

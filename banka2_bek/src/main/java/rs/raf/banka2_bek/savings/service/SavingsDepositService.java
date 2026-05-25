@@ -27,6 +27,8 @@ import rs.raf.banka2_bek.savings.exception.SavingsDepositNotFoundException;
 import rs.raf.banka2_bek.savings.mapper.SavingsMapper;
 import rs.raf.banka2_bek.savings.repository.SavingsDepositRepository;
 import rs.raf.banka2_bek.savings.repository.SavingsTransactionRepository;
+import rs.raf.banka2_bek.audit.model.AuditActionType;
+import rs.raf.banka2_bek.audit.service.AuditLogService;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -60,6 +62,22 @@ public class SavingsDepositService {
     private final AccountRepository accountRepo;
     private final UserResolver userResolver;
     private final OtpService otpService;
+    // BE-PAY-01: audit hooks za savings deposit lifecycle
+    private final AuditLogService auditLogService;
+
+    /**
+     * BE-PAY-01 audit hook helper: best-effort. AuditLogService je
+     * @Transactional(REQUIRES_NEW) pa fail u njemu ne rollback-uje pozivajucu tx.
+     */
+    private void recordAuditSafe(Long actorId, String actorType, AuditActionType action,
+                                 String description, String targetType, Long targetId) {
+        try {
+            auditLogService.record(actorId, actorType, action, description, targetType, targetId);
+        } catch (Exception e) {
+            log.warn("Audit log fail (best-effort) action={} target={}/{}: {}",
+                    action, targetType, targetId, e.getMessage());
+        }
+    }
 
     @Value("${bank.registration-number}")
     private String bankRegistrationNumber;
@@ -151,6 +169,14 @@ public class SavingsDepositService {
         log.info("Otvoren stedni depozit id={} client={} principal={} {} term={}m",
                 deposit.getId(), me.userId(), dto.getPrincipalAmount(), currencyCode, dto.getTermMonths());
 
+        // BE-PAY-01: audit hook za otvaranje depozita
+        recordAuditSafe(
+                me.userId(), "CLIENT",
+                AuditActionType.SAVINGS_OPENED,
+                "Savings deposit opened: " + dto.getPrincipalAmount() + " " + currencyCode
+                        + " term=" + dto.getTermMonths() + "m rate=" + rate.getAnnualRate() + "%",
+                "SAVINGS_DEPOSIT", deposit.getId());
+
         return mapper.toDepositDto(deposit);
     }
 
@@ -239,6 +265,14 @@ public class SavingsDepositService {
 
         log.info("Raskinut depozit id={} client={} penalty={}",
                 d.getId(), me.userId(), penalty);
+
+        // BE-PAY-01: audit hook za rani raskid depozita
+        recordAuditSafe(
+                me.userId(), "CLIENT",
+                AuditActionType.SAVINGS_WITHDRAWN_EARLY,
+                "Savings deposit " + d.getId() + " withdrawn early (returned=" + returned
+                        + " penalty=" + penalty + " " + d.getCurrency().getCode() + ")",
+                "SAVINGS_DEPOSIT", d.getId());
 
         return mapper.toDepositDto(d);
     }

@@ -51,6 +51,7 @@ class TransferServiceCoverageTest {
     @Mock private ExchangeService exchangeService;
     @Mock private ClientRepository clientRepository;
     @Mock private NotificationService notificationService;
+    @Mock private rs.raf.banka2_bek.audit.service.AuditLogService auditLogService;
 
     private TransferService transferService;
 
@@ -62,7 +63,8 @@ class TransferServiceCoverageTest {
         // iz integration testa) i Mockito strict stub puca jer code-under-test
         // poziva findByEmail sa neocekivanim argumentom.
         SecurityContextHolder.clearContext();
-        transferService = new TransferService(transferRepository, accountRepository, exchangeService, clientRepository, notificationService);
+        transferService = new TransferService(transferRepository, accountRepository, exchangeService,
+                clientRepository, notificationService, auditLogService);
         Field f = TransferService.class.getDeclaredField("bankRegistrationNumber");
         f.setAccessible(true);
         f.set(transferService, "22200022");
