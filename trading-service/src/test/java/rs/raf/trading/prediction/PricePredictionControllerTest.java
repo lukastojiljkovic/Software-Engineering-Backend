@@ -9,6 +9,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import rs.raf.trading.common.TradingGlobalExceptionHandler;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -40,7 +41,15 @@ class PricePredictionControllerTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        // .setControllerAdvice(...) regresivna zastita: bez ovog setUp-a,
+        // ResponseStatusException(NOT_FOUND) iz kontrolera bi prosao do MockMvc
+        // direktno (404 OK), ali u produkciji bi @ExceptionHandler(RuntimeException.class)
+        // u TradingGlobalExceptionHandler-u pretvorio u 400. Sa advice-om u test setup-u,
+        // proveravamo da PRAVI prod handler propagira 404 ispravno.
+        mockMvc = MockMvcBuilders
+                .standaloneSetup(controller)
+                .setControllerAdvice(new TradingGlobalExceptionHandler())
+                .build();
     }
 
     private PricePredictionEntity entity(String symbol) {

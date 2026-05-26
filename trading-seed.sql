@@ -1565,24 +1565,24 @@ VALUES
 -- account_id: 1=Stefan RSD, 4=Milica RSD, 7=Lazar RSD, 10=Ana Youth RSD
 
 -- Margin accounts: only insert if user doesn't already have one
-INSERT INTO margin_accounts (bank_participation, created_at, initial_margin, loan_value,
+INSERT INTO margin_accounts (dtype, bank_participation, created_at, initial_margin, loan_value,
                                     maintenance_margin, status, user_id, account_id)
-SELECT 0.4000, NOW(), 50000.0000, 20000.0000, 25000.0000, 'ACTIVE', 1, 1
+SELECT 'USER', 0.4000, NOW(), 50000.0000, 20000.0000, 25000.0000, 'ACTIVE', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM margin_accounts WHERE user_id = 1);
 
-INSERT INTO margin_accounts (bank_participation, created_at, initial_margin, loan_value,
+INSERT INTO margin_accounts (dtype, bank_participation, created_at, initial_margin, loan_value,
                                     maintenance_margin, status, user_id, account_id)
-SELECT 0.5000, NOW(), 25000.0000, 12500.0000, 12500.0000, 'BLOCKED', 2, 4
+SELECT 'USER', 0.5000, NOW(), 25000.0000, 12500.0000, 12500.0000, 'BLOCKED', 2, 4
 WHERE NOT EXISTS (SELECT 1 FROM margin_accounts WHERE user_id = 2);
 
-INSERT INTO margin_accounts (bank_participation, created_at, initial_margin, loan_value,
+INSERT INTO margin_accounts (dtype, bank_participation, created_at, initial_margin, loan_value,
                                     maintenance_margin, status, user_id, account_id)
-SELECT 0.3000, NOW(), 40000.0000, 12000.0000, 20000.0000, 'ACTIVE', 3, 7
+SELECT 'USER', 0.3000, NOW(), 40000.0000, 12000.0000, 20000.0000, 'ACTIVE', 3, 7
 WHERE NOT EXISTS (SELECT 1 FROM margin_accounts WHERE user_id = 3);
 
-INSERT INTO margin_accounts (bank_participation, created_at, initial_margin, loan_value,
+INSERT INTO margin_accounts (dtype, bank_participation, created_at, initial_margin, loan_value,
                                     maintenance_margin, status, user_id, account_id)
-SELECT 0.4500, NOW(), 30000.0000, 13500.0000, 15000.0000, 'ACTIVE', 4, 10
+SELECT 'USER', 0.4500, NOW(), 30000.0000, 13500.0000, 15000.0000, 'ACTIVE', 4, 10
 WHERE NOT EXISTS (SELECT 1 FROM margin_accounts WHERE user_id = 4);
 
 -- Margin transactions: only insert if account has no transactions yet

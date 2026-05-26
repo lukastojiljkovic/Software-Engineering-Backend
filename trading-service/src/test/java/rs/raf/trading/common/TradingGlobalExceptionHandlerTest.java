@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.server.ResponseStatusException;
 import rs.raf.trading.client.BankaCoreClientException;
 import rs.raf.trading.common.dto.MessageResponseDto;
 
@@ -96,6 +97,45 @@ class TradingGlobalExceptionHandlerTest {
         assertThat(response.getBody().getMessage())
                 .contains("Greska internog API ugovora")
                 .contains("los zahtev ka internom API-ju");
+    }
+
+    // ── ResponseStatusException → propagira originalni status (26.05 fix) ──
+    // Pre fix-a: ResponseStatusException(404) je padao na handleRuntimeException
+    // (RuntimeException catch-all) i bio rewrap-ovan u 400. Sada postoji specifican
+    // @ExceptionHandler(ResponseStatusException) koji propagira originalni status.
+
+    @Test
+    @DisplayName("ResponseStatusException(404) propagira 404 NOT_FOUND (ne 400)")
+    void responseStatusException_notFound_propagates404() {
+        ResponseEntity<MessageResponseDto> response = handler.handleResponseStatusException(
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "Nema predikcije za simbol: AAPL"));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Nema predikcije za simbol: AAPL");
+    }
+
+    @Test
+    @DisplayName("ResponseStatusException(409) propagira 409 CONFLICT")
+    void responseStatusException_conflict_propagates409() {
+        ResponseEntity<MessageResponseDto> response = handler.handleResponseStatusException(
+                new ResponseStatusException(HttpStatus.CONFLICT, "Order vec u izvrsenju"));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Order vec u izvrsenju");
+    }
+
+    @Test
+    @DisplayName("ResponseStatusException bez reason → fallback na ex.getMessage()")
+    void responseStatusException_noReason_fallsBackToMessage() {
+        ResponseEntity<MessageResponseDto> response = handler.handleResponseStatusException(
+                new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.getBody()).isNotNull();
+        // ex.getMessage() format: "503 SERVICE_UNAVAILABLE"
+        assertThat(response.getBody().getMessage()).contains("503");
     }
 
     @Test

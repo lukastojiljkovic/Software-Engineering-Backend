@@ -12,6 +12,7 @@ import org.springframework.transaction.TransactionSystemException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 import rs.raf.trading.client.BankaCoreClientException;
 import rs.raf.trading.common.dto.MessageResponseDto;
 
@@ -200,6 +201,24 @@ public class TradingGlobalExceptionHandler {
             message = "Greska internog API ugovora: " + ex.getMessage();
         }
         return ResponseEntity.status(status).body(new MessageResponseDto(message));
+    }
+
+    /**
+     * Propagira originalni HTTP status iz {@link ResponseStatusException}.
+     * Bez ovog handler-a, generic {@link RuntimeException} catch-all bi pretvorio
+     * sve {@code ResponseStatusException} u 400 (npr. {@code PricePredictionController}
+     * baca {@code ResponseStatusException(NOT_FOUND, ...)} kad nema predikcije za
+     * simbol — to mora ostati 404 da FE moze gracefully sakriti widget).
+     *
+     * <p>Spring bira najspecificniji exception type, pa ovaj handler ima prioritet
+     * nad {@link #handleRuntimeException} za {@code ResponseStatusException}.</p>
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<MessageResponseDto> handleResponseStatusException(ResponseStatusException ex) {
+        String message = ex.getReason() != null ? ex.getReason() : ex.getMessage();
+        return ResponseEntity
+                .status(ex.getStatusCode())
+                .body(new MessageResponseDto(message));
     }
 
     @ExceptionHandler(RuntimeException.class)

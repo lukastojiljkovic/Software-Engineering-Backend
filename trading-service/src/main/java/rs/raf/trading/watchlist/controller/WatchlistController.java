@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.http.ResponseEntity;
 import jakarta.validation.Valid;
+import rs.raf.trading.watchlist.dto.AddWatchlistItemRequest;
 import rs.raf.trading.watchlist.dto.CreateWatchlistDto;
 import rs.raf.trading.watchlist.dto.WatchlistDto;
 import rs.raf.trading.watchlist.dto.WatchlistItemDto;
@@ -41,8 +42,8 @@ public class WatchlistController {
     }
 
     @PostMapping("/{id}/items")
-    public ResponseEntity<WatchlistItemDto> addItem(@PathVariable("id") Long id, @RequestParam("listingId") Long listingId) {
-        return ResponseEntity.ok(watchlistService.addItem(id, listingId));
+    public ResponseEntity<WatchlistItemDto> addItem(@PathVariable("id") Long id, @Valid @RequestBody AddWatchlistItemRequest request) {
+        return ResponseEntity.ok(watchlistService.addItem(id, request.getListingId()));
     }
 
     @DeleteMapping("/{id}/items/{listingId}")
