@@ -175,4 +175,48 @@ class GlobalExceptionHandlerTest {
         // Fallback message kad nema cause-a (getMostSpecificCause() vraca samog ex-a — sa porukom "Could not commit")
         assertThat(response.getBody().getMessage()).isNotBlank();
     }
+
+    // ── OptimisticLockingFailureException → 409 (P2 MINOR fix) ──────────
+    // @Version + concurrent update -> ranije generic 500. UI sad ima jasan
+    // 409 CONFLICT signal sa SR porukom za retry.
+
+    @Test
+    void handleOptimisticLock_mapsTo409Conflict() {
+        org.springframework.dao.OptimisticLockingFailureException ex =
+                new org.springframework.dao.OptimisticLockingFailureException("Stale entity version");
+
+        ResponseEntity<MessageResponseDto> response = handler.handleOptimisticLock(ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).contains("modifikovan");
+    }
+
+    @Test
+    void handleJpaOptimisticLock_mapsTo409Conflict() {
+        jakarta.persistence.OptimisticLockException ex =
+                new jakarta.persistence.OptimisticLockException("Row was updated by another transaction");
+
+        ResponseEntity<MessageResponseDto> response = handler.handleJpaOptimisticLock(ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).contains("modifikovan");
+    }
+
+    @Test
+    void handleTransactionSystemException_optimisticLockCause_returns409() {
+        // Spring AOP cesto wrap-uje OptimisticLockingFailureException u TransactionSystemException
+        // na commit fazi @Transactional-a — moramo unwrap-ovati i vratiti 409 umesto 400.
+        org.springframework.dao.OptimisticLockingFailureException root =
+                new org.springframework.dao.OptimisticLockingFailureException("Stale entity");
+        org.springframework.transaction.TransactionSystemException tx =
+                new org.springframework.transaction.TransactionSystemException("Could not commit JPA transaction", root);
+
+        ResponseEntity<MessageResponseDto> response = handler.handleTransactionSystemException(tx);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).contains("modifikovan");
+    }
 }

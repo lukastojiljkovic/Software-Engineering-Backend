@@ -109,8 +109,42 @@ public class GlobalExceptionHandler {
         } else if (cause instanceof AuthenticationFailedException
                 || cause instanceof AccountLockoutService.AccountLockedException) {
             status = HttpStatus.UNAUTHORIZED;
+        } else if (cause instanceof org.springframework.dao.OptimisticLockingFailureException
+                || cause instanceof jakarta.persistence.OptimisticLockException) {
+            // @Version concurrent update na commit fazi -> 409 (UI moze da retry-uje).
+            status = HttpStatus.CONFLICT;
+            message = "Resurs je u medjuvremenu modifikovan. Osvezite stranicu i pokusajte ponovo.";
         }
         return ResponseEntity.status(status).body(new MessageResponseDto(message));
+    }
+
+    /**
+     * Spring Data JPA {@code @Version} + concurrent update -> ranije Spring vracao
+     * generic 500. Sad 409 CONFLICT sa jasnom porukom za korisnika — UI moze da
+     * uradi retry sa fresh state-om (refresh stranice).
+     *
+     * <p>P2 MINOR fix iz OPEN_TASKS.md — semanticki ispravniji status code za
+     * optimistic locking failure (409 = client retry-able conflict).
+     */
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<MessageResponseDto> handleOptimisticLock(
+            org.springframework.dao.OptimisticLockingFailureException ex) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(new MessageResponseDto(
+                        "Resurs je u medjuvremenu modifikovan. Osvezite stranicu i pokusajte ponovo."));
+    }
+
+    /**
+     * Pokriva i jakarta {@code OptimisticLockException} koja moze biti bacena direktno
+     * iz JPA provider-a (Hibernate) pre nego sto Spring zavrsi conversion u
+     * {@link org.springframework.dao.OptimisticLockingFailureException}.
+     */
+    @ExceptionHandler(jakarta.persistence.OptimisticLockException.class)
+    public ResponseEntity<MessageResponseDto> handleJpaOptimisticLock(
+            jakarta.persistence.OptimisticLockException ex) {
+        return handleOptimisticLock(
+                new org.springframework.dao.OptimisticLockingFailureException(ex.getMessage(), ex));
     }
 
     // ===== Inter-bank protokol exception mappinzi (Tim 1 cross-bank live test, 2026-05-20)
