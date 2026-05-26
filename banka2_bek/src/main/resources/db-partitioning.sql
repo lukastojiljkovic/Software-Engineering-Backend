@@ -10,12 +10,19 @@
 --
 -- Hibernate ne razlikuje particionisanu od obicne tabele — radi normalno
 -- kroz @Entity. Particije se odrzavaju iz `PartitionMaintenanceService`-a.
+--
+-- NAPOMENA O `orders` TABELI:
+-- `orders` zivi u trading-service-u (zasebna baza `trading_db`), NE u banka2.
+-- Prethodna `orders_p` mirror putanja je bila dead code (orders nikad ne
+-- postoji u banka2 bazi). Uklonjena 26.05.2026. Particionisanje orders se
+-- moze uraditi kasnije kao zaseban task na trading-service SQL fajlu.
 -- ============================================================================
 
 BEGIN;
 
 -- ─── transactions ────────────────────────────────────────────────────────
--- Particionisemo po `timestamp` koloni (default-uje na NOW() pri INSERT-u).
+-- Particionisemo po `created_at` koloni (Hibernate mapira `createdAt` polje
+-- iz `Transaction` entity-ja na `created_at` po default naming strategiji).
 -- Particionisanje bezbedno zahteva da je particionisuca kolona u PRIMARY KEY-u.
 
 DO $$
@@ -31,7 +38,7 @@ BEGIN
 
         EXECUTE format($f$
             CREATE TABLE transactions (LIKE transactions_legacy INCLUDING DEFAULTS INCLUDING CONSTRAINTS)
-            PARTITION BY RANGE (timestamp);
+            PARTITION BY RANGE (created_at);
         $f$);
 
         -- Pocetna particija pokriva sve podatke iz legacy tabele.
@@ -46,35 +53,14 @@ BEGIN
     END IF;
 END $$;
 
--- ─── orders_p (orders je rezervisana rec u nekim PG verzijama) ───────────
--- JPA mapira na "orders" tabelu pod navodnicima. Particionisemo zasebnu kopiju
--- pod imenom orders_p (da bi entity mapping ostao netaknut, koristimo VIEW).
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-               WHERE c.relname = 'orders' AND n.nspname = 'public'
-               AND c.relkind = 'r')
-    THEN
-        -- Kreiraj particionisanu mirror tabelu.
-        EXECUTE format($f$
-            CREATE TABLE IF NOT EXISTS orders_p
-            (LIKE orders INCLUDING DEFAULTS INCLUDING CONSTRAINTS)
-            PARTITION BY RANGE (created_at);
-        $f$);
-
-        -- Inicijalna pocetna particija (sva istorija).
-        EXECUTE format($f$
-            CREATE TABLE IF NOT EXISTS orders_p_archive
-            PARTITION OF orders_p
-            FOR VALUES FROM (MINVALUE) TO ('%s-01');
-        $f$, to_char(date_trunc('month', NOW()), 'YYYY-MM'));
-    END IF;
-END $$;
-
 -- ─── interbank_messages ──────────────────────────────────────────────────
 -- Audit log za inter-bank protokol. Particionisemo po created_at — high-volume
 -- tabela u produkciji (svaki 2PC ciklus = 3 message-a).
+--
+-- VAZNO: PostgreSQL zahteva da UNIQUE indeks na particionisanoj tabeli mora
+-- ukljuciti particijski kljuc. Stari `idx_ibm_idempotence` je bio na samo
+-- (sender_routing_number, locally_generated_key) — recreate-ujemo sa
+-- created_at posle migracije.
 
 DO $$
 BEGIN
@@ -100,6 +86,44 @@ BEGIN
     END IF;
 END $$;
 
+-- UNIQUE indeks za §2.2 idempotency — MORA ukljuciti particijski kljuc.
+-- Drop stari (ako je Hibernate napravio pre particionisanja) i kreiraj novi
+-- koji sadrzi created_at.
+DROP INDEX IF EXISTS idx_ibm_idempotence;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ibm_idempotence
+    ON interbank_messages (sender_routing_number, locally_generated_key, created_at);
+
+-- ─── audit_logs ──────────────────────────────────────────────────────────
+-- B7 audit log — particionisemo po created_at (append-only, immutable zapisi,
+-- mesecno raste sa svakom administrativnom akcijom).
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relname = 'audit_logs' AND n.nspname = 'public'
+             AND c.relkind = 'r')
+     AND NOT EXISTS (
+         SELECT 1 FROM pg_partitioned_table pt
+         JOIN pg_class c ON c.oid = pt.partrelid
+         WHERE c.relname = 'audit_logs'
+     ) THEN
+    CREATE TABLE audit_logs_backup AS SELECT * FROM audit_logs;
+    CREATE TABLE audit_logs_partitioned (LIKE audit_logs INCLUDING ALL)
+      PARTITION BY RANGE (created_at);
+    INSERT INTO audit_logs_partitioned SELECT * FROM audit_logs_backup;
+    DROP TABLE audit_logs CASCADE;
+    ALTER TABLE audit_logs_partitioned RENAME TO audit_logs;
+    DROP TABLE audit_logs_backup;
+
+    -- Pocetna particija pokriva sve podatke iz backup-a (do tekuceg meseca).
+    EXECUTE format($f$
+        CREATE TABLE audit_logs_archive
+        PARTITION OF audit_logs
+        FOR VALUES FROM (MINVALUE) TO ('%s-01');
+    $f$, to_char(date_trunc('month', NOW()), 'YYYY-MM'));
+  END IF;
+END $$;
+
 -- ─── Kreiraj mesecne particije za tekuci + sledeca 3 meseca ──────────────
 -- (PartitionMaintenanceService ovo radi automatski na startup-u i kroz cron,
 -- ali ovde ih kreiramo eksplicitno za inicijalni setup.)
@@ -118,7 +142,7 @@ BEGIN
         partition_to := target_month + INTERVAL '1 month';
         partition_suffix := to_char(target_month, 'YYYY_MM');
 
-        FOR base_table IN SELECT unnest(ARRAY['transactions', 'orders_p', 'interbank_messages']) LOOP
+        FOR base_table IN SELECT unnest(ARRAY['transactions', 'interbank_messages', 'audit_logs']) LOOP
             IF EXISTS (SELECT 1 FROM pg_class WHERE relname = base_table AND relkind = 'p') THEN
                 EXECUTE format(
                     'CREATE TABLE IF NOT EXISTS %I_%s PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
@@ -139,5 +163,5 @@ COMMIT;
 -- FROM pg_inherits
 -- JOIN pg_class parent ON parent.oid = pg_inherits.inhparent
 -- JOIN pg_class child  ON child.oid  = pg_inherits.inhrelid
--- WHERE parent.relname IN ('transactions', 'orders_p', 'interbank_messages')
+-- WHERE parent.relname IN ('transactions', 'interbank_messages', 'audit_logs')
 -- ORDER BY parent.relname, child.relname;

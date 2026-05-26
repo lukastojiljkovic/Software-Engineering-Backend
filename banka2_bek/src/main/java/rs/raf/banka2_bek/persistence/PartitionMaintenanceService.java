@@ -37,11 +37,18 @@ public class PartitionMaintenanceService {
     private static final Logger log = LoggerFactory.getLogger(PartitionMaintenanceService.class);
     private static final DateTimeFormatter PARTITION_NAME_FORMAT = DateTimeFormatter.ofPattern("yyyy_MM");
 
-    /** Tabele koje su particionisane po mesecnoj kolumi. */
+    /**
+     * Tabele koje su particionisane po mesecnoj koloni.
+     * <p>
+     * Napomena: {@code orders} zivi u trading-service-u (zasebna baza), ne u
+     * banka2 — uklonjen je iz ove liste 26.05.2026 (orphan mirror putanja).
+     * {@code transactions} se particionise po {@code created_at} (Hibernate
+     * mapira polje {@code createdAt} entity-ja na tu kolonu).
+     */
     private static final List<PartitionedTable> PARTITIONED_TABLES = List.of(
-            new PartitionedTable("transactions", "timestamp"),
-            new PartitionedTable("orders_p", "created_at"),
-            new PartitionedTable("interbank_messages", "created_at")
+            new PartitionedTable("transactions", "created_at"),
+            new PartitionedTable("interbank_messages", "created_at"),
+            new PartitionedTable("audit_logs", "created_at")
     );
 
     /** Broj meseci unapred za koje kreiramo particije (uz tekuci mesec). */

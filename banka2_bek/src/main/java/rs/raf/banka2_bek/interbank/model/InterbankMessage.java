@@ -47,9 +47,14 @@ import java.time.LocalDateTime;
 */
 @Entity
 @Table(name = "interbank_messages", indexes = {
+        // §2.2 idempotency UNIQUE constraint — MORA ukljuciti created_at jer je
+        // tabela particionisana po created_at (PostgreSQL zahteva da svaki
+        // UNIQUE indeks na particionisanoj tabeli sadrzi particijski kljuc).
+        // Logicki idempotency par ostaje (sender_routing_number, locally_generated_key)
+        // — created_at je samo da PG dozvoli unique enforcement.
         @Index(
                 name = "idx_ibm_idempotence",
-                columnList = "sender_routing_number, locally_generated_key",
+                columnList = "sender_routing_number, locally_generated_key, created_at",
                 unique = true
         ),
         @Index(name = "idx_ibm_status_attempt", columnList = "status, last_attempt_at")
