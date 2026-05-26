@@ -8,12 +8,18 @@ on:
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/trading-service-ci.yml'
+      - '.github/workflows/trading-service-cd.yml'
+      - 'k8s/**'
+      - 'docker-compose.yml'
   pull_request:
     paths:
       - 'trading-service/**'
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/trading-service-ci.yml'
+      - '.github/workflows/trading-service-cd.yml'
+      - 'k8s/**'
+      - 'docker-compose.yml'
   workflow_dispatch:
 
 jobs:

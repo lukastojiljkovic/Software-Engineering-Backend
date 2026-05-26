@@ -8,12 +8,22 @@ on:
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/backend-ci.yml'
+      - '.github/workflows/backend-cd.yml'
+      - 'k8s/**'
+      - 'Banka-2-Tools/**'
+      - 'monitoring/**'
+      - 'docker-compose.yml'
   pull_request:
     paths:
       - 'banka2_bek/**'
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/backend-ci.yml'
+      - '.github/workflows/backend-cd.yml'
+      - 'k8s/**'
+      - 'Banka-2-Tools/**'
+      - 'monitoring/**'
+      - 'docker-compose.yml'
   workflow_dispatch:
 
 jobs:

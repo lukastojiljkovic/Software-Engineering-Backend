@@ -8,12 +8,18 @@ on:
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/notification-service-ci.yml'
+      - '.github/workflows/notification-service-cd.yml'
+      - 'k8s/**'
+      - 'docker-compose.yml'
   pull_request:
     paths:
       - 'notification-service/**'
       - 'banka2-contracts/**'
       - 'pom.xml'
       - '.github/workflows/notification-service-ci.yml'
+      - '.github/workflows/notification-service-cd.yml'
+      - 'k8s/**'
+      - 'docker-compose.yml'
   workflow_dispatch:
 
 jobs:
