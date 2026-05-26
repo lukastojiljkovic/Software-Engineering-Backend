@@ -24,6 +24,7 @@
         <springdoc.version>3.0.3</springdoc.version>
         <pdfbox.version>3.0.6</pdfbox.version>
         <bucket4j.version>8.10.1</bucket4j.version>
+        <spring-retry.version>2.0.11</spring-retry.version>
         <jacoco.version>0.8.14</jacoco.version>
         <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
         <spotbugs-maven-plugin.version>4.9.8.3</spotbugs-maven-plugin.version>
@@ -180,6 +181,28 @@
             <groupId>com.warrenstrange</groupId>
             <artifactId>googleauth</artifactId>
             <version>1.5.0</version>
+        </dependency>
+
+        <!--
+            Spring Retry + AOP weaver — @Retryable declarative retry sa exponential backoff.
+            Koristi SavingsInterestRateUpserter za optimistic-lock retry na upsert race-u.
+            (Pre: manual for-loop u SavingsInterestRateService.upsert.)
+
+            Spring Boot 4 BOM ne managed spring-retry → eksplicitna verzija.
+            spring-aspects + aspectjweaver su BOM-managed (spring-framework-bom).
+        -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+            <version>${spring-retry.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-aspects</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjweaver</artifactId>
         </dependency>
 
     </dependencies>
