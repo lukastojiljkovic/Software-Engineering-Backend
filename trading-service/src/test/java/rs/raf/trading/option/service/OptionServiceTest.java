@@ -58,6 +58,8 @@ class OptionServiceTest {
     @Mock private ActuaryInfoRepository actuaryInfoRepository;
     @Mock private PortfolioRepository portfolioRepository;
     @Mock private BankaCoreClient bankaCoreClient;
+    // W2-T1: options counter (Micrometer) — obavezna dependence u OptionService.
+    @Mock private io.micrometer.core.instrument.Counter optionsTotal;
 
     private OptionService optionService;
 
@@ -65,7 +67,7 @@ class OptionServiceTest {
     void setUp() {
         optionService = new OptionService(
                 optionRepository, listingRepository, actuaryInfoRepository,
-                portfolioRepository, bankaCoreClient);
+                portfolioRepository, bankaCoreClient, optionsTotal);
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────────

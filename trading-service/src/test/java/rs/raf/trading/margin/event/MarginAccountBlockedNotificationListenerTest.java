@@ -1,5 +1,7 @@
 package rs.raf.trading.margin.event;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.AmqpException;
@@ -25,8 +27,11 @@ import static org.mockito.Mockito.verify;
 class MarginAccountBlockedNotificationListenerTest {
 
     private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+    // W2-T1: koristimo pravi SimpleMeterRegistry counter (laksi od mocka,
+    // dozvoljava nam i da verifikujemo da inkrement zaista poveca count).
+    private final Counter marginCallsTotal = new SimpleMeterRegistry().counter("banka2_margin_calls_total");
     private final MarginAccountBlockedNotificationListener listener =
-            new MarginAccountBlockedNotificationListener(rabbitTemplate);
+            new MarginAccountBlockedNotificationListener(rabbitTemplate, marginCallsTotal);
 
     @Test
     void onMarginAccountBlocked_publishesNotificationMessage() {

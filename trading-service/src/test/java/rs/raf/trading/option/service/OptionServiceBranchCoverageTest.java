@@ -58,6 +58,8 @@ class OptionServiceBranchCoverageTest {
     @Mock ActuaryInfoRepository actuaryInfoRepository;
     @Mock PortfolioRepository portfolioRepository;
     @Mock BankaCoreClient bankaCoreClient;
+    // W2-T1: options counter — obavezna dependence u OptionService.
+    @Mock io.micrometer.core.instrument.Counter optionsTotal;
 
     OptionService service;
 
@@ -65,7 +67,7 @@ class OptionServiceBranchCoverageTest {
     void setUp() {
         service = new OptionService(
                 optionRepository, listingRepository, actuaryInfoRepository,
-                portfolioRepository, bankaCoreClient);
+                portfolioRepository, bankaCoreClient, optionsTotal);
     }
 
     private InternalUserDto employee(Long id, String email, boolean active) {

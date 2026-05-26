@@ -55,6 +55,28 @@ groups:
           summary: "Visok 5xx error rate"
           description: "Preko 10% HTTP odgovora vraca 5xx tokom poslednih 5 minuta. Trenutni rate: {{ $value | humanizePercentage }}."
 
+      # W2-T1: SMTP failure spike u notification-service-u (vise od 25 fail-ova u 5 min).
+      - alert: EmailDeliveryFailureSpike
+        expr: increase(banka2_emails_failed_total{reason="smtp_error"}[5m]) > 25
+        for: 2m
+        labels:
+          severity: warning
+          team: notification
+        annotations:
+          summary: "Email SMTP failures > 25 u 5 min"
+          description: "Notification-service prijavljuje > 25 SMTP failure-a u poslednjih 5 min."
+
+      # W2-T1: RabbitMQ DLQ raste — verovatno poison message-i ili konzument fail.
+      - alert: RabbitDlqGrowing
+        expr: banka2_dlq_depth > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: notification
+        annotations:
+          summary: "RabbitMQ DLQ ima > 10 poruka"
+          description: "Notification DLQ raste — proveri poison message-e."
+
   - name: banka2_security
     interval: 15s
     rules:
@@ -111,3 +133,31 @@ groups:
         annotations:
           summary: "DB connection pool exhausted"
           description: "Sve {{ $labels.pool }} konekcije zauzete vec 2 minuta. Verovatan connection leak."
+
+  # W2-T1: trading-service custom poslovne metrike — margin call surge i inter-bank SAGA failures.
+  - name: banka2_trading
+    interval: 30s
+    rules:
+      - alert: MarginCallsSurge
+        # Vise od 3 margin call-a u 5 min — neuobicajeno visok rate, verovatno
+        # zajednicki market move ili greska u maintenance margin obracunu.
+        expr: increase(banka2_margin_calls_total[5m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Visok broj margin call-ova"
+          description: "> 3 margin call-a u 5 min."
+
+      - alert: OtcInterbankFailures
+        # Vise od 5 inter-bank outbound failures u 5 min — Tim 1 partner verovatno
+        # nedostupan ili je SAGA compensation aktivna.
+        expr: increase(banka2_interbank_outbound_total{status="failed"}[5m]) > 5
+        for: 1m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Inter-bank SAGA failures"
+          description: "Tim 1 outbound failures > 5 u 5 min — proveri partner status."

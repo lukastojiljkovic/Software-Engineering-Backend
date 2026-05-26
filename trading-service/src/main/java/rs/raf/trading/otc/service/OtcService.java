@@ -1,7 +1,9 @@
 package rs.raf.trading.otc.service;
 
+import io.micrometer.core.instrument.Counter;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -100,6 +102,15 @@ public class OtcService {
     // [B10 - Aja Timotic]: pozivamo recordEntry() iz counterOffer/declineOffer/acceptOffer
     private final OtcNegotiationHistoryService negotiationHistoryService;
 
+    /**
+     * W2-T1: counter koji broji finalizovane intra-bank OTC kontrakte
+     * (inkrement u {@link #acceptOffer(Long, Long)} jer tamo se ugovor sklapa).
+     * Inter-bank (SAGA) noga nije u trading-service-u (Tim 1 protokol radi
+     * banka-core), pa {@code otcInterTotal} ostaje 0 dok ne dobijemo
+     * inter-bank inbound finalize hook.
+     */
+    private final Counter otcIntraTotal;
+
     public OtcService(OtcOfferRepository offerRepository,
                       OtcContractRepository contractRepository,
                       PortfolioRepository portfolioRepository,
@@ -108,7 +119,8 @@ public class OtcService {
                       CurrencyConversionService currencyConversionService,
                       TradingUserResolver userResolver,
                       NotificationService notificationService,
-                      OtcNegotiationHistoryService negotiationHistoryService) {
+                      OtcNegotiationHistoryService negotiationHistoryService,
+                      @Qualifier("otcIntraTotal") Counter otcIntraTotal) {
         this.offerRepository = offerRepository;
         this.contractRepository = contractRepository;
         this.portfolioRepository = portfolioRepository;
@@ -118,6 +130,7 @@ public class OtcService {
         this.userResolver = userResolver;
         this.notificationService = notificationService;
         this.negotiationHistoryService = negotiationHistoryService;
+        this.otcIntraTotal = otcIntraTotal;
     }
 
     // ────────────────────────── Discovery ──────────────────────────
@@ -445,6 +458,15 @@ public class OtcService {
                 offer.getStatus().name(),
                 me.userId(),
                 resolveUserName(me.userId(), me.userRole()));
+
+        // W2-T1: brojaj svaki uspesno sklopljen intra-bank OTC kontrakt
+        // (poziva se posle save kontrakta i pre notification publish-a — Tx je vec commit).
+        try {
+            otcIntraTotal.increment();
+        } catch (RuntimeException metricsEx) {
+            log.warn("Failed to increment OTC intra counter for contract #{}: {}",
+                    contract.getId(), metricsEx.getMessage());
+        }
 
         log.info("OTC offer #{} accepted by {} — contract #{} created (rezervacija {})",
                 offer.getId(), me.userId(), contract.getId(), reservationId);

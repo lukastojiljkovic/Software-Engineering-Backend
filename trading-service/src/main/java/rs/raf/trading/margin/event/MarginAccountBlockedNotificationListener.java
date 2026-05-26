@@ -1,8 +1,10 @@
 package rs.raf.trading.margin.event;
 
+import io.micrometer.core.instrument.Counter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import rs.raf.banka2.contracts.NotificationKind;
@@ -36,13 +38,28 @@ public class MarginAccountBlockedNotificationListener {
             LoggerFactory.getLogger(MarginAccountBlockedNotificationListener.class);
 
     private final RabbitTemplate rabbitTemplate;
+    /**
+     * W2-T1: counter koji broji svaki margin call event (blocked margin account).
+     * Inkrementuje se UVEK, cak i kad email vlasnika nije dostupan — sam margin
+     * block je signal koji nas zanima (alert MarginCallsSurge gleda rate).
+     */
+    private final Counter marginCallsTotal;
 
-    public MarginAccountBlockedNotificationListener(RabbitTemplate rabbitTemplate) {
+    public MarginAccountBlockedNotificationListener(RabbitTemplate rabbitTemplate,
+                                                    @Qualifier("marginCallsTotal") Counter marginCallsTotal) {
         this.rabbitTemplate = rabbitTemplate;
+        this.marginCallsTotal = marginCallsTotal;
     }
 
     @EventListener
     public void onMarginAccountBlocked(MarginAccountBlockedEvent event) {
+        // W2-T1: broj margin call-a (i kad nema email vlasnika — event je svejedno desio se).
+        try {
+            marginCallsTotal.increment();
+        } catch (RuntimeException ex) {
+            log.warn("Failed to increment margin call counter: {}", ex.getMessage());
+        }
+
         if (event.getEmail() == null || event.getEmail().isBlank()) {
             log.warn("Margin call: blokiran racun bez email-a vlasnika — notifikacija se preskace");
             return;

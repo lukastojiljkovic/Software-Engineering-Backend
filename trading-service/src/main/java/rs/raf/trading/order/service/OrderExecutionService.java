@@ -1,5 +1,7 @@
 package rs.raf.trading.order.service;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,6 +93,13 @@ public class OrderExecutionService {
      * a regular path radi nesmetano.
      */
     private final MarginOrderSettlementService marginOrderSettlementService;
+
+    /**
+     * W2-T1: custom poslovne metrike — broj uspesno zavrsenih (DONE) order-a
+     * i histogramska distribucija trajanja {@code executeSingleOrder}.
+     */
+    private final Counter ordersExecutedCounter;
+    private final Timer orderExecutionTimer;
 
     /** Minimalan broj sekundi izmedju approval-a i prvog fill pokusaja (Phase 6). */
     @Value("${orders.execution.initial-delay-seconds:60}")
@@ -206,6 +215,17 @@ public class OrderExecutionService {
         }
     }
     void executeSingleOrder(Order order) {
+        // W2-T1: timer obuhvata ceo fill flow (i parcijalne i kompletne).
+        // Counter inkrementuje samo kad order zaista predje u DONE (vidi `justCompleted`).
+        Timer.Sample sample = Timer.start();
+        try {
+            executeSingleOrderInternal(order);
+        } finally {
+            sample.stop(orderExecutionTimer);
+        }
+    }
+
+    private void executeSingleOrderInternal(Order order) {
         // 0. Legacy guard: APPROVED orderi iz starog seed-a nemaju reservedAccountId
         // ni accountId — ne mogu se izvrsiti. Markiraj ih kao DECLINED da scheduler
         // prekine retry loop.
@@ -393,6 +413,8 @@ public class OrderExecutionService {
         }
 
         if (justCompleted) {
+            // W2-T1: brojaj samo kompletno zavrsene (DONE) order-e, ne i parcijalne fill-ove.
+            ordersExecutedCounter.increment();
             publishOrderCompleted(order);
             try {
                 notificationService.notify(

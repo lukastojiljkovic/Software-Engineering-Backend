@@ -93,6 +93,8 @@ class OtcServiceTest {
     @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
     // B10 — istorija OTC pregovora (port iz main PR #89)
     @Mock private OtcNegotiationHistoryService negotiationHistoryService;
+    // W2-T1: intra-bank OTC counter (Micrometer) — sad obavezna dependence.
+    @Mock private io.micrometer.core.instrument.Counter otcIntraTotal;
 
     private OtcService service;
 
@@ -100,7 +102,7 @@ class OtcServiceTest {
     void setUp() {
         service = new OtcService(offerRepository, contractRepository, portfolioRepository,
                 listingRepository, bankaCoreClient, currencyConversionService, userResolver,
-                notificationService, negotiationHistoryService);
+                notificationService, negotiationHistoryService, otcIntraTotal);
     }
 
     @AfterEach

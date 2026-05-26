@@ -54,6 +54,10 @@ class OrderExecutionServiceTest {
     @Mock private BankaCoreClient bankaCoreClient;
     @Mock private ApplicationEventPublisher eventPublisher;
     @Mock private rs.raf.trading.notification.service.NotificationService notificationService;
+    // W2-T1: custom poslovne metrike — Counter i Timer su sad obavezne dependence;
+    // Mockito @InjectMocks ce ih injectovati u constructor (NPE bez ovih mock-ova).
+    @Mock private io.micrometer.core.instrument.Counter ordersExecutedCounter;
+    @Mock private io.micrometer.core.instrument.Timer orderExecutionTimer;
 
     @InjectMocks
     private OrderExecutionService orderExecutionService;

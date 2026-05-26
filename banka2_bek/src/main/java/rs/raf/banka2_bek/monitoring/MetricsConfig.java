@@ -2,7 +2,6 @@ package rs.raf.banka2_bek.monitoring;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -15,13 +14,18 @@ import org.springframework.context.annotation.Configuration;
  * domenske metrike koje opisuju POSLOVNO ponasanje aplikacije:
  * <ul>
  *   <li>Broj uspesnih i neuspesnih login pokusaja (input za alert-e)</li>
- *   <li>Broj izvrsenih ordera + latencija order execution-a</li>
  *   <li>Broj transakcija + njihova vrednost po valuti</li>
- *   <li>Broj OTC ponuda i sklopljenih ugovora</li>
+ *   <li>Broj OTC ponuda i sklopljenih ugovora (banka-core deo)</li>
  *   <li>Inter-bank protocol message-i po smeru (inbound/outbound)</li>
  * </ul>
  * Sve metrike imaju automatski tag {@code application=banka2_backend} koji
  * dolazi iz {@code management.metrics.tags.application} property-ja.
+ *
+ * <p><b>W2-T1 (26.05.2026):</b> {@code banka2_orders_executed_total} i
+ * {@code banka2_order_execution_seconds} su PREMESTENI u
+ * {@code trading-service/TradingMetricsConfig} — order/OTC/option/margin
+ * domain je posle Faza 2f cutover-a kompletno u trading-service-u, pa su
+ * ovde bili dead beans (registrovani ali nikad inkrementirani).
  */
 @Configuration
 public class MetricsConfig {
@@ -47,24 +51,6 @@ public class MetricsConfig {
     public Counter rateLimitHitCounter(MeterRegistry registry) {
         return Counter.builder("banka2_rate_limit_hit_total")
                 .description("Broj zahteva odbacenih zbog rate-limit-a (HTTP 429)")
-                .register(registry);
-    }
-
-    /** Counter — broj izvrsenih (DONE) ordera. Inkrementuje se u OrderExecutionService. */
-    @Bean
-    public Counter orderExecutedCounter(MeterRegistry registry) {
-        return Counter.builder("banka2_orders_executed_total")
-                .description("Broj kompletno izvrsenih ordera (status DONE)")
-                .register(registry);
-    }
-
-    /** Timer — distribucija vremena izvrsavanja ordera (p50/p95/p99). */
-    @Bean
-    public Timer orderExecutionTimer(MeterRegistry registry) {
-        return Timer.builder("banka2_order_execution_seconds")
-                .description("Distribucija vremena izvrsavanja ordera (od kreiranja do DONE)")
-                .publishPercentiles(0.5, 0.95, 0.99)
-                .publishPercentileHistogram()
                 .register(registry);
     }
 

@@ -1,8 +1,10 @@
 package rs.raf.trading.option.service;
 
+import io.micrometer.core.instrument.Counter;
 import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,18 +73,22 @@ public class OptionService {
     private final ActuaryInfoRepository actuaryInfoRepository;
     private final PortfolioRepository portfolioRepository;
     private final BankaCoreClient bankaCoreClient;
+    /** W2-T1: counter koji broji svaku uspesno izvrsenu (exercised) opciju. */
+    private final Counter optionsTotal;
 
     public OptionService(
             OptionRepository optionRepository,
             ListingRepository listingRepository,
             ActuaryInfoRepository actuaryInfoRepository,
             PortfolioRepository portfolioRepository,
-            BankaCoreClient bankaCoreClient) {
+            BankaCoreClient bankaCoreClient,
+            @Qualifier("optionsTotal") Counter optionsTotal) {
         this.optionRepository = optionRepository;
         this.listingRepository = listingRepository;
         this.actuaryInfoRepository = actuaryInfoRepository;
         this.portfolioRepository = portfolioRepository;
         this.bankaCoreClient = bankaCoreClient;
+        this.optionsTotal = optionsTotal;
     }
 
     public List<OptionChainDto> getOptionsForStock(Long listingId) {
@@ -219,6 +225,14 @@ public class OptionService {
         // Decrement open interest
         option.setOpenInterest(openInterestBefore - 1);
         optionRepository.save(option);
+
+        // W2-T1: brojaj uspesno izvrsenu opciju (i CALL i PUT).
+        try {
+            optionsTotal.increment();
+        } catch (RuntimeException metricsEx) {
+            log.warn("Failed to increment options counter for option #{}: {}",
+                    option.getId(), metricsEx.getMessage());
+        }
 
         log.info(
                 "Opcija {} (id={}) izvrsena od strane {}. Tip={}, strike={}, contractSize={}, totalCost={}. Novi openInterest={}",

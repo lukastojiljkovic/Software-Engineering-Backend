@@ -1,10 +1,12 @@
 package rs.raf.notification.messaging;
 
 import com.rabbitmq.client.Channel;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.mail.MailException;
 import org.springframework.messaging.handler.annotation.Header;
@@ -42,9 +44,32 @@ public class NotificationConsumer {
     private static final Logger log = LoggerFactory.getLogger(NotificationConsumer.class);
 
     private final MailNotificationService mail;
+    /**
+     * W2-T1: Micrometer registry za on-demand registraciju email counter-a.
+     * Koristi se za {@code banka2_emails_sent_total} (no tags) i
+     * {@code banka2_emails_failed_total{reason="smtp_error|dlq"}}.
+     * Nullable za backward-compat unit test konstrukciju
+     * ({@code new NotificationConsumer(mail)}) — pre wire-up testovi su
+     * pravili consumer bez registry-ja.
+     */
+    @Nullable
+    private final MeterRegistry registry;
 
+    /** Backward-compat constructor — koriste ga unit testovi bez Micrometer-a. */
     public NotificationConsumer(MailNotificationService mail) {
+        this(mail, null);
+    }
+
+    /**
+     * Primarni Spring constructor — Spring injectuje {@link MeterRegistry}
+     * koji je auto-configured kroz {@code micrometer-registry-prometheus}
+     * starter. {@code @Autowired} eksplicitno pokazuje koji constructor
+     * koristi container kad ima vise public konstruktora.
+     */
+    @Autowired
+    public NotificationConsumer(MailNotificationService mail, @Nullable MeterRegistry registry) {
         this.mail = mail;
+        this.registry = registry;
     }
 
     // Parametar je tipiziran (NotificationMessage) -> Jackson2JsonMessageConverter
@@ -68,18 +93,47 @@ public class NotificationConsumer {
         Map<String, String> d = message.data();
         try {
             dispatch(message, d);
+            // W2-T1: brojaj uspesno poslate email-ove.
+            incrementCounter("banka2_emails_sent_total");
             ackOrSkip(channel, deliveryTag);
         } catch (MailException ex) {
             // Transient SMTP outage — requeue, ne baca u DLQ. Spring AMQP retry
             // policy (na container factory-ju) odlucuje koliko puta pre nego
             // sto se preda DLX-u.
             log.warn("Transient mail failure za kind={} — requeue u glavni queue", message.kind(), ex);
+            // W2-T1: SMTP failure counter (tag reason=smtp_error).
+            incrementFailureCounter("smtp_error");
             nackOrSkip(channel, deliveryTag, true);
         } catch (RuntimeException ex) {
             // Poison payload (NPE, NumberFormatException, IllegalArgumentException…) —
             // re-deliveries ce uvek pucati. Salji u DLQ (requeue=false).
             log.error("Poison message za kind={} — saljem u DLQ (requeue=false)", message.kind(), ex);
+            // W2-T1: DLQ failure counter (tag reason=dlq).
+            incrementFailureCounter("dlq");
             nackOrSkip(channel, deliveryTag, false);
+        }
+    }
+
+    /** W2-T1: bezbedan inkrement — preskace se ako registry nije configured (unit test path). */
+    private void incrementCounter(String name) {
+        if (registry == null) {
+            return;
+        }
+        try {
+            registry.counter(name).increment();
+        } catch (RuntimeException ex) {
+            log.warn("Failed to increment counter {}: {}", name, ex.getMessage());
+        }
+    }
+
+    private void incrementFailureCounter(String reason) {
+        if (registry == null) {
+            return;
+        }
+        try {
+            registry.counter("banka2_emails_failed_total", "reason", reason).increment();
+        } catch (RuntimeException ex) {
+            log.warn("Failed to increment failure counter (reason={}): {}", reason, ex.getMessage());
         }
     }
 
