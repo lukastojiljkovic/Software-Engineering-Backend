@@ -10,6 +10,7 @@ on:
     paths:
       - 'banka2_bek/**'
       - '.github/workflows/backend-ci.yml'
+  workflow_dispatch:
 
 jobs:
   build:

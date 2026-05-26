@@ -10,6 +10,7 @@ on:
     workflows: ["backend-ci"]
     branches: [main]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,7 +29,7 @@ jobs:
     # CI-02: pokrece se SAMO ako je upstream `backend-ci` workflow uspesan.
     # `workflow_run` event uvek fire-uje (success ili failure), pa job-ovi
     # moraju eksplicitno da provere conclusion preko `github.event.workflow_run`.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +68,7 @@ jobs:
     name: Build & Push ${{ matrix.image }}
     runs-on: ubuntu-latest
     # CI-02: gate na uspesan backend-ci.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +117,7 @@ jobs:
     name: Build & Push banka2-ollama (pre-baked Gemma)
     runs-on: ubuntu-latest
     # CI-02: gate na uspesan backend-ci.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -164,7 +165,7 @@ jobs:
     name: Build & Push banka2-alert-router
     runs-on: ubuntu-latest
     # CI-02: gate na uspesan backend-ci.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 

@@ -10,6 +10,7 @@ on:
     workflows: ["trading-service-ci"]
     branches: [main]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,7 +26,7 @@ jobs:
     # CI-02: pokrece se SAMO ako je upstream `trading-service-ci` workflow uspesan.
     # `workflow_run` event uvek fire-uje (success ili failure), pa job-ovi
     # moraju eksplicitno da provere conclusion preko `github.event.workflow_run`.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
