@@ -101,6 +101,33 @@ class InterbankPaymentAsyncServiceTest {
     }
 
     @Test
+    @DisplayName("executeAsync: execute() THROWS the 2PC abort exception → caught + REJECTED, "
+            + "incrementSpending NEVER called (abort contract)")
+    void executeAsync_executeThrowsAbort_stillRejected() {
+        // 2PC atomicity contract: execute() now THROWS on abort (NO vote / partner fail).
+        // executeAsync's catch(Exception) must swallow it, then read the InterbankTransaction
+        // status (ROLLED_BACK) and mirror it to the Payment as REJECTED — exactly as before.
+        // The thrown abort must NOT propagate out of executeAsync and must NOT cause a spend
+        // increment. Status is read post-catch (terminal ROLLED_BACK).
+        Transaction tx = interbankTx();
+        Payment processing = payment(PaymentStatus.PROCESSING);
+
+        when(paymentRepository.findById(PAYMENT_ID)).thenReturn(Optional.of(processing));
+        org.mockito.Mockito.doThrow(
+                        new rs.raf.banka2_bek.interbank.exception.InterbankExceptions
+                                .InterbankTransactionAbortedException("Inter-bank 2PC aborted for transaction " + TX_ID))
+                .when(transactionExecutorService).execute(any());
+        when(interbankTransactionRepository.findByTransactionRoutingNumberAndTransactionIdString(
+                eq(MY_RN), eq(TX_ID)))
+                .thenReturn(Optional.of(ibTx(InterbankTransactionStatus.ROLLED_BACK)));
+
+        service.executeAsync(PAYMENT_ID, tx);
+
+        assertThat(processing.getStatus()).isEqualTo(PaymentStatus.REJECTED);
+        verify(accountRepository, never()).incrementSpending(any(), any());
+    }
+
+    @Test
     @DisplayName("executeAsync no InterbankTransaction record → REJECTED + incrementSpending NEVER called (P1-4)")
     void executeAsync_noTxRecord_doesNotIncrementSpending() {
         Transaction tx = interbankTx();

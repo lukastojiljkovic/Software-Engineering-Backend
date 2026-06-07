@@ -108,6 +108,18 @@ public class InterbankOtcWrapperController {
     }
 
     /**
+     * T9 / S10b — "Odbi" sklopljeni inter-bank OTC ugovor (kupceva strana, pre
+     * settlement-a). Mirror exercise auth + path obrascu. Oslobadja buyer-ovu strike
+     * rezervaciju i markira ugovor DECLINED (lokalno — bez cross-bank poruke).
+     */
+    @PostMapping("/contracts/{contractId}/decline")
+    public ResponseEntity<OtcInterbankContract> declineContract(@PathVariable String contractId) {
+        UserContext ctx = userResolver.resolveCurrent();
+        return ResponseEntity.ok(wrapperService.declineContract(contractId,
+                ctx.userId(), normalizeRole(ctx.userRole())));
+    }
+
+    /**
      * JWT role je "CLIENT" / "ADMIN" / "EMPLOYEE". Za nasu konvenciju u
      * InterbankOtc* entitetima delimo na "CLIENT" / "EMPLOYEE" — admini i
      * supervizori se tretiraju kao EMPLOYEE.

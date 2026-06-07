@@ -143,4 +143,32 @@ public final class InterbankExceptions {
             super(message);
         }
     }
+
+    /**
+     * §2.8 2PC — legitiman NO-vote ABORT (NE infrastrukturna greska). Baca ga
+     * {@code TransactionExecutorService.execute(tx)} na SVAKOJ abort grani (local NO,
+     * promoted-coordinator local-prepare NO, promoted-coordinator partner NO) TEK
+     * POSLE sto je lokalni rollback postavio {@code InterbankTransaction} status na
+     * {@code ROLLED_BACK} i (gde je primenljivo) poslao {@code ROLLBACK_TX}.
+     *
+     * <p>Postojanje ovog tipa cini razliku izmedju "transakcija je uredno abortovana
+     * (neko je glasao NO)" i "infrastruktura je pukla" eksplicitnom: pozivaoci
+     * ({@code OtcNegotiationService.acceptReceivedNegotiation},
+     * {@code InterbankOtcWrapperService.exerciseContract},
+     * {@code InterbankPaymentAsyncService.executeAsync}) ga hvataju kao signal da
+     * pokrenu kompenzaciju / mapiranje u REJECTED stanje. Pre uvodjenja ovog throw-a
+     * {@code execute()} se vracao tiho na svakoj abort grani, pa kompenzacija
+     * pozivaoca NIKAD nije pokretana — pregovor je ostajao ACCEPTED, ugovor je
+     * perzistirao, hartije ostajale rezervisane, a inbound endpoint je vracao 204
+     * success: obe banke trajno nekonzistentne (money/asset conservation prekrsena).
+     *
+     * <p>RuntimeException (kao i ceo {@code InterbankException} stablo) — ne menja
+     * potpise metoda; postojeci {@code catch (RuntimeException)} / {@code catch
+     * (Exception)} blokovi u pozivaocima ga hvataju bez izmene.
+     */
+    public static class InterbankTransactionAbortedException extends InterbankException {
+        public InterbankTransactionAbortedException(String message) {
+            super(message);
+        }
+    }
 }

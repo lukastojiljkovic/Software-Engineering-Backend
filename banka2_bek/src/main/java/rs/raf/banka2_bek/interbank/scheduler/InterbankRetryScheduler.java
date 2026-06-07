@@ -61,51 +61,81 @@ public class InterbankRetryScheduler {
         }
     }
 
-    private void retryOne(InterbankMessage msg) throws Exception {
+    private void retryOne(InterbankMessage msg) {
         IdempotenceKey key = new IdempotenceKey(
                 msg.getSenderRoutingNumber(), msg.getLocallyGeneratedKey());
         int targetRn = msg.getPeerRoutingNumber();
 
-        switch (msg.getMessageType()) {
-            case NEW_TX -> {
-                Message<Transaction> env = objectMapper.readValue(
-                        msg.getRequestBody(), new TypeReference<Message<Transaction>>() {});
-                try {
+        // Facet d (defensive guard): poruka sa null/praznim requestBody-jem ne moze
+        // NIKAD da se posalje (nema sta da se deserijalizuje). Terminalizujemo je
+        // odmah umesto da je ostavimo da escape-uje deserijalizaciju i ostane PENDING.
+        if (msg.getRequestBody() == null || msg.getRequestBody().isBlank()) {
+            messageService.markOutboundNonRetryable(key,
+                    "requestBody is null/blank — message can never be delivered");
+            return;
+        }
+
+        // Facet b/d: deserijalizacija tela je IZVAN inner try/catch-a bila uzrok buga —
+        // neispravno telo je bacalo IllegalArgumentException ("argument \"content\" is
+        // null") / JsonProcessingException koji niko nije hvatao kao "failed", pa je red
+        // ostajao PENDING zauvek. Sad deserijalizujemo unutar try-a i mapiramo
+        // deserialize-grešku u non-retryable terminalizaciju.
+        try {
+            switch (msg.getMessageType()) {
+                case NEW_TX -> {
+                    Message<Transaction> env = objectMapper.readValue(
+                            msg.getRequestBody(), new TypeReference<Message<Transaction>>() {});
                     TransactionVote vote = client.sendMessage(
                             targetRn, MessageType.NEW_TX, env, TransactionVote.class);
                     if (vote != null) {
-                        messageService.markOutboundSent(key, 200,
-                                objectMapper.writeValueAsString(vote));
+                        // Serijalizacija vote-a ne sme da obori send kao "non-retryable":
+                        // poruka JE uspesno dostavljena (200). Ako (krajnje neverovatno)
+                        // serijalizacija padne, snimi SENT bez response body-ja.
+                        String voteJson;
+                        try {
+                            voteJson = objectMapper.writeValueAsString(vote);
+                        } catch (com.fasterxml.jackson.core.JsonProcessingException ser) {
+                            voteJson = null;
+                        }
+                        messageService.markOutboundSent(key, 200, voteJson);
                     } else {
                         messageService.markOutboundSent(key, 202, null);
                     }
-                } catch (InterbankExceptions.InterbankCommunicationException |
-                         InterbankExceptions.InterbankAuthException e) {
-                    messageService.markOutboundFailed(key, e.getMessage());
                 }
-            }
-            case COMMIT_TX -> {
-                Message<CommitTransaction> env = objectMapper.readValue(
-                        msg.getRequestBody(), new TypeReference<Message<CommitTransaction>>() {});
-                try {
+                case COMMIT_TX -> {
+                    Message<CommitTransaction> env = objectMapper.readValue(
+                            msg.getRequestBody(), new TypeReference<Message<CommitTransaction>>() {});
                     client.sendMessage(targetRn, MessageType.COMMIT_TX, env, Void.class);
                     messageService.markOutboundSent(key, 204, null);
-                } catch (InterbankExceptions.InterbankCommunicationException |
-                         InterbankExceptions.InterbankAuthException e) {
-                    messageService.markOutboundFailed(key, e.getMessage());
                 }
-            }
-            case ROLLBACK_TX -> {
-                Message<RollbackTransaction> env = objectMapper.readValue(
-                        msg.getRequestBody(), new TypeReference<Message<RollbackTransaction>>() {});
-                try {
+                case ROLLBACK_TX -> {
+                    Message<RollbackTransaction> env = objectMapper.readValue(
+                            msg.getRequestBody(), new TypeReference<Message<RollbackTransaction>>() {});
                     client.sendMessage(targetRn, MessageType.ROLLBACK_TX, env, Void.class);
                     messageService.markOutboundSent(key, 204, null);
-                } catch (InterbankExceptions.InterbankCommunicationException |
-                         InterbankExceptions.InterbankAuthException e) {
-                    messageService.markOutboundFailed(key, e.getMessage());
                 }
             }
+        } catch (InterbankExceptions.InterbankCommunicationException |
+                 InterbankExceptions.InterbankAuthException e) {
+            // TRANSIENT: mrezna greska / partner 5xx / 401 — retry moze uspeti.
+            // markOutboundFailed inkrementira retryCount i drzi PENDING (faza-2 do
+            // dead-letter backstop-a; faza-1 do STUCK). NE terminalizujemo ovde —
+            // ovo je 2PC durability invarijanta za COMMIT_TX/ROLLBACK_TX.
+            messageService.markOutboundFailed(key, e.getMessage());
+        } catch (InterbankExceptions.InterbankProtocolException e) {
+            // NON-RETRYABLE (facet b): npr. "Target routing number 666 could not be
+            // resolved" iz InterbankClient.sendMessage. Ruta se nikad nece razresiti
+            // retry-em → terminalizuj umesto beskonacnog PENDING-a. Vazi i za phase-2:
+            // fizicki neisporuciva poruka ne moze da ispuni §2.9 dostavu ni jednim
+            // brojem pokusaja.
+            messageService.markOutboundNonRetryable(key, e.getMessage());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException |
+                 IllegalArgumentException e) {
+            // NON-RETRYABLE (facet d): telo se ne moze deserijalizovati u validan
+            // envelope (korumpiran/null sadrzaj). Pre fix-a je ovo escape-ovalo u
+            // generic catch i ostavljalo red PENDING zauvek.
+            messageService.markOutboundNonRetryable(key,
+                    "Un-deserializable requestBody: " + e.getMessage());
         }
     }
 }

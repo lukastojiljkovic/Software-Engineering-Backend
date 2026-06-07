@@ -143,6 +143,19 @@ public class InterbankOtcNegotiation {
     private String premiumCurrency;
 
     /**
+     * T1/T2 — kupcev racun za naplatu premije (§3.6) i kasniji settlement, izabran
+     * na FE-u pri accept-u. Cuvamo broj racuna (NE id) da bi prepare (rezervacija)
+     * i commit (commitMonas) uvek koristili ISTI deterministicki racun. Bez ovoga,
+     * resolucija po najvecem available balansu nije stabilna: rezervacija u prepare
+     * fazi smanji balans, pa commit moze izabrati DRUGI racun (novac zaglavljen u
+     * rezervaciji, narusavanje konzervacije). Nullable: ostaje null za pregovore
+     * kreirane pre ove izmene i za plain inter-bank placanja (T2-B Person+Monas),
+     * gde se primenjuje deterministicki fallback (broj racuna ascending).
+     */
+    @Column(name = "buyer_settlement_account_number", length = 20)
+    private String buyerSettlementAccountNumber;
+
+    /**
      * Datum dospeca opcije sa TZ — posle ovoga ugovor istice ako nije iskoriscen (§2.7.2).
      * M-2 fix po Celini 5 audit-u: §2.4 zahteva ISO 8601 sa zonom; nismo smeli da
      * drop-ujemo TZ na .toLocalDate() pri persistovanju.

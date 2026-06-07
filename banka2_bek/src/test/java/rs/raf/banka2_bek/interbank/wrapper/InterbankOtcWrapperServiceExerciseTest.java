@@ -157,11 +157,13 @@ class InterbankOtcWrapperServiceExerciseTest {
 
         assertThat(tx.postings()).hasSize(4);
 
-        // Po §2.7.2:
-        //   (Monas, Option) +pi*k  → option pseudo-account "receives" money
-        //   (Monas, Account) -pi*k → buyer pays
-        //   (Stock, Option) -k     → option pseudo-account "gives" stocks
-        //   (Stock, Person) +k     → buyer receives stocks
+        // BUG-1 [MONEY DESTROYED] — protokol-konforman EXERCISE oblik (mirror Banka-1):
+        //   (Monas, Option) +pi*k  → option pseudo-account prima novac
+        //   (Monas, Person@seller) -pi*k → EKSPLICITAN "credit seller real cash" leg (prodavac PRIMA)
+        //   (Stock, Option) -k     → option pseudo-account predaje hartije
+        //   (Stock, Person@buyer) +k → kupac prima hartije
+        // Kupcev (Account, -pi*k) leg VISE NE postoji — strike se konzumira iz claim
+        // rezervacije eksplicitnim commitMonas-om posle uspesnog 2PC.
         BigDecimal money = new BigDecimal("10000"); // 50 × 200
         BigDecimal qty = new BigDecimal("50");
 
@@ -172,12 +174,22 @@ class InterbankOtcWrapperServiceExerciseTest {
                 .count();
         assertThat(monasOptionCount).isEqualTo(1L);
 
-        long monasAccountCount = tx.postings().stream()
+        // BUG-1: prodavceva banka/id nosi eksplicitan seller-cash credit leg (-pi*k).
+        long sellerCashLegCount = tx.postings().stream()
                 .filter(p -> p.asset() instanceof Asset.Monas
-                        && p.account() instanceof TxAccount.Account
+                        && p.account() instanceof TxAccount.Person pe
+                        && pe.id().routingNumber() == SELLER_RN
+                        && pe.id().id().equals("C-seller-1")
                         && p.amount().compareTo(money.negate()) == 0)
                 .count();
-        assertThat(monasAccountCount).isEqualTo(1L);
+        assertThat(sellerCashLegCount).isEqualTo(1L);
+
+        // BUG-1: NEMA vise kupcevog (Monas, Account) leg-a.
+        long monasAccountCount = tx.postings().stream()
+                .filter(p -> p.asset() instanceof Asset.Monas
+                        && p.account() instanceof TxAccount.Account)
+                .count();
+        assertThat(monasAccountCount).isZero();
 
         long stockOptionCount = tx.postings().stream()
                 .filter(p -> p.asset() instanceof Asset.Stock
@@ -192,6 +204,17 @@ class InterbankOtcWrapperServiceExerciseTest {
                         && p.amount().compareTo(qty) == 0)
                 .count();
         assertThat(stockPersonCount).isEqualTo(1L);
+
+        // MONAS grupa balansirana: +pi*k (OPTION) -pi*k (seller) = 0.
+        BigDecimal monasSum = tx.postings().stream()
+                .filter(p -> p.asset() instanceof Asset.Monas)
+                .map(Posting::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(monasSum).isEqualByComparingTo(BigDecimal.ZERO);
+
+        // BUG-1 exactly-once: kupcev strike (10000) konzumiran TACNO jednom posle 2PC
+        // (zamena za uklonjeni Account leg koji je ranije trigger-ovao commitLocal commitMonas).
+        verify(reservationApplier).commitMonas(eq("222000111111111111"), eq(money));
     }
 
     @Test
@@ -492,6 +515,132 @@ class InterbankOtcWrapperServiceExerciseTest {
         // Revert: oslobodi rezervaciju + vrati ACTIVE.
         verify(reservationApplier).releaseMonas(eq("222000111111111111"), eq(new BigDecimal("10000")));
         assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+    }
+
+    // ── T5(B): accept→exercise strike double-reserve reconciliation ──
+
+    @Test
+    @DisplayName("T5(B): contract pre-reserved strike (T3 accept) → NO second reserveMonas, settlement leg targets pre-reserved account")
+    void exerciseContract_preReservedStrike_consumesExistingReservationNoSecondReserve() {
+        Long contractId = 99L;
+        Long sourceNegId = 42L;
+        InterbankOtcContract contract = buildActiveBuyerSideContract(contractId, sourceNegId);
+        // T3 — strike (50 × 200 = 10000 USD) je vec rezervisan pri accept-u na ovom racunu.
+        String preReservedAccount = "222000111111111111";
+        contract.setReservedStrikeAccountNumber(preReservedAccount);
+        contract.setReservedStrikeAmount(new BigDecimal("10000"));
+        when(contractRepository.findById(contractId)).thenReturn(Optional.of(contract));
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(sourceNegId);
+        neg.setForeignNegotiationIdString("source-neg-uuid");
+        when(negotiationRepository.findById(sourceNegId)).thenReturn(Optional.of(neg));
+
+        Account buyerAccount = buildAccount(101L, preReservedAccount, "USD",
+                new BigDecimal("10000.00"), AccountStatus.ACTIVE);
+        Client buyer = new Client();
+        buyer.setId(7L);
+        buyerAccount.setClient(buyer);
+        when(accountRepository.findById(101L)).thenReturn(Optional.of(buyerAccount));
+
+        stubClaimLock(contract);
+        when(transactionExecutor.formTransaction(any(), anyString(), any(), any(), any()))
+                .thenAnswer(inv -> {
+                    @SuppressWarnings("unchecked")
+                    List<Posting> postings = (List<Posting>) inv.getArgument(0);
+                    return new Transaction(postings,
+                            new ForeignBankId(OUR_RN, "tx-ex"),
+                            (String) inv.getArgument(1), (String) inv.getArgument(2),
+                            (String) inv.getArgument(3), (String) inv.getArgument(4));
+                });
+        doNothing().when(transactionExecutor).execute(any(Transaction.class));
+
+        service.exerciseContract(String.valueOf(contractId), 101L, 7L, "CLIENT");
+
+        // KLJUCNO: strike NIJE rezervisan drugi put (T3 ga je vec rezervisao pri accept-u).
+        verify(reservationApplier, never()).reserveMonas(anyString(), any());
+        // BUG-1: kupcev strike se konzumira iz pre-rezervacije eksplicitnim commitMonas-om
+        // posle uspesnog 2PC — gadja BAS pre-rezervisani racun, TACNO jednom.
+        BigDecimal money = new BigDecimal("10000");
+        verify(reservationApplier).commitMonas(eq(preReservedAccount), eq(money));
+        // BUG-1: nema vise kupcevog (Monas, Account) leg-a u tx-u; umesto njega seller-cash leg.
+        ArgumentCaptor<Transaction> txCaptor = ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionExecutor).execute(txCaptor.capture());
+        Transaction tx = txCaptor.getValue();
+        long monasAccountLegCount = tx.postings().stream()
+                .filter(p -> p.asset() instanceof Asset.Monas
+                        && p.account() instanceof TxAccount.Account)
+                .count();
+        assertThat(monasAccountLegCount).isZero();
+        long sellerCashLegCount = tx.postings().stream()
+                .filter(p -> p.asset() instanceof Asset.Monas
+                        && p.account() instanceof TxAccount.Person pe
+                        && pe.id().routingNumber() == SELLER_RN
+                        && p.amount().compareTo(money.negate()) == 0)
+                .count();
+        assertThat(sellerCashLegCount).isEqualTo(1L);
+        // Status flip-ovan na EXERCISING (claim) bez druge rezervacije.
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISING);
+    }
+
+    @Test
+    @DisplayName("T5(B): contract with NULL reservedStrike (legacy) → reserves at exercise (current behavior)")
+    void exerciseContract_nullReservedStrike_reservesAtExercise() {
+        Long contractId = 99L;
+        Long sourceNegId = 42L;
+        InterbankOtcContract contract = buildActiveBuyerSideContract(contractId, sourceNegId);
+        // Legacy: nema pre-rezervacije strike-a (accept pre T3 ili bez izabranog racuna).
+        contract.setReservedStrikeAccountNumber(null);
+        contract.setReservedStrikeAmount(null);
+        when(contractRepository.findById(contractId)).thenReturn(Optional.of(contract));
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(sourceNegId);
+        neg.setForeignNegotiationIdString("source-neg-uuid");
+        when(negotiationRepository.findById(sourceNegId)).thenReturn(Optional.of(neg));
+
+        Account buyerAccount = buildAccount(101L, "222000111111111111", "USD",
+                new BigDecimal("10000.00"), AccountStatus.ACTIVE);
+        Client buyer = new Client();
+        buyer.setId(7L);
+        buyerAccount.setClient(buyer);
+        when(accountRepository.findById(101L)).thenReturn(Optional.of(buyerAccount));
+
+        stubClaimLock(contract);
+        when(transactionExecutor.formTransaction(any(), anyString(), any(), any(), any()))
+                .thenReturn(new Transaction(List.of(),
+                        new ForeignBankId(OUR_RN, "tx"), "d", "ref", "n", "desc"));
+        doNothing().when(transactionExecutor).execute(any(Transaction.class));
+
+        service.exerciseContract(String.valueOf(contractId), 101L, 7L, "CLIENT");
+
+        // Legacy put: strike se rezervise pri exercise-u (10000 USD na izabranom racunu).
+        verify(reservationApplier).reserveMonas(eq("222000111111111111"), eq(new BigDecimal("10000")));
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISING);
+    }
+
+    @Test
+    @DisplayName("T5(B): pre-reserved amount mismatch (!= strike×qty) → clean ExerciseConflict, no 2PC")
+    void exerciseContract_preReservedAmountMismatch_throwsConflict() {
+        Long contractId = 99L;
+        InterbankOtcContract contract = buildActiveBuyerSideContract(contractId, 42L);
+        // Rezervisan iznos se NE poklapa sa strike×qty (50×200=10000) → mismatch.
+        contract.setReservedStrikeAccountNumber("222000111111111111");
+        contract.setReservedStrikeAmount(new BigDecimal("9000"));
+        when(contractRepository.findById(contractId)).thenReturn(Optional.of(contract));
+
+        Account buyerAccount = buildAccount(101L, "222000111111111111", "USD",
+                new BigDecimal("10000.00"), AccountStatus.ACTIVE);
+        Client buyer = new Client();
+        buyer.setId(7L);
+        buyerAccount.setClient(buyer);
+        when(accountRepository.findById(101L)).thenReturn(Optional.of(buyerAccount));
+
+        assertThatThrownBy(() -> service.exerciseContract(String.valueOf(contractId), 101L, 7L, "CLIENT"))
+                .isInstanceOf(InterbankExceptions.InterbankExerciseConflictException.class);
+
+        verify(reservationApplier, never()).reserveMonas(anyString(), any());
+        verify(transactionExecutor, never()).execute(any());
     }
 
     // ── R1 209: inter-bank OTC access gate ──

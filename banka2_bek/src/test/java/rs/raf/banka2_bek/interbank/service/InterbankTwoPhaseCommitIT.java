@@ -194,7 +194,14 @@ class InterbankTwoPhaseCommitIT {
         when(interbankClient.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
                 .thenReturn(null);
 
-        transactionExecutorService.execute(tx);
+        // 2PC ATOMICITY: a partner NO is an ABORT — execute() now THROWS so callers
+        // compensate. The conservation guarantees below (balance fully restored,
+        // ROLLED_BACK, ROLLBACK_TX sent, no COMMIT_TX) still hold and are the point of
+        // this test: a real H2-backed end-to-end proof that the abort leaves no money
+        // stranded AND signals failure to the caller.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> transactionExecutorService.execute(tx))
+                .isInstanceOf(rs.raf.banka2_bek.interbank.exception.InterbankExceptions
+                        .InterbankTransactionAbortedException.class);
 
         Account local = accountRepository.findByAccountNumber(localNum).orElseThrow();
         assertThat(local.getBalance()).isEqualByComparingTo("500.00");
@@ -240,7 +247,12 @@ class InterbankTwoPhaseCommitIT {
         when(interbankClient.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
                 .thenReturn(null);
 
-        transactionExecutorService.execute(tx);
+        // 2PC ATOMICITY: null-vote treated as NO = ABORT → execute() THROWS. The
+        // conservation guarantees below (reservation restored, ROLLED_BACK, ROLLBACK sent,
+        // no COMMIT_TX) still hold.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> transactionExecutorService.execute(tx))
+                .isInstanceOf(rs.raf.banka2_bek.interbank.exception.InterbankExceptions
+                        .InterbankTransactionAbortedException.class);
 
         // Lokalna rezervacija mora biti vracena (null-vote = abort).
         Account local = accountRepository.findByAccountNumber(localNum).orElseThrow();

@@ -453,6 +453,121 @@ public class InterbankOtcWrapperService {
                             + "pregovoru — mozete poslati kontra-ponudu ili odbiti ponudu.");
         }
 
+        // T1/T2 — zabelezi kupcev izabrani settlement racun NA pregovor PRE outbound
+        // accept-a. Premium charge (§3.6) i kasniji settlement koriste bas taj racun,
+        // pa prepare (rezervacija) i commit (commitMonas) u TransactionExecutorService-u
+        // biraju isti deterministicki racun (vidi buyerSettlementAccountNumber javadoc).
+        // Samo kad smo BUYER (vec provereno gore) i kad je racun prosledjen sa FE-a.
+        Account settlementAccount = null;
+        if (buyerAccountId != null) {
+            settlementAccount = accountRepository.findById(buyerAccountId)
+                    .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                            "Racun " + buyerAccountId + " ne postoji"));
+            // F1 (IDOR) — settlement racun se ovde tereti za premiju (§3.6), pa MORA biti
+            // verifikovan PRE upisa: bez ovog kupac moze proslediti tudji ACTIVE racun u
+            // valuti premije i naplatiti premiju s njega. Iste provere kao exerciseContract:
+            // (a) ACTIVE, (b) vlasnistvo (Client == caller, role CLIENT), (c) valuta == premija.
+            if (settlementAccount.getStatus() != AccountStatus.ACTIVE) {
+                throw new InterbankExceptions.InterbankExerciseConflictException(
+                        "Racun " + settlementAccount.getAccountNumber() + " nije aktivan");
+            }
+            if (settlementAccount.getClient() == null
+                    || !settlementAccount.getClient().getId().equals(userId)
+                    || !"CLIENT".equalsIgnoreCase(userRole)) {
+                // Samo CLIENT kao buyer ima Account vlasnistvo. EMPLOYEE/ADMIN buyer (koji
+                // nema klijentske racune) ovde NE prolazi — sto je tacno: bez resolvabilnog
+                // racuna kupca premija se ne moze naplatiti, pa accept MORA biti odbijen
+                // (vidi P0 [MONEY CREATED] gate ispod) umesto da se outbound 2PC svejedno
+                // posalje i premium debit tiho no-op-uje (stvaranje novca).
+                throw new InterbankExceptions.InterbankExerciseConflictException(
+                        "Racun " + settlementAccount.getAccountNumber() + " ne pripada korisniku");
+            }
+            if (settlementAccount.getCurrency() == null
+                    || !settlementAccount.getCurrency().getCode().equalsIgnoreCase(entity.getPremiumCurrency())) {
+                throw new InterbankExceptions.InterbankExerciseConflictException(
+                        "Racun " + settlementAccount.getAccountNumber() + " nije u valuti "
+                                + entity.getPremiumCurrency());
+            }
+            entity.setBuyerSettlementAccountNumber(settlementAccount.getAccountNumber());
+            negotiationRepository.save(entity);
+        }
+
+        // ─── P0 [MONEY CREATED] — settlement racun u valuti premije je OBAVEZAN ──────
+        // za SVE buyer-role PRE bilo kakvog outbound 2PC-a. Bez ovog gate-a:
+        //   - EMPLOYEE/ADMIN kupac (koji nema klijentske racune) ili kupac koji NE
+        //     prosledi buyerAccountId ostane sa settlementAccount == null →
+        //   - ceo funds-guard blok ispod (gated na settlementAccount != null) se PRESKOCI →
+        //   - outbound §3.6 accept se SVEJEDNO posalje → partner kreditira prodavca +premium →
+        //   - inbound premium-debit kod nas resolve-uje kupcev racun preko
+        //     resolveLocalAccountDeterministic → findByClientId(...) vraca prazno za
+        //     zaposlenog → premium debit TIHO NE-OP-uje → novac se STVARA (prodavac +100,
+        //     kupac nezaduzen). Zato: ako kupac nema resolvabilan ACTIVE settlement racun u
+        //     valuti premije, REJECT-ujemo accept PRE outbound-a (cist 4xx) — nikad novac
+        //     nije ni krenuo. (NE smemo tiho no-op-ovati premium debit.)
+        if (settlementAccount == null) {
+            // Pokusaj deterministicke resolucije (isti red kao TransactionExecutorService:
+            // ACTIVE racun vlasnika u valuti premije, najmanji broj racuna). Za zaposlene
+            // bez klijentskih racuna ova lista je prazna → reject.
+            settlementAccount = accountRepository
+                    .findByClientIdAndStatusOrderByAvailableBalanceDesc(userId, AccountStatus.ACTIVE)
+                    .stream()
+                    .filter(a -> a.getCurrency() != null
+                            && a.getCurrency().getCode().equalsIgnoreCase(entity.getPremiumCurrency()))
+                    .min(java.util.Comparator.comparing(Account::getAccountNumber))
+                    .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                            "Nije moguce naplatiti premiju: nedostaje nalog kupca u valuti premije ("
+                                    + entity.getPremiumCurrency() + "). Izaberite settlement racun pre prihvatanja."));
+            entity.setBuyerSettlementAccountNumber(settlementAccount.getAccountNumber());
+            negotiationRepository.save(entity);
+        }
+
+        // ─── T3/T4 — strike (pi*k) racun + sinhroni funds-guard ────────────────────
+        // Strike novac (pricePerUnit * amount, u priceCurrency) je ono sto ce kupac
+        // platiti pri exercise-u (§2.7.2). Rezervacijom @accept ga garantujemo
+        // (T3), a PRE outbound accept-a proveravamo da kupac pokriva premium + strike
+        // (T4) — inace bismo commit-ovali premium kod partnera pa pali na strike-rezervaciji.
+        BigDecimal strike = entity.getPricePerUnit().multiply(entity.getAmount());
+        Account strikeAccount = null;
+        if (settlementAccount != null) {
+            boolean sameCurrency = entity.getPriceCurrency() != null
+                    && entity.getPriceCurrency().equalsIgnoreCase(entity.getPremiumCurrency());
+            if (sameCurrency) {
+                // priceCurrency == premiumCurrency → strike se rezervise na ISTOM racunu
+                // kao premium (settlement). Funds-guard tada proverava premium + strike na njemu.
+                strikeAccount = settlementAccount;
+                if (strikeAccount.getAvailableBalance().compareTo(entity.getPremium().add(strike)) < 0) {
+                    throw new InterbankExceptions.InterbankExerciseConflictException(
+                            "Nedovoljno sredstava na racunu " + strikeAccount.getAccountNumber()
+                                    + ". Potrebno (premium + strike): " + entity.getPremium().add(strike)
+                                    + " " + entity.getPremiumCurrency());
+                }
+            } else {
+                // Cross-currency: strike je u drugoj valuti od premije. FX konverzija
+                // strike-a je T7 — za sada zahtevamo da kupac ima ACTIVE racun u
+                // priceCurrency (deterministicki, kao settlement resolver), inace 409.
+                strikeAccount = accountRepository
+                        .findByClientIdAndStatusOrderByAvailableBalanceDesc(userId, AccountStatus.ACTIVE)
+                        .stream()
+                        .filter(a -> a.getCurrency() != null
+                                && entity.getPriceCurrency().equalsIgnoreCase(a.getCurrency().getCode()))
+                        .min(java.util.Comparator.comparing(Account::getAccountNumber))
+                        .orElseThrow(() -> new InterbankExceptions.InterbankExerciseConflictException(
+                                "Nemate ACTIVE racun u valuti " + entity.getPriceCurrency()
+                                        + " za rezervaciju strike iznosa (cross-currency strike — FX konverzija nije podrzana)"));
+                // Premium (settlement) i strike (strikeAccount) su razdvojeni racuni/valute.
+                if (settlementAccount.getAvailableBalance().compareTo(entity.getPremium()) < 0) {
+                    throw new InterbankExceptions.InterbankExerciseConflictException(
+                            "Nedovoljno sredstava na racunu " + settlementAccount.getAccountNumber()
+                                    + ". Potrebno (premium): " + entity.getPremium() + " " + entity.getPremiumCurrency());
+                }
+                if (strikeAccount.getAvailableBalance().compareTo(strike) < 0) {
+                    throw new InterbankExceptions.InterbankExerciseConflictException(
+                            "Nedovoljno sredstava na racunu " + strikeAccount.getAccountNumber()
+                                    + ". Potrebno (strike): " + strike + " " + entity.getPriceCurrency());
+                }
+            }
+        }
+
         // Outbound GET .../accept — sinhrono ceka da prodavceva banka commit-uje 2PC.
         // Dok ceka, ovde nemamo nista da uradimo — partnerova banka kreira opciju
         // na svojoj strani i salje COMMIT_TX nama (handleCommitTx).
@@ -462,9 +577,68 @@ public class InterbankOtcWrapperService {
         entity.setOngoing(false);
         negotiationRepository.save(entity);
 
+        // T3 — posle uspesnog 2PC commit-a buyer ugovor postoji (commitLocal ga je
+        // kreirao kroz Asset.OptionAsset postings). Rezervisemo strike novac na
+        // izabranom racunu i belezimo (racun + iznos) na ugovor da exercise (T5)
+        // konzumira BAS ovu rezervaciju, a expiry/decline (T8/T9) je oslobodi.
+        //
+        // BUG-1 (money-conservation lost-update): strike rezervacija MORA ici u
+        // zaseban REQUIRES_NEW (svez persistence context), NE inline u ovoj tx.
+        // Razlog: outbound `negotiationService.acceptOffer(...)` (gore) izazove da
+        // partnerova banka posalje COMMIT_TX nazad, koji KONKURENTAN inbound thread
+        // (handleCommitTx) DEBITuje kupcevu premiju i COMMITuje je u DB. Ali ova
+        // acceptOffer @Transactional je vec ucitala kupcev racun (settlementAccount/
+        // strikeAccount) na STAROM balansu. reserveMonas joinuje OVU tx i — posto je
+        // entitet vec managed u kontekstu — Hibernate vraca KEŠIRANU staru instancu
+        // (SELECT FOR UPDATE red se odbacuje), pa bi write-back PREGAZIO commit-ovani
+        // premium debit → premija se gubi → novac se stvara (live test: seller +50,
+        // buyer ne-zaduzen). REQUIRES_NEW dobija prazan kontekst → reserveMonas-ov
+        // findForUpdate cita SVEZ balans (premium debit vidljiv) → bez gaženja.
+        // (Isti obrazac kao claimForExercise/T5.)
+        if (strikeAccount != null) {
+            self.reserveStrikeAfterAccept(entity.getId(), strikeAccount.getAccountNumber(), strike);
+        }
+
         // Posle accept-a contract postoji na obema stranama (kreiraju se kroz 2PC commit
         // u TransactionExecutorService.commitLocal koji handluje Asset.OptionAsset postings).
         return mapNegotiationToDto(entity);
+    }
+
+    /**
+     * BUG-1 — strike rezervacija posle accept-a u ZASEBNOJ ({@code REQUIRES_NEW})
+     * transakciji. Mora imati SVEZ persistence context (ne nasledjivati onaj iz
+     * {@code acceptOffer} koji je vec ucitao kupcev racun na starom balansu), tako
+     * da {@code reserveMonas}-ov {@code findForUpdateByAccountNumber} procita SVEZ
+     * red — ukljucujuci premium debit koji je konkurentni inbound COMMIT_TX thread
+     * vec commit-ovao — i ne pregazi ga. Bez ove izolacije premija se gubila
+     * (lost-update → stvaranje novca).
+     *
+     * <p>Idempotency/atomicnost: ako upis rezervacije na ugovor padne, oslobadjamo
+     * monas hold da ne ostane viseci (isti compensate kao ranija inline verzija).
+     * Pokrece se POSLE uspesnog outbound accept-a; ugovor je vec kreiran kroz 2PC
+     * {@code commitLocal} (OptionAsset postings), pa ga nalazimo po
+     * {@code sourceNegotiationId}.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void reserveStrikeAfterAccept(Long sourceNegotiationId, String strikeAccountNumber,
+                                         BigDecimal strike) {
+        InterbankOtcContract contract = contractRepository.findBySourceNegotiationId(sourceNegotiationId)
+                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                        "Ugovor za pregovor " + sourceNegotiationId
+                                + " ne postoji posle accept-a (2PC nije kreirao opciju)"));
+        // reserveMonas baca InterbankProtocolException ako se availableBalance u
+        // medjuvremenu smanjio ispod strike-a (race izmedju funds-guarda i ove
+        // rezervacije). U REQUIRES_NEW kontekstu cita SVEZ red (premium debit vidljiv).
+        reservationApplier.reserveMonas(strikeAccountNumber, strike);
+        try {
+            contract.setReservedStrikeAccountNumber(strikeAccountNumber);
+            contract.setReservedStrikeAmount(strike);
+            contractRepository.save(contract);
+        } catch (RuntimeException ex) {
+            // Kompenzacija: ne ostavljamo rezervaciju visecu ako upis na ugovor padne.
+            reservationApplier.releaseMonas(strikeAccountNumber, strike);
+            throw ex;
+        }
     }
 
     // ─── Ugovori ──────────────────────────────────────────────────────────────
@@ -729,11 +903,37 @@ public class InterbankOtcWrapperService {
         }
 
         BigDecimal totalCost = contract.getStrikePrice().multiply(contract.getQuantity());
-        // Cheap fail-fast (ne-locking): konacna provera + hold se rade u claimForExercise.
-        if (buyerAccount.getAvailableBalance().compareTo(totalCost) < 0) {
-            throw new InterbankExceptions.InterbankExerciseConflictException(
-                    "Nedovoljno sredstava na racunu " + buyerAccount.getAccountNumber()
-                            + " za exercise (potrebno: " + totalCost + " " + contract.getStrikeCurrency() + ")");
+
+        // T5(B) — accept→exercise strike double-reserve pomirenje. T3 je strike (pi*k)
+        // VEC rezervisao pri accept-u (na contract.reservedStrikeAccountNumber), pa bi
+        // svez reserveMonas u claim-u rezervisao isti novac DRUGI put. Ako ugovor nosi
+        // pre-rezervaciju, NE rezervisemo ponovo — KONZUMIRAMO postojecu: settlement leg
+        // (p2) gadja BAS pre-rezervisani racun, pa commitLocal-ov commitMonas trosi
+        // upravo tu rezervaciju (tacno jedna reserve + jedan commit-consume kroz
+        // accept→exercise). Validujemo da je rezervisan iznos == strike×qty (inace
+        // mismatch — cisto 409, ne tihi knjizni rascep). Ako reservedStrikeAmount==null
+        // (legacy ugovor / accept bez izabranog racuna), zadrzavamo reserve-at-exercise.
+        boolean strikePreReserved = contract.getReservedStrikeAccountNumber() != null
+                && contract.getReservedStrikeAmount() != null;
+        String settlementAccountNumber;
+        if (strikePreReserved) {
+            if (contract.getReservedStrikeAmount().compareTo(totalCost) != 0) {
+                throw new InterbankExceptions.InterbankExerciseConflictException(
+                        "Rezervisan strike iznos (" + contract.getReservedStrikeAmount()
+                                + ") se ne poklapa sa strike×qty (" + totalCost + ") za ugovor "
+                                + contractId);
+            }
+            // Settlement ide sa pre-rezervisanog racuna (tamo je novac vec na hold-u).
+            settlementAccountNumber = contract.getReservedStrikeAccountNumber();
+        } else {
+            // Legacy put: rezervisemo pri exercise-u na kupcevom izabranom racunu.
+            // Cheap fail-fast (ne-locking): konacna provera + hold se rade u claimForExercise.
+            if (buyerAccount.getAvailableBalance().compareTo(totalCost) < 0) {
+                throw new InterbankExceptions.InterbankExerciseConflictException(
+                        "Nedovoljno sredstava na racunu " + buyerAccount.getAccountNumber()
+                                + " za exercise (potrebno: " + totalCost + " " + contract.getStrikeCurrency() + ")");
+            }
+            settlementAccountNumber = buyerAccount.getAccountNumber();
         }
 
         // R2 1336/1337 — exercise CLAIM (REQUIRES_NEW, lock contract + reserveMonas):
@@ -746,7 +946,9 @@ public class InterbankOtcWrapperService {
         //         commitMonas(isDebit=false) konzumira upravo ovu rezervaciju.
         // Claim je commit-ovan PRE out-of-tx 2PC. Ako 2PC padne — revert (EXERCISING→
         // ACTIVE + releaseMonas) u zasebnoj REQUIRES_NEW transakciji.
-        self.claimForExercise(contractId, buyerAccount.getAccountNumber(), totalCost);
+        // T5(B): kad je strike vec rezervisan (T3), claim SAMO flip-uje status (bez
+        // druge reserveMonas) — rezervacija postoji od accept-a.
+        self.claimForExercise(contractId, settlementAccountNumber, totalCost, strikePreReserved);
 
         // Formiraj exercise transakciju per §2.7.2.
         int myRouting = requireMyRoutingNumber();
@@ -762,13 +964,27 @@ public class InterbankOtcWrapperService {
         BigDecimal qty = contract.getQuantity();
         BigDecimal money = totalCost;
 
-        // §2.7.2 spec wording:
-        //   "Debit option pseudo-account for pi*k" — option ac increases money → +pi*k
-        //   "Credit the buyer for pi*k"            — buyer decreases money    → -pi*k
-        //   "Credit option pseudo-account for k stocks" — option ac decreases stocks → -k
-        //   "Debit relevant receiving accounts for k assets" — buyer receives stocks → +k
+        // §2.7.2 / §S7 — protokol-konforman EXERCISE tx (mirror Banka-1 ExerciseOutbound).
+        // Iznos placa kupac (k*pi), a prodavac ga PRIMA — protokolarno preko EKSPLICITNOG
+        // "credit seller real cash pi*k" leg-a:
+        //   p1 "Debit option pseudo-account for pi*k"          → OPTION prima novac → +pi*k
+        //   p2 "Credit seller real cash pi*k"                  → prodavac PRIMA     → -pi*k (Person@seller)
+        //   p3 "Credit option pseudo-account for k stocks"     → OPTION predaje     → -k
+        //   p4 "Debit relevant receiving accounts for k assets"→ kupac prima        → +k
+        //
+        // BUG-1 [MONEY DESTROYED] fix: RANIJE je p2 bio (Account, -pi*k) kupcev racun,
+        // a prodavac NIJE imao eksplicitan credit leg → partnerska banka (koja kreditira
+        // svog prodavca SAMO sa eksplicitnog leg-a, ne sweep-uje OPTION interno) nikad
+        // nije isplatila prodavca → k*pi je nestajao (zaglavljen u OPTION pseudo-racunu).
+        // Sad saljemo eksplicitan seller-cash credit leg (Person@prodavceva-banka, -pi*k)
+        // pa OPTION money (+pi*k) i seller credit (-pi*k) balansiraju MONAS grupu, a
+        // partner kreditira prodavca. Kupcev strike NE ide vise kao posting nego se
+        // konzumira iz claim-rezervacije eksplicitnim commitMonas-om POSLE uspesnog 2PC
+        // (ispod) — kao sto Banka-1 radi (ReserveMonas/CommitMonas van postings liste).
+        ForeignBankId sellerForeign = new ForeignBankId(
+                contract.getForeignPartyRoutingNumber(), contract.getForeignPartyIdString());
         Posting p1 = new Posting(new TxAccount.Option(negotiationId), money, monasAsset);
-        Posting p2 = new Posting(new TxAccount.Account(buyerAccount.getAccountNumber()), money.negate(), monasAsset);
+        Posting p2 = new Posting(new TxAccount.Person(sellerForeign), money.negate(), monasAsset);
         Posting p3 = new Posting(new TxAccount.Option(negotiationId), qty.negate(), stockAsset);
         Posting p4 = new Posting(new TxAccount.Person(buyerForeign), qty, stockAsset);
 
@@ -780,15 +996,26 @@ public class InterbankOtcWrapperService {
 
         // Pozovi 2PC OUT-OF-TX (execute koordinira svoju per-fazu Tx). Na uspesan
         // COMMIT_TX, commitLocal heuristika (vidi TransactionExecutorService) detektuje
-        // Stock+Option posting i postavlja contract.status EXERCISING→EXERCISED +
-        // commitMonas konzumira rezervaciju. Ako 2PC padne — revert claim (oslobodi
-        // rezervaciju + EXERCISING→ACTIVE) pa propagiraj da kupac moze retry.
+        // Stock+Option posting i postavlja contract.status EXERCISING→EXERCISED. Ako 2PC
+        // padne — revert claim (oslobodi rezervaciju + EXERCISING→ACTIVE) pa propagiraj
+        // da kupac moze retry.
         try {
             transactionExecutor.execute(tx);
         } catch (RuntimeException ex) {
-            self.revertExerciseClaim(contractId, buyerAccount.getAccountNumber(), totalCost);
+            // T5(B): revert oslobadja rezervaciju SAMO ako ju je ovaj exercise i napravio
+            // (legacy put). Kad je strike pre-rezervisan (T3), rezervacija pripada
+            // accept-u i ostaje (expiry/decline ce je osloboditi) — ne diramo je ovde.
+            self.revertExerciseClaim(contractId, settlementAccountNumber, totalCost, strikePreReserved);
             throw ex;
         }
+
+        // BUG-1 — exactly-once kupcev strike debit: posto kupcev (Account, -pi*k) leg vise
+        // NIJE u postings listi (zamenjen seller-cash leg-om), commitLocal ga vise ne
+        // konzumira. Kupcev strike je rezervisan jednom (claimForExercise legacy reserve
+        // ili accept-time T3 pre-rezervacija) i ovde ga konzumiramo TACNO jednom posle
+        // uspesnog 2PC-a — kupac plati pi*k, prodavac (kod partnera) primi pi*k, novac
+        // konzervisan. Na 2PC pad ova linija se ne dosegne (revert je vec oslobodio hold).
+        reservationApplier.commitMonas(settlementAccountNumber, totalCost);
 
         // Posle uspesnog 2PC ucitaj contract sveze (commitLocal je vec save-ovao).
         InterbankOtcContract refreshed = contractRepository.findById(contractId).orElse(contract);
@@ -804,7 +1031,8 @@ public class InterbankOtcWrapperService {
      * status != ACTIVE → 409. Commit-uje se PRE out-of-tx 2PC (write-ahead claim).
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void claimForExercise(Long contractId, String buyerAccountNumber, BigDecimal totalCost) {
+    public void claimForExercise(Long contractId, String buyerAccountNumber, BigDecimal totalCost,
+                                 boolean strikePreReserved) {
         InterbankOtcContract locked = contractRepository.findByIdForUpdate(contractId)
                 .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
                         "Ugovor " + contractId + " ne postoji"));
@@ -813,9 +1041,14 @@ public class InterbankOtcWrapperService {
                     "Ugovor nije ACTIVE (trenutno: " + locked.getStatus()
                             + ") — exercise je vec u toku ili zavrsen");
         }
-        // Hold sredstava (atomicno pod account lock-om; baca ProtocolException ako se
-        // availableBalance u medjuvremenu smanjio ispod totalCost — 1337 race-window).
-        reservationApplier.reserveMonas(buyerAccountNumber, totalCost);
+        // T5(B): kad je strike vec rezervisan (T3 accept), NE rezervisemo ponovo —
+        // rezervacija (pi*k) vec stoji na buyerAccountNumber od accept-a; commitLocal
+        // ce je konzumirati. Inace (legacy) hold sredstava sad (atomicno pod account
+        // lock-om; baca ProtocolException ako se availableBalance u medjuvremenu smanjio
+        // ispod totalCost — 1337 race-window).
+        if (!strikePreReserved) {
+            reservationApplier.reserveMonas(buyerAccountNumber, totalCost);
+        }
         locked.setStatus(InterbankOtcContractStatus.EXERCISING);
         contractRepository.save(locked);
     }
@@ -827,7 +1060,8 @@ public class InterbankOtcWrapperService {
      * dira novac (release se izvrsava samo dok je contract jos EXERCISING).
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void revertExerciseClaim(Long contractId, String buyerAccountNumber, BigDecimal totalCost) {
+    public void revertExerciseClaim(Long contractId, String buyerAccountNumber, BigDecimal totalCost,
+                                    boolean strikePreReserved) {
         InterbankOtcContract locked = contractRepository.findByIdForUpdate(contractId)
                 .orElse(null);
         if (locked == null || locked.getStatus() != InterbankOtcContractStatus.EXERCISING) {
@@ -835,9 +1069,90 @@ public class InterbankOtcWrapperService {
             // konzumirao commitMonas; ne dupliraj release.
             return;
         }
-        reservationApplier.releaseMonas(buyerAccountNumber, totalCost);
+        // T5(B): release SAMO ako je ovaj exercise i napravio rezervaciju (legacy put).
+        // Kad je strike pre-rezervisan (T3 accept), rezervacija pripada accept-u i mora
+        // ostati posle neuspelog exercise-a (expiry/decline put je oslobadja); puštanje
+        // ovde bi razvezalo strike pre exercise-a i ostavilo accept bez garancije.
+        if (!strikePreReserved) {
+            reservationApplier.releaseMonas(buyerAccountNumber, totalCost);
+        }
         locked.setStatus(InterbankOtcContractStatus.ACTIVE);
         contractRepository.save(locked);
+    }
+
+    /**
+     * T9 / S10b — "Odbi" sklopljeni inter-bank OTC ugovor sa nase (kupceve) strane,
+     * pre exercise-a. Lokalno zatvaranje: oslobadjamo buyer-ovu accept-time strike
+     * rezervaciju ("pare za kupovinu se vracaju"), markiramo status DECLINED, hartije
+     * se NE prenose, premija OSTAJE prodavcu (vec placena pri accept-u, ne refundira se).
+     *
+     * <p>BEZ cross-bank poruke — sellerova rezervacija hartija (u partner banci) se
+     * oslobadja na NJIHOVOM expiry-ju (§2.7.2). Mi samo zatvaramo nasu stranu.
+     *
+     * <p>Pre-validacija (mirror exercise-a, sve → 409 {@link
+     * InterbankExceptions.InterbankExerciseConflictException}):
+     * <ul>
+     *   <li>pozivac mora biti BUYER i vlasnik ugovora</li>
+     *   <li>status mora biti ACTIVE (vec EXERCISED/EXPIRED/DECLINED → 409, idempotent guard)</li>
+     *   <li>settlementDate mora biti u buducnosti (posle dospeca ugovor istice auto-expiry-jem)</li>
+     * </ul>
+     *
+     * <p>Ucitavanje ide kroz {@code findByIdForUpdate} (PESSIMISTIC_WRITE) jer mutiramo
+     * status — serijalizacija sa konkurentnim exercise-claim-om (1336): drugi pod lock-om
+     * vidi DECLINED i odbija.
+     */
+    @Transactional
+    public OtcInterbankContract declineContract(String contractIdStr, Long userId, String userRole) {
+        // R1 209 — decline je OTC trgovinska akcija; isti gate kao exercise.
+        ensureInterbankOtcAccess(userId, userRole);
+
+        Long contractId;
+        try {
+            contractId = Long.parseLong(contractIdStr);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("contractId mora biti broj");
+        }
+
+        InterbankOtcContract contract = contractRepository.findByIdForUpdate(contractId)
+                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                        "Ugovor " + contractId + " ne postoji"));
+
+        if (!contract.getLocalPartyId().equals(userId) || !contract.getLocalPartyRole().equalsIgnoreCase(userRole)) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Ugovor ne pripada trenutno autentifikovanom korisniku");
+        }
+        if (contract.getLocalPartyType() != InterbankPartyType.BUYER) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Odbijanje ugovora inicira kupac; mi smo SELLER u ovom ugovoru");
+        }
+        if (contract.getStatus() != InterbankOtcContractStatus.ACTIVE) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Ugovor nije ACTIVE (trenutno: " + contract.getStatus()
+                            + ") — odbijanje nije dozvoljeno nad zatvorenim/iskoriscenim ugovorom");
+        }
+        // Decline je legalan SAMO pre dospeca; posle settlement-a auto-expiry sweep
+        // istice ugovor (releaseMonas je tamo). Strict-before (american-style), kao exercise.
+        if (!contract.getSettlementDate().isAfter(OffsetDateTime.now(ZoneOffset.UTC))) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Ugovor je istekao (settlement: " + contract.getSettlementDate()
+                            + ") — odbijanje vise nije moguce");
+        }
+
+        // Oslobodi buyer-ovu accept-time strike rezervaciju ("pare za kupovinu se
+        // vracaju"). Ako strike nije rezervisan (legacy/accept bez izabranog racuna),
+        // nema sta da se oslobodi — samo zatvaramo stranu.
+        if (contract.getReservedStrikeAccountNumber() != null
+                && contract.getReservedStrikeAmount() != null) {
+            reservationApplier.releaseMonas(
+                    contract.getReservedStrikeAccountNumber(),
+                    contract.getReservedStrikeAmount());
+        }
+
+        contract.setStatus(InterbankOtcContractStatus.DECLINED);
+        contractRepository.save(contract);
+        log.info("OTC inter-bank ugovor {} odbijen (DECLINED) — strike rezervacija oslobodjena, "
+                + "premija ostaje prodavcu, hartije nisu prenete", contractId);
+        return mapContractToDto(contract);
     }
 
     /**

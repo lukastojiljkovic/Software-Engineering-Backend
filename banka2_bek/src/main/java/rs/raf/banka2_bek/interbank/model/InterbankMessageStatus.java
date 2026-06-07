@@ -11,12 +11,22 @@ package rs.raf.banka2_bek.interbank.model;
  *                       i nastavlja obradu asinhrono. NIJE terminalno (cekamo da
  *                       partner posalje COMMIT_TX/ROLLBACK_TX), ali NE smemo retry-ovati
  *                       jer bi to bila duplikacija. Scheduler ovo preskace.
- *  STUCK              — dosegnut MAX_RETRY; potrebna manuelna intervencija (supervisor).
+ *  STUCK              — dosegnut MAX_RETRY za fazu-1 (NEW_TX); potrebna manuelna
+ *                       intervencija (supervisor). Terminalan — ne ulazi u retry ciklus.
  *  FAILED_PERMANENT   — primljen permanentan 4xx odgovor koji nije 408/425/429
- *                       (npr. 400 Bad Request, 422 Unprocessable Entity). Retry
- *                       ne bi pomogao jer je problem sa sadrzajem poruke, ne
- *                       sa transijentnim stanjem partnera. Terminalan — ne ulazi
- *                       u retry ciklus.
+ *                       (npr. 400 Bad Request, 422 Unprocessable Entity), ILI je
+ *                       poruka definitivno abortovana / trajno-neisporuciva
+ *                       (nerazresivo routing, nemoguce-deserijalizovati telo, NEW_TX
+ *                       cija je transakcija lokalno abortovana — vidi
+ *                       InterbankMessageService.markOutboundAborted/markOutboundNonRetryable).
+ *                       Retry ne bi pomogao. Terminalan — ne ulazi u retry ciklus.
+ *  DEAD_LETTER        — dead-letter backstop (facet c): poruka je dosegla
+ *                       konfigurabilni {@code interbank.retry.max-attempts} (default 50)
+ *                       transientnih neuspeha. VAZI ZA SVE tipove, ukljucujuci
+ *                       COMMIT_TX/ROLLBACK_TX — phase-2 se po §2.9 retransmituje
+ *                       neograniceno, ali maxAttempts ogranicava beskonacni log-spam
+ *                       kad je partner TRAJNO mrtav. Terminalan — ne ulazi u retry
+ *                       ciklus; zahteva operativnu intervenciju (WARN logovan jednom).
  *
  * Inbound:
  *  INBOUND — primljena, obradjena, odgovor cache-iran (responseBody +
@@ -28,5 +38,6 @@ public enum InterbankMessageStatus {
     SENT_WAITING_ASYNC,
     STUCK,
     FAILED_PERMANENT,
+    DEAD_LETTER,
     INBOUND
 }

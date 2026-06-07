@@ -459,12 +459,22 @@ class DtoValidationTest {
             assertThat(violations).isEmpty();
         }
 
-        // ── [P2-input-validation-1 / R1 327] toAccount > 18 (kolona length=18) ──
+        // ── toAccount do 34 (kolona Payment.toAccountNumber length=34) ──
+        // Inter-bank primalac moze imati racun razlicite duzine (Banka 1 = 19 cifara),
+        // pa 19-cifreni toAccount VISE NIJE violation. Granica je 34 (IBAN max).
 
         @Test
-        void toAccount19Digits_hasViolation() {
+        void toAccount19Digits_noViolation() {
             CreatePaymentRequestDto dto = buildValid();
             dto.setToAccount("1".repeat(19));
+            Set<ConstraintViolation<CreatePaymentRequestDto>> violations = validator.validate(dto);
+            assertThat(violations).isEmpty();
+        }
+
+        @Test
+        void toAccount35Digits_hasViolation() {
+            CreatePaymentRequestDto dto = buildValid();
+            dto.setToAccount("1".repeat(35));
             Set<ConstraintViolation<CreatePaymentRequestDto>> violations = validator.validate(dto);
             assertThat(violations).isNotEmpty();
             assertThat(violations).anyMatch(v -> v.getPropertyPath().toString().equals("toAccount"));

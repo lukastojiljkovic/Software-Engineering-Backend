@@ -923,3 +923,27 @@ INSERT INTO game_scores (client_id, player_name, game_type, score, created_at) V
 (3, 'Lazar Ilić', 'BANKA2_RUSH', 8240, NOW() - INTERVAL '4 hours');
 
 SELECT setval('game_scores_id_seq', (SELECT COALESCE(MAX(id), 1) FROM game_scores));
+
+-- ============================================================
+-- BUG-3 (07.06.2026): interbank_otc_contracts.status CHECK mora dozvoliti DECLINED
+-- ============================================================
+-- Enum InterbankOtcContractStatus ima 5 vrednosti (ACTIVE, EXERCISING, EXERCISED,
+-- EXPIRED, DECLINED), ali je live DB CHECK constraint nastao PRE nego sto je
+-- DECLINED dodat u enum. `ddl-auto=update` NIKAD ne menja postojeci CHECK, pa je
+-- ostao stari skup ('ACTIVE','EXERCISING','EXERCISED','EXPIRED') → setovanje
+-- DECLINED je padalo sa "violates check constraint" (decline → 409, ugovor ostaje
+-- ACTIVE). Ovaj blok je IDEMPOTENTAN: dropuje POSTOJECI status-check (bez obzira
+-- na njegov tacan skup vrednosti) i (re)kreira ga sa svih 5 enum vrednosti. Radi
+-- i na svezem fresh deploy-u (Hibernate vec napravi ispravan check iz enum-a — ovaj
+-- DROP+ADD ga samo deterministicki normalizuje na isto ime/skup).
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE c.relname = 'interbank_otc_contracts' AND n.nspname = 'public') THEN
+        ALTER TABLE interbank_otc_contracts
+            DROP CONSTRAINT IF EXISTS interbank_otc_contracts_status_check;
+        ALTER TABLE interbank_otc_contracts
+            ADD CONSTRAINT interbank_otc_contracts_status_check
+            CHECK (status IN ('ACTIVE','EXERCISING','EXERCISED','EXPIRED','DECLINED'));
+    END IF;
+END $$;

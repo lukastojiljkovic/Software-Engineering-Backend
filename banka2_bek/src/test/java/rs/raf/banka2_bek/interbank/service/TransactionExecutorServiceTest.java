@@ -33,6 +33,7 @@ import rs.raf.banka2_bek.interbank.repository.InterbankTransactionRepository;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -161,13 +162,21 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("execute local-only: NO vote → rollbackLocal called, no messageService/client interaction")
+    @DisplayName("execute local-only: NO vote → rollbackLocal called THEN aborts (throws), no messageService/client interaction")
     void execute_localOnly_noVote_rollsBackLocal() {
+        // CONTRACT FIX (2PC atomicity): a NO vote is an ABORT and MUST be signalled to
+        // the caller by THROWING. Pre-fix execute() returned silently on every abort
+        // branch, so OtcNegotiationService.acceptReceivedNegotiation never ran its
+        // compensation (negotiation stayed ACCEPTED, contract persisted, stock reserved)
+        // while the money tx was rolled back — both banks left inconsistent and the
+        // inbound endpoint wrongly returned 204 success. The abort throw is the
+        // corrected contract; the local rollback still runs BEFORE the throw.
         Transaction tx = localMonasTx();
         stubTxSave();
         when(self.prepareLocal(tx)).thenReturn(noVote());
 
-        service.execute(tx);
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         verify(self).prepareLocal(tx);
         verify(self).rollbackLocal(tx.transactionId());
@@ -254,8 +263,16 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
-    @DisplayName("1537: phase-2 ROLLBACK_TX throws InterbankProtocolException → execute() does NOT propagate")
+    @DisplayName("1537 + abort: phase-2 ROLLBACK_TX send throws → that send-error does NOT propagate "
+            + "(marked failed for retransmit), but the abort itself still throws InterbankTransactionAbortedException")
     void execute_coordinator_phase2ProtocolException_doesNotPropagate() {
+        // Two distinct concerns coexist here:
+        //  (1) 1537 fire-and-forget — a phase-2 SEND failure (partner 4xx/5xx) must NOT
+        //      propagate; it is marked failed for §2.9 retransmit and swallowed.
+        //  (2) 2PC atomicity — because the partner voted NO at phase-1, this is an ABORT,
+        //      so execute() MUST signal failure to the caller by throwing the abort
+        //      exception (AFTER local rollback + best-effort ROLLBACK_TX dispatch).
+        // The thrown type is the ABORT exception, NOT the swallowed phase-2 send error.
         Transaction tx = mixedMonasTx();
         IdempotenceKey p1Key = new IdempotenceKey(MY_RN, "p1-proto");
         IdempotenceKey rbKey = new IdempotenceKey(MY_RN, "rb-proto");
@@ -268,14 +285,22 @@ class TransactionExecutorServiceTest {
         when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
                 .thenThrow(new InterbankExceptions.InterbankProtocolException("malformed"));
 
-        service.execute(tx); // ne sme da baci
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class)
+                // the swallowed phase-2 send error must NOT be the surfaced message
+                .hasMessageNotContaining("malformed");
 
+        // phase-2 send-error was swallowed and the message marked failed for retransmit.
         verify(messageService).markOutboundFailed(eq(rbKey), contains("malformed"));
     }
 
     @Test
-    @DisplayName("execute coordinator: remote votes NO → rollbackTxPhase called + ROLLBACK_TX sent")
+    @DisplayName("execute coordinator: remote votes NO → rollbackTxPhase called + ROLLBACK_TX sent THEN aborts (throws)")
     void execute_coordinator_remoteNo_rollsBackAndSendsRollback() {
+        // CONTRACT FIX (2PC atomicity): a partner NO vote is an ABORT — execute() MUST
+        // throw so the caller's compensation runs. The throw happens ONLY AFTER the
+        // local rollback (rollbackTxPhase → rollbackLocal sets ROLLED_BACK) and AFTER
+        // ROLLBACK_TX has been dispatched to the remote.
         Transaction tx = mixedMonasTx();
         IdempotenceKey p1Key = new IdempotenceKey(MY_RN, "p1-key");
         IdempotenceKey rbKey = new IdempotenceKey(MY_RN, "rb-key");
@@ -288,21 +313,28 @@ class TransactionExecutorServiceTest {
         when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
                 .thenReturn(null);
 
-        service.execute(tx);
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
+        // Rollback ran and ROLLBACK_TX was dispatched BEFORE the abort throw.
         verify(self).rollbackTxPhase(tx.transactionId(), Set.of(REMOTE_RN));
         verify(self, never()).commitTxPhase(any(), any());
         verify(client).sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class));
     }
 
     @Test
-    @DisplayName("execute coordinator: prepareTxPhase returns NO → no network calls at all")
+    @DisplayName("execute coordinator: prepareTxPhase returns NO → no network calls at all THEN aborts (throws)")
     void execute_coordinator_phase1No_noNetworkCalls() {
+        // CONTRACT FIX (2PC atomicity): local-prepare NO is an ABORT. prepareTxPhase has
+        // already set the InterbankTransaction status to ROLLED_BACK (no local reservation
+        // was made — two-pass validate-and-reserve found violations in pass 1, so pass 2
+        // never ran). execute() must throw so the caller compensates; no network calls.
         Transaction tx = mixedMonasTx();
         when(self.prepareTxPhase(eq(tx), eq(Set.of(REMOTE_RN)))).thenReturn(
                 new TransactionExecutorService.Phase1Result(noVote(), Map.of(), Map.of()));
 
-        service.execute(tx);
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         verify(self, never()).commitTxPhase(any(), any());
         verify(self, never()).rollbackTxPhase(any(), any());
@@ -320,7 +352,9 @@ class TransactionExecutorServiceTest {
                 .thenReturn(null);
         when(self.rollbackTxPhase(any(), any())).thenReturn(Map.of());
 
-        service.execute(tx);
+        // 202 → treated as NO → abort → execute() throws after rollback.
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         verify(self).rollbackTxPhase(tx.transactionId(), Set.of(REMOTE_RN));
         verify(messageService).markOutboundSent(eq(p1Key), eq(202), isNull());
@@ -337,10 +371,16 @@ class TransactionExecutorServiceTest {
                 .thenThrow(new InterbankExceptions.InterbankCommunicationException("timeout"));
         when(self.rollbackTxPhase(any(), any())).thenReturn(Map.of());
 
-        service.execute(tx);
+        // Comm failure → treated as NO → abort → execute() throws after rollback.
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         verify(self).rollbackTxPhase(tx.transactionId(), Set.of(REMOTE_RN));
-        verify(messageService).markOutboundFailed(eq(p1Key), contains("timeout"));
+        // Facet 1: faza-1 NEW_TX je definitivno abortovana (mrezna greska tretirana kao
+        // NO → lokalni rollback). Outbound NEW_TX red se TERMINALIZUJE (markOutboundAborted),
+        // a NE ostavlja PENDING — scheduler ne sme da re-salje NEW_TX za abortovanu tx.
+        verify(messageService).markOutboundAborted(eq(p1Key), contains("timeout"));
+        verify(messageService, never()).markOutboundFailed(eq(p1Key), any());
     }
 
     @Test
@@ -362,13 +402,18 @@ class TransactionExecutorServiceTest {
                         "Invalid API key for routing " + REMOTE_RN + "."));
         when(self.rollbackTxPhase(any(), any())).thenReturn(Map.of());
 
-        service.execute(tx);
+        // Partner 401 → treated as NO → abort → execute() throws after rollback.
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         // Kljucna invarijanta: rollbackTxPhase (→ rollbackLocal → releaseMonas) MORA
         // biti pozvan, inace rezervacija ostaje zakljucana.
         verify(self).rollbackTxPhase(tx.transactionId(), Set.of(REMOTE_RN));
         verify(self, never()).commitTxPhase(any(), any());
-        verify(messageService).markOutboundFailed(eq(p1Key), contains("Invalid API key"));
+        // Facet 1: NEW_TX outbound red se TERMINALIZUJE na abort (markOutboundAborted),
+        // ne ostaje PENDING.
+        verify(messageService).markOutboundAborted(eq(p1Key), contains("Invalid API key"));
+        verify(messageService, never()).markOutboundFailed(eq(p1Key), any());
     }
 
     @Test
@@ -406,11 +451,89 @@ class TransactionExecutorServiceTest {
         when(messageService.generateKey()).thenReturn(rbKey);
         stubTxSave();
 
-        service.execute(tx);
+        // Abort → throws. The terminal-state guarantee is the key assertion: by the time
+        // the caller's catch sees the throw, rollbackLocal has already released the sender
+        // reservation AND the InterbankTransaction is ROLLED_BACK (so any caller that reads
+        // status post-catch — e.g. InterbankPaymentAsyncService — sees the terminal state).
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
 
         // Lokalni credit (sender) posting je ACCT_A (amount -100). rollbackLocal
         // MORA osloboditi tu rezervaciju — to je kljucna P1-5 invarijanta.
         verify(reservationApplier).releaseMonas(eq(ACCT_A), eq(BigDecimal.valueOf(100)));
+        assertThat(ibt.getStatus()).isEqualTo(InterbankTransactionStatus.ROLLED_BACK);
+    }
+
+    // =========================================================================
+    // execute — abort signalling (2PC atomicity contract)
+    // =========================================================================
+
+    @Test
+    @DisplayName("ABORT contract: local-only NO end-to-end → throws AbortedException AND "
+            + "InterbankTransaction ends ROLLED_BACK (terminal state visible after the throw)")
+    void execute_localOnly_no_throwsAndEndsRolledBack() throws Exception {
+        // End-to-end (real prepareLocal/rollbackLocal via self → real instance): a
+        // local-only NO vote must (a) throw the abort exception, and (b) leave the
+        // coordinator record ROLLED_BACK so a caller reading status in its catch sees
+        // the terminal state. ACCT_B (credit, -100) has only 50 → INSUFFICIENT_ASSET NO.
+        Transaction tx = localMonasTx();
+        when(accountRepository.findByAccountNumber(ACCT_A))
+                .thenReturn(Optional.of(buildAccount(ACCT_A, "RSD", BigDecimal.ZERO, AccountStatus.ACTIVE)));
+        when(accountRepository.findByAccountNumber(ACCT_B))
+                .thenReturn(Optional.of(buildAccount(ACCT_B, "RSD", BigDecimal.valueOf(50), AccountStatus.ACTIVE)));
+        // Real prepareLocal + rollbackLocal through self.
+        when(self.prepareLocal(tx)).thenAnswer(inv -> service.prepareLocal(tx));
+        doAnswer(inv -> { service.rollbackLocal(tx.transactionId()); return null; })
+                .when(self).rollbackLocal(tx.transactionId());
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
+
+        // Terminal state guarantee after the throw.
+        assertThat(ibt.getStatus()).isEqualTo(InterbankTransactionStatus.ROLLED_BACK);
+        verify(self, never()).commitLocal(any());
+    }
+
+    @Test
+    @DisplayName("ABORT contract: promoted-coordinator partner NO end-to-end → throws AbortedException, "
+            + "ROLLBACK_TX dispatched, InterbankTransaction ends ROLLED_BACK")
+    void execute_coordinator_partnerNo_throwsRollsBackAndSendsRollback_endToEnd() throws Exception {
+        // Real rollbackTxPhase → rollbackLocal via self. Local sender ACCT_A (-100),
+        // remote receiver (+100). Partner votes NO → coordinator must roll back locally
+        // (releaseMonas + ROLLED_BACK), dispatch ROLLBACK_TX, THEN throw the abort.
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Account(ACCT_A), BigDecimal.valueOf(-100),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.RSD))),
+                new Posting(new TxAccount.Account(ACCT_REMOTE), BigDecimal.valueOf(100),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.RSD)))
+        ), new ForeignBankId(MY_RN, "tx-partner-no-e2e"), null, null, null, null);
+        IdempotenceKey p1Key = new IdempotenceKey(MY_RN, "p1-no-e2e");
+        IdempotenceKey rbKey = new IdempotenceKey(MY_RN, "rb-no-e2e");
+
+        when(self.prepareTxPhase(eq(tx), eq(Set.of(REMOTE_RN)))).thenReturn(phase1Yes(p1Key, tx));
+        when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.NEW_TX), any(), eq(TransactionVote.class)))
+                .thenReturn(noVote());
+        when(self.rollbackTxPhase(eq(tx.transactionId()), eq(Set.of(REMOTE_RN))))
+                .thenAnswer(inv -> service.rollbackTxPhase(tx.transactionId(), Set.of(REMOTE_RN)));
+        when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
+                .thenReturn(null);
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        when(messageService.generateKey()).thenReturn(rbKey);
+        stubTxSave();
+
+        assertThatThrownBy(() -> service.execute(tx))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
+
+        // Local rollback released the sender reservation, ROLLBACK_TX was dispatched,
+        // and the record is terminal — all BEFORE the abort surfaced.
+        verify(reservationApplier).releaseMonas(eq(ACCT_A), eq(BigDecimal.valueOf(100)));
+        verify(client).sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class));
         assertThat(ibt.getStatus()).isEqualTo(InterbankTransactionStatus.ROLLED_BACK);
     }
 
@@ -655,6 +778,184 @@ class TransactionExecutorServiceTest {
         verify(reservationApplier).reserveStock(anyString(), eq(42L), eq("CLIENT"), eq("AAPL"), eq(10));
     }
 
+    // ── BUG-2: Stock+Person leg sa "C-"/"E-" prefiksiranim Person id-em ────────
+    // §2.6 — nasi Person id-evi su "C-<n>" (klijent) / "E-<n>" (zaposleni). Stock+Person
+    // grane su ranije zvale Long.parseLong("C-7") DIREKTNO → NumberFormatException →
+    // prepare NO sa NO_SUCH_ACCOUNT → buyer stock-delivery exercise je pucao. Fix:
+    // parsePersonOwnerId strip-uje prefiks (kao sto Monas+Person grane vec rade).
+
+    /** Stock+Person tx gde credit (delivery) leg nosi "C-"-prefiksiran Person id. */
+    private Transaction localStockTxPrefixed(String creditPersonId) {
+        return new Transaction(List.of(
+                new Posting(new TxAccount.Person(new ForeignBankId(MY_RN, "C-99")),
+                        BigDecimal.valueOf(10), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Person(new ForeignBankId(MY_RN, creditPersonId)),
+                        BigDecimal.valueOf(-10), new Asset.Stock(new StockDescription("AAPL")))
+        ), new ForeignBankId(MY_RN, "local-stock-prefixed-1"), null, null, null, null);
+    }
+
+    @Test
+    @DisplayName("BUG-2 prepareLocal: Stock+Person id \"C-7\" → owner 7 resolved (no NumberFormatException), reserveStock(7)")
+    void prepareLocal_stockPersonPrefixedId_resolvesOwner() {
+        when(tradingServiceClient.findListingByTicker("AAPL"))
+                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        when(tradingServiceClient.findHolding(eq(7L), any(), eq("AAPL")))
+                .thenReturn(holding(7L, "AAPL", 20));
+
+        TransactionVote vote = service.prepareLocal(localStockTxPrefixed("C-7"));
+
+        // PRE fix: Long.parseLong("C-7") → NumberFormatException → NO + NO_SUCH_ACCOUNT.
+        assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.YES);
+        // Owner id 7 (prefiks skinut), holding lookup i reserveStock gadjaju 7 (ne pad).
+        verify(tradingServiceClient).findHolding(eq(7L), any(), eq("AAPL"));
+        verify(reservationApplier).reserveStock(anyString(), eq(7L), eq("CLIENT"), eq("AAPL"), eq(10));
+    }
+
+    @Test
+    @DisplayName("BUG-2 commitLocal: Stock+Person id \"C-7\" → commitStock(7) (no prefix-parse crash)")
+    void commitLocal_stockPersonPrefixedId_resolvesOwner() throws Exception {
+        Transaction tx = localStockTxPrefixed("C-7");
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        service.commitLocal(tx.transactionId());
+
+        // PRE fix: Long.parseLong("C-7") → NumberFormatException u commit grani.
+        // Debit leg (C-99, +10) i credit leg (C-7, -10) oba commit-uju stock pod owner-om bez prefiksa.
+        verify(reservationApplier).commitStock(anyString(), eq(99L), eq("CLIENT"), eq("AAPL"), eq(10), eq(true));
+        verify(reservationApplier).commitStock(anyString(), eq(7L), eq("CLIENT"), eq("AAPL"), eq(10), eq(false));
+    }
+
+    @Test
+    @DisplayName("BUG-2 rollbackLocal: Stock+Person id \"C-7\" → releaseStock(7) (no prefix-parse crash)")
+    void rollbackLocal_stockPersonPrefixedId_resolvesOwner() throws Exception {
+        Transaction tx = localStockTxPrefixed("C-7");
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        service.rollbackLocal(tx.transactionId());
+
+        // Rollback oslobadja samo credit (reserved) leg → C-7 → owner 7. PRE fix: parse crash.
+        verify(reservationApplier).releaseStock(anyString(), eq(7L), eq("CLIENT"), eq("AAPL"), eq(10));
+    }
+
+    // ── BUG-2 [WRONG PARTY CHARGED / IDOR]: role-aware Person id resolucija ────
+    // §2.6 — Person id "C-<n>" (klijent) i "E-<n>" (zaposleni) dele numericki prostor.
+    // resolveLocalAccountDeterministic je RANIJE skidao prefiks i slepo zvao
+    // findByClientId(n) → "E-3" (zaposleni) se razresavao na racun KLIJENTA "C-3"
+    // (tudje lice). Fix: role-aware — "C-" → findByClientId; "E-" → nista (empty).
+
+    @SuppressWarnings("unchecked")
+    private Optional<Account> invokeResolve(String role, Long ownerId, String ccy) throws Exception {
+        java.lang.reflect.Method m = TransactionExecutorService.class.getDeclaredMethod(
+                "resolveLocalAccountDeterministic", String.class, Long.class, String.class);
+        m.setAccessible(true);
+        return (Optional<Account>) m.invoke(service, role, ownerId, ccy);
+    }
+
+    @Test
+    @DisplayName("BUG-2: \"C-3\" (CLIENT role) → resolve-uje racun klijenta 3")
+    void resolveLocalAccount_clientRole_resolvesClientAccount() throws Exception {
+        Account c3 = buildAccount(MY_RN + "300001", "USD", BigDecimal.valueOf(5000), AccountStatus.ACTIVE);
+        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(eq(3L), eq(AccountStatus.ACTIVE)))
+                .thenReturn(List.of(c3));
+
+        Optional<Account> resolved = invokeResolve("CLIENT", 3L, "USD");
+
+        assertThat(resolved).isPresent();
+        assertThat(resolved.get().getAccountNumber()).isEqualTo(MY_RN + "300001");
+    }
+
+    @Test
+    @DisplayName("BUG-2 [IDOR]: \"E-3\" (EMPLOYEE role) → NE resolve-uje racun klijenta 3 (empty, findByClientId NIKAD ne zvano)")
+    void resolveLocalAccount_employeeRole_resolvesNothing() throws Exception {
+        // Ako bi se zvao findByClientId(3), vratio bi racun KLIJENTA 3 — tudje lice.
+        // Role-aware fix: za EMPLOYEE uopste ne pitamo klijentske racune → empty.
+        Optional<Account> resolved = invokeResolve("EMPLOYEE", 3L, "USD");
+
+        assertThat(resolved).isEmpty();
+        verify(accountRepository, never()).findByClientIdAndStatusOrderByAvailableBalanceDesc(eq(3L), any());
+    }
+
+    @Test
+    @DisplayName("BUG-2: resolvePersonOwner — \"C-3\"→(CLIENT,3), \"E-3\"→(EMPLOYEE,3), \"3\"→(null,3)")
+    void resolvePersonOwner_parsesRoleAndId() throws Exception {
+        java.lang.reflect.Method m = TransactionExecutorService.class.getDeclaredMethod(
+                "resolvePersonOwner", String.class);
+        m.setAccessible(true);
+
+        Object c3 = m.invoke(null, "C-3");
+        Object e3 = m.invoke(null, "E-3");
+        Object plain = m.invoke(null, "3");
+
+        java.lang.reflect.Method roleM = c3.getClass().getDeclaredMethod("role");
+        java.lang.reflect.Method idM = c3.getClass().getDeclaredMethod("id");
+        roleM.setAccessible(true);
+        idM.setAccessible(true);
+
+        assertThat(roleM.invoke(c3)).isEqualTo("CLIENT");
+        assertThat(idM.invoke(c3)).isEqualTo(3L);
+        assertThat(roleM.invoke(e3)).isEqualTo("EMPLOYEE");
+        assertThat(idM.invoke(e3)).isEqualTo(3L);
+        assertThat(roleM.invoke(plain)).isNull();
+        assertThat(idM.invoke(plain)).isEqualTo(3L);
+    }
+
+    @Test
+    @DisplayName("BUG-2 [IDOR] inbound: §3.6 premium charge na buyer \"E-3\" → NO (NO_SUCH_ACCOUNT), klijent 3 NIJE terecen")
+    void handleNewTx_premiumChargeOnEmployeeBuyer_rejected_noClientAccountCharged() throws Exception {
+        // Inbound accept gde je buyer Person "E-3" (zaposleni). resolveLocalAccountDeterministic
+        // mora vratiti empty za EMPLOYEE → NO_SUCH_ACCOUNT → NO vote → NICIJI racun se ne
+        // rezervise (pogotovo ne racun klijenta 3 — tudje lice).
+        ForeignBankId negId = new ForeignBankId(REMOTE_RN, "neg-emp-buyer");
+        OptionDescription opt = buildOptionDescription(
+                negId, "AAPL", BigDecimal.valueOf(50), "USD", BigDecimal.valueOf(200));
+        BigDecimal premium = BigDecimal.valueOf(700);
+
+        InterbankOtcNegotiation buyerNeg = new InterbankOtcNegotiation();
+        buyerNeg.setId(950L);
+        buyerNeg.setLocalPartyType(InterbankPartyType.BUYER);
+        buyerNeg.setLocalPartyId(3L);
+        buyerNeg.setLocalPartyRole("EMPLOYEE");
+        buyerNeg.setPremium(premium);
+        buyerNeg.setPremiumCurrency("USD");
+        lenient().when(otcNegotiationRepository
+                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(eq(REMOTE_RN), eq("neg-emp-buyer")))
+                .thenReturn(Optional.of(buyerNeg));
+
+        // Klijent 3 IMA USD racun — ako bi role bio zanemaren, premija bi pala na NJEGA.
+        Account client3Usd = buildAccount(MY_RN + "300009", "USD", BigDecimal.valueOf(9999), AccountStatus.ACTIVE);
+        lenient().when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(eq(3L), eq(AccountStatus.ACTIVE)))
+                .thenReturn(List.of(client3Usd));
+
+        ForeignBankId buyerParty = new ForeignBankId(MY_RN, "E-3");      // local EMPLOYEE buyer
+        ForeignBankId sellerParty = new ForeignBankId(REMOTE_RN, "C-1"); // remote seller
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Person(buyerParty), premium.negate(),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(ACCT_REMOTE), premium,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE,
+                        new Asset.OptionAsset(opt)),
+                new Posting(new TxAccount.Person(sellerParty), BigDecimal.ONE.negate(),
+                        new Asset.OptionAsset(opt))
+        ), new ForeignBankId(REMOTE_RN, "accept-emp-buyer-1"), null, null, null, null);
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "accept-emp-key-1");
+        stubTxSave();
+
+        TransactionVote vote = service.handleNewTx(tx, key);
+
+        // Zaposleni nema klijentski settlement racun → NO (NO_SUCH_ACCOUNT).
+        assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.NO);
+        // KLJUCNO (anti-IDOR): racun klijenta 3 NIKAD nije rezervisan/terecen.
+        verify(reservationApplier, never()).reserveMonas(eq(client3Usd.getAccountNumber()), any());
+        verify(reservationApplier, never()).reserveMonas(any(), any());
+    }
+
     @Test
     @DisplayName("prepareLocal: remote postings skipped — accountRepository never called for remote account")
     void prepareLocal_remotePostingsSkipped() {
@@ -717,6 +1018,74 @@ class TransactionExecutorServiceTest {
         assertThat(ibt.getCommittedAt()).isNotNull();
         assertThat(ibt.getLastActivityAt()).isNotNull();
         verify(txRepo).save(ibt);
+    }
+
+    @Test
+    @DisplayName("S4: commitLocal accept-shape, mi smo BUYER → kreira InterbankOtcContract (localPartyType=BUYER)")
+    void commitLocal_buyerAccept_createsBuyerContract() throws Exception {
+        ForeignBankId negId = new ForeignBankId(REMOTE_RN, "neg-seller"); // autoritativan kod prodavca
+        OptionDescription opt = buildOptionDescription(
+                negId, "AAPL", BigDecimal.valueOf(50), "USD", BigDecimal.valueOf(200));
+        BigDecimal premium = BigDecimal.valueOf(700);
+
+        // Nas lokalni mirror pregovora: MI smo BUYER (lokalni klijent 7).
+        InterbankOtcNegotiation buyerNeg = new InterbankOtcNegotiation();
+        buyerNeg.setId(900L);
+        buyerNeg.setLocalPartyType(InterbankPartyType.BUYER);
+        buyerNeg.setLocalPartyId(7L);
+        buyerNeg.setLocalPartyRole("CLIENT");
+        buyerNeg.setForeignPartyRoutingNumber(REMOTE_RN);
+        buyerNeg.setForeignPartyIdString("C-1");
+        buyerNeg.setTicker("AAPL");
+        buyerNeg.setAmount(BigDecimal.valueOf(50));
+        buyerNeg.setPricePerUnit(BigDecimal.valueOf(200));
+        buyerNeg.setPriceCurrency("USD");
+        buyerNeg.setPremium(premium);
+        buyerNeg.setPremiumCurrency("USD");
+        buyerNeg.setSettlementDate(OffsetDateTime.now(ZoneOffset.UTC).plusDays(30));
+        // T1/T2 — realisticno stanje posle accept-a: kupac je izabrao settlement racun.
+        String settlementAccount = MY_RN + "700002";
+        buyerNeg.setBuyerSettlementAccountNumber(settlementAccount);
+        when(otcNegotiationRepository
+                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(eq(REMOTE_RN), eq("neg-seller")))
+                .thenReturn(Optional.of(buyerNeg));
+        when(otcContractRepository.findBySourceNegotiationId(900L)).thenReturn(Optional.empty());
+
+        // §3.6 accept-shape kako ga vidi buyer banka: buyer (LOCAL) charge premium,
+        // seller (REMOTE) prima; optionContract legovi Person↔Person.
+        ForeignBankId buyerParty = new ForeignBankId(MY_RN, "C-7");
+        ForeignBankId sellerParty = new ForeignBankId(REMOTE_RN, "C-1");
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Person(buyerParty), premium.negate(),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(ACCT_REMOTE), premium,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE,
+                        new Asset.OptionAsset(opt)),
+                new Posting(new TxAccount.Person(sellerParty), BigDecimal.ONE.negate(),
+                        new Asset.OptionAsset(opt))
+        ), new ForeignBankId(REMOTE_RN, "accept-inbound-1"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        service.commitLocal(tx.transactionId());
+
+        ArgumentCaptor<InterbankOtcContract> cap = ArgumentCaptor.forClass(InterbankOtcContract.class);
+        verify(otcContractRepository).save(cap.capture());
+        InterbankOtcContract c = cap.getValue();
+        assertThat(c.getLocalPartyType()).isEqualTo(InterbankPartyType.BUYER);
+        assertThat(c.getSourceNegotiationId()).isEqualTo(900L);
+        assertThat(c.getTicker()).isEqualTo("AAPL");
+        assertThat(c.getQuantity()).isEqualByComparingTo(BigDecimal.valueOf(50));
+        assertThat(c.getStrikePrice()).isEqualByComparingTo(BigDecimal.valueOf(200));
+        assertThat(c.getStrikeCurrency()).isEqualTo("USD");
+        assertThat(c.getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+        // T1/T2 — premija se konzumira na izabranom settlement racunu (vise ne ostaje
+        // zaglavljena u rezervaciji).
+        verify(reservationApplier).commitMonas(eq(settlementAccount), eq(premium));
     }
 
     @Test
@@ -1337,6 +1706,127 @@ class TransactionExecutorServiceTest {
     }
 
     @Test
+    @DisplayName("T1/T2 prepare: buyer premium reserved on negotiation.buyerSettlementAccountNumber "
+            + "(NOT the highest-balance account)")
+    void handleNewTx_acceptPremium_reservesOnChosenSettlementAccount() throws Exception {
+        // §3.6 accept inbound on the BUYER's bank (us). Buyer je na FE-u izabrao
+        // konkretan racun (buyerSettlementAccountNumber). Rezervacija premije MORA
+        // ici na bas taj racun — NE na racun sa najvecim available balansom (koji bi
+        // balance-desc resolucija inace izabrala), inace prepare i commit ne biraju
+        // isti racun pa premija ostaje zaglavljena u rezervaciji.
+        ForeignBankId negId = new ForeignBankId(REMOTE_RN, "neg-chosen-acct");
+        OptionDescription opt = buildOptionDescription(
+                negId, "AAPL", BigDecimal.valueOf(50), "USD", BigDecimal.valueOf(200));
+        BigDecimal premium = BigDecimal.valueOf(700);
+
+        String chosenAccount = MY_RN + "700002";   // izabran na FE-u (manji balans)
+        String richestAccount = MY_RN + "700001";  // najveci balans (NE sme biti izabran)
+
+        InterbankOtcNegotiation buyerNeg = new InterbankOtcNegotiation();
+        buyerNeg.setId(910L);
+        buyerNeg.setLocalPartyType(InterbankPartyType.BUYER);
+        buyerNeg.setLocalPartyId(7L);
+        buyerNeg.setLocalPartyRole("CLIENT");
+        buyerNeg.setPremium(premium);
+        buyerNeg.setPremiumCurrency("USD");
+        buyerNeg.setBuyerSettlementAccountNumber(chosenAccount);
+        when(otcNegotiationRepository
+                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(eq(REMOTE_RN), eq("neg-chosen-acct")))
+                .thenReturn(Optional.of(buyerNeg));
+
+        ForeignBankId buyerParty = new ForeignBankId(MY_RN, "C-7");
+        ForeignBankId sellerParty = new ForeignBankId(REMOTE_RN, "C-1");
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Person(buyerParty), premium.negate(),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(ACCT_REMOTE), premium,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE,
+                        new Asset.OptionAsset(opt)),
+                new Posting(new TxAccount.Person(sellerParty), BigDecimal.ONE.negate(),
+                        new Asset.OptionAsset(opt))
+        ), new ForeignBankId(REMOTE_RN, "accept-chosen-acct-1"), null, null, null, null);
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "accept-chosen-key-1");
+
+        // Chosen account je validan (USD, dovoljan balans) ali NIJE najbogatiji.
+        when(accountRepository.findByAccountNumber(chosenAccount))
+                .thenReturn(Optional.of(buildAccount(chosenAccount, "USD",
+                        BigDecimal.valueOf(1000), AccountStatus.ACTIVE)));
+        // Balance-desc resolucija bi vratila richestAccount prvi — dokaz da ga NE biramo.
+        lenient().when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(eq(7L), eq(AccountStatus.ACTIVE)))
+                .thenReturn(List.of(
+                        buildAccount(richestAccount, "USD", BigDecimal.valueOf(99999), AccountStatus.ACTIVE),
+                        buildAccount(chosenAccount, "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE)));
+        stubTxSave();
+
+        TransactionVote vote = service.handleNewTx(tx, key);
+
+        assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.YES);
+        verify(reservationApplier).reserveMonas(eq(chosenAccount), eq(premium));
+        verify(reservationApplier, never()).reserveMonas(eq(richestAccount), any());
+    }
+
+    @Test
+    @DisplayName("T1/T2 commit: buyer premium (Monas+Person credit) consumed via commitMonas "
+            + "on negotiation.buyerSettlementAccountNumber")
+    void commitLocal_acceptPremium_commitsMonasOnChosenSettlementAccount() throws Exception {
+        // commitLocal MORA da konzumira rezervisanu premiju (commitMonas) na ISTOM
+        // racunu koji je prepare faza rezervisala (buyerSettlementAccountNumber). Pre
+        // fix-a commitLocal nije imao Monas+Person granu pa je rezervacija ostajala
+        // zauvek (novac zaglavljen, narusena konzervacija).
+        ForeignBankId negId = new ForeignBankId(REMOTE_RN, "neg-commit-acct");
+        OptionDescription opt = buildOptionDescription(
+                negId, "AAPL", BigDecimal.valueOf(50), "USD", BigDecimal.valueOf(200));
+        BigDecimal premium = BigDecimal.valueOf(700);
+        String chosenAccount = MY_RN + "700002";
+
+        InterbankOtcNegotiation buyerNeg = new InterbankOtcNegotiation();
+        buyerNeg.setId(911L);
+        buyerNeg.setLocalPartyType(InterbankPartyType.BUYER);
+        buyerNeg.setLocalPartyId(7L);
+        buyerNeg.setLocalPartyRole("CLIENT");
+        buyerNeg.setForeignPartyRoutingNumber(REMOTE_RN);
+        buyerNeg.setForeignPartyIdString("C-1");
+        buyerNeg.setTicker("AAPL");
+        buyerNeg.setAmount(BigDecimal.valueOf(50));
+        buyerNeg.setPricePerUnit(BigDecimal.valueOf(200));
+        buyerNeg.setPriceCurrency("USD");
+        buyerNeg.setPremium(premium);
+        buyerNeg.setPremiumCurrency("USD");
+        buyerNeg.setSettlementDate(OffsetDateTime.now(ZoneOffset.UTC).plusDays(30));
+        buyerNeg.setBuyerSettlementAccountNumber(chosenAccount);
+        lenient().when(otcNegotiationRepository
+                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(eq(REMOTE_RN), eq("neg-commit-acct")))
+                .thenReturn(Optional.of(buyerNeg));
+        // S4 contract creation grana: pregovor vec ima ugovor → preskoci (idempotentno).
+        lenient().when(otcContractRepository.findBySourceNegotiationId(911L))
+                .thenReturn(Optional.of(new InterbankOtcContract()));
+
+        ForeignBankId buyerParty = new ForeignBankId(MY_RN, "C-7");
+        ForeignBankId sellerParty = new ForeignBankId(REMOTE_RN, "C-1");
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Person(buyerParty), premium.negate(),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),     // local buyer charge (credit)
+                new Posting(new TxAccount.Account(ACCT_REMOTE), premium,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),     // remote seller receive
+                new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE,
+                        new Asset.OptionAsset(opt)),                               // buyer debit option (local)
+                new Posting(new TxAccount.Person(sellerParty), BigDecimal.ONE.negate(),
+                        new Asset.OptionAsset(opt))                                // seller credit option (remote)
+        ), new ForeignBankId(REMOTE_RN, "accept-commit-acct-1"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARING);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        service.commitLocal(tx.transactionId());
+
+        // Premija se konzumira (commitMonas, sender-debit) na izabranom settlement racunu.
+        verify(reservationApplier).commitMonas(eq(chosenAccount), eq(premium));
+    }
+
+    @Test
     @DisplayName("handleNewTx: violation tx → returns NO vote and still records inbound response")
     void handleNewTx_violation_noVoteStillRecorded() throws Exception {
         Transaction tx = unbalancedTx();
@@ -1685,7 +2175,7 @@ class TransactionExecutorServiceTest {
 
         InterbankOtcContract contract = new InterbankOtcContract();
         contract.setStatus(InterbankOtcContractStatus.ACTIVE);
-        when(otcContractRepository.findBySourceNegotiationId(55L)).thenReturn(Optional.of(contract));
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(55L)).thenReturn(Optional.of(contract));
         when(otcContractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.commitLocal(tx.transactionId());
@@ -1693,6 +2183,351 @@ class TransactionExecutorServiceTest {
         assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISED);
         assertThat(contract.getExercisedAt()).isNotNull();
         verify(otcContractRepository, atLeastOnce()).save(contract);
+    }
+
+    // =========================================================================
+    // T5(A) — S9 seller-settlement na INBOUND exercise (MI smo prodavac/option host).
+    // Option pseudo-account legovi su LOKALNI (negotiationId.routingNumber == MY_RN).
+    // commitLocal MORA: (1) osloboditi+predati prodavcevih k rezervisanih hartija
+    // (commitStock isDebit=false), (2) kreditirati prodavca strike k*pi
+    // (commitRecipientCredit), i (3) flip-ovati EXERCISED TEK posle settlement-a.
+    // =========================================================================
+
+    @Test
+    @DisplayName("T5(A): inbound exercise (we are seller) → commitStock(debit=false) deliver k + commitRecipientCredit strike, EXERCISED after settlement")
+    void commitLocal_inboundExercise_weAreSeller_settlesAndExercises() throws Exception {
+        // Inbound exercise tx koju je kreirala kupceva banka (§2.7.2). Option
+        // pseudo-account je u NASOJ banci (MI smo seller/host) → Option legovi su LOKALNI.
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-sell-ex");
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500); // 10 × 150
+        Transaction tx = new Transaction(List.of(
+                // (Monas, Option) +pi*k — option ac prima novac (LOKALNO)
+                new Posting(new TxAccount.Option(negId), money, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                // (Monas, Account) -pi*k — kupac placa (REMOTE)
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                // (Stock, Option) -k — option ac predaje hartije (LOKALNO)
+                new Posting(new TxAccount.Option(negId), qty.negate(), new Asset.Stock(new StockDescription("AAPL"))),
+                // (Stock, Person) +k — kupac prima hartije (REMOTE)
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), qty, new Asset.Stock(new StockDescription("AAPL")))
+        ), new ForeignBankId(REMOTE_RN, "tx-sell-ex"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        // Pregovor + ugovor: MI smo SELLER, lokalni prodavac je klijent 42, ticker/qty/strike.
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(77L);
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-sell-ex"))).thenReturn(Optional.of(neg));
+
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+        contract.setLocalPartyType(InterbankPartyType.SELLER);
+        contract.setLocalPartyId(42L);
+        contract.setLocalPartyRole("CLIENT");
+        contract.setTicker("AAPL");
+        contract.setQuantity(qty);
+        contract.setStrikePrice(BigDecimal.valueOf(150));
+        contract.setStrikeCurrency("USD");
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(77L)).thenReturn(Optional.of(contract));
+        when(otcContractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        // Prodavcev USD racun (rezolucija po klijent id + valuta).
+        Account sellerUsd = buildAccount(MY_RN + "700055", "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE);
+        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of(sellerUsd));
+
+        service.commitLocal(tx.transactionId());
+
+        // (1) prodavcevih k rezervisanih hartija oslobodjeno+predato (debit=false).
+        verify(reservationApplier).commitStock(
+                anyString(), eq(42L), eq("CLIENT"), eq("AAPL"), eq(10), eq(false));
+        // (2) prodavac kreditiran strike (k*pi) na svom USD racunu, FX-aware.
+        verify(reservationApplier).commitRecipientCredit(
+                eq(sellerUsd.getAccountNumber()), eq(money), eq("USD"), any());
+        // (3) status EXERCISED (posle settlement-a).
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISED);
+        assertThat(contract.getExercisedAt()).isNotNull();
+    }
+
+    // ── BUG-1 [MONEY DESTROYED]: inbound exercise sa EKSPLICITNIM seller-cash leg-om ──
+    // Banka-1 (i nas novi outbound) salju EXERCISE tx sa eksplicitnim
+    // "credit seller real cash pi*k" leg-om: Posting(Person(ourSeller), -pi*k, Monas).
+    // Kad smo MI seller (option-host), prodavca kreditiramo TACNO JEDNOM kroz
+    // settleSellerOnInboundExercise (OPTION→prodavac sweep); eksplicitni leg je
+    // recognized no-op (bez druge rezervacije/commit-a → bez dvostrukog kredita).
+
+    /** Inbound EXERCISE tx u Banka-1 obliku: OPTION +pi*k, seller(Person, lokalan) -pi*k, OPTION -k stock, buyer(Person, remote) +k. */
+    private Transaction inboundExerciseWithSellerCashLeg(String negIdStr, String sellerForeignId,
+            BigDecimal qty, BigDecimal money, String txId) {
+        ForeignBankId negId = new ForeignBankId(MY_RN, negIdStr);
+        return new Transaction(List.of(
+                new Posting(new TxAccount.Option(negId), money,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),                 // OPTION money +pi*k (LOKALNO host)
+                new Posting(new TxAccount.Person(new ForeignBankId(MY_RN, sellerForeignId)),
+                        money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))), // seller-cash credit -pi*k (LOKALNO)
+                new Posting(new TxAccount.Option(negId), qty.negate(),
+                        new Asset.Stock(new StockDescription("AAPL"))),                         // OPTION stock -k (LOKALNO)
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "C-buyer")),
+                        qty, new Asset.Stock(new StockDescription("AAPL")))                     // buyer +k (REMOTE)
+        ), new ForeignBankId(REMOTE_RN, txId), null, null, null, null);
+    }
+
+    private InterbankOtcContract sellerSideContract(InterbankOtcNegotiation neg, Long sourceNegId,
+            String sellerRole, Long sellerId, BigDecimal qty, BigDecimal strikePrice) {
+        neg.setId(sourceNegId);
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+        contract.setLocalPartyType(InterbankPartyType.SELLER);
+        contract.setLocalPartyId(sellerId);
+        contract.setLocalPartyRole(sellerRole);
+        contract.setTicker("AAPL");
+        contract.setQuantity(qty);
+        contract.setStrikePrice(strikePrice);
+        contract.setStrikeCurrency("USD");
+        return contract;
+    }
+
+    @Test
+    @DisplayName("BUG-1: inbound exercise WITH seller-cash leg (we are seller) → seller credited EXACTLY once (sweep), no commitMonas/reserveMonas on the leg, money conserved")
+    void commitLocal_inboundExercise_withSellerCashLeg_creditsSellerExactlyOnce() throws Exception {
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500); // 10 × 150
+        Transaction tx = inboundExerciseWithSellerCashLeg("neg-ex-scash", "C-42", qty, money, "tx-ex-scash");
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-ex-scash"))).thenReturn(Optional.of(neg));
+        InterbankOtcContract contract = sellerSideContract(neg, 77L, "CLIENT", 42L, qty, BigDecimal.valueOf(150));
+        // isInboundExerciseSellerCashCredit gleda non-locking; settle gleda forUpdate.
+        lenient().when(otcContractRepository.findBySourceNegotiationId(77L)).thenReturn(Optional.of(contract));
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(77L)).thenReturn(Optional.of(contract));
+        when(otcContractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        Account sellerUsd = buildAccount(MY_RN + "700055", "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE);
+        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of(sellerUsd));
+
+        service.commitLocal(tx.transactionId());
+
+        // Prodavac kreditiran TACNO JEDNOM kroz sweep (commitRecipientCredit), strike u USD.
+        verify(reservationApplier, times(1)).commitRecipientCredit(
+                eq(sellerUsd.getAccountNumber()), eq(money), eq("USD"), any());
+        // Eksplicitni seller-cash leg NIJE prouzrokovao commitMonas (to bi DEBITOVALO prodavca → dvostruko).
+        verify(reservationApplier, never()).commitMonas(eq(sellerUsd.getAccountNumber()), any());
+        // Hartije isporucene jednom; status EXERCISED.
+        verify(reservationApplier, times(1)).commitStock(
+                anyString(), eq(42L), eq("CLIENT"), eq("AAPL"), eq(10), eq(false));
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISED);
+    }
+
+    @Test
+    @DisplayName("BUG-1 N3: inbound exercise WITH seller-cash leg → handleNewTx YES (NOT rejected as drain), seller account NOT reserved")
+    void handleNewTx_inboundExerciseSellerCashLeg_votesYes_noReserveOnSeller() throws Exception {
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500);
+        Transaction tx = inboundExerciseWithSellerCashLeg("neg-ex-n3", "C-42", qty, money, "tx-ex-n3");
+        IdempotenceKey key = new IdempotenceKey(REMOTE_RN, "ex-n3-key");
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-ex-n3"))).thenReturn(Optional.of(neg));
+        InterbankOtcContract contract = sellerSideContract(neg, 88L, "CLIENT", 42L, qty, BigDecimal.valueOf(150));
+        contract.setSettlementDate(OffsetDateTime.now(ZoneOffset.UTC).plusDays(30));
+        when(otcContractRepository.findBySourceNegotiationId(88L)).thenReturn(Optional.of(contract));
+
+        // Prodavcev USD racun POSTOJI (ali NE sme da bude rezervisan — prodavac prima, ne placa).
+        Account sellerUsd = buildAccount(MY_RN + "700055", "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE);
+        lenient().when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of(sellerUsd));
+        // Prodavac drzi rezervisane hartije (Stock+Option validacija companion-a).
+        lenient().when(tradingServiceClient.findListingByTicker("AAPL"))
+                .thenReturn(Optional.of(listingDto(7L, "AAPL")));
+        stubTxSave();
+
+        TransactionVote vote = service.handleNewTx(tx, key);
+
+        // Seller-cash leg je prepoznat (NIJE N3 drain) → balansiran exercise → YES.
+        assertThat(vote.vote()).isEqualTo(TransactionVote.Vote.YES);
+        // Prodavcev racun NIJE rezervisan (seller PRIMA strike, ne placa).
+        verify(reservationApplier, never()).reserveMonas(eq(sellerUsd.getAccountNumber()), any());
+    }
+
+    @Test
+    @DisplayName("T5(A): seller settlement fails (commitStock throws) → status NOT flipped to EXERCISED")
+    void commitLocal_inboundExercise_settlementFails_doesNotFlipExercised() throws Exception {
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-sell-fail");
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500);
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Option(negId), money, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Option(negId), qty.negate(), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), qty, new Asset.Stock(new StockDescription("AAPL")))
+        ), new ForeignBankId(REMOTE_RN, "tx-sell-fail"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(88L);
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-sell-fail"))).thenReturn(Optional.of(neg));
+
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+        contract.setLocalPartyType(InterbankPartyType.SELLER);
+        contract.setLocalPartyId(42L);
+        contract.setLocalPartyRole("CLIENT");
+        contract.setTicker("AAPL");
+        contract.setQuantity(qty);
+        contract.setStrikePrice(BigDecimal.valueOf(150));
+        contract.setStrikeCurrency("USD");
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(88L)).thenReturn(Optional.of(contract));
+
+        // Prodavcev USD racun POSTOJI (FINDING 1 reorder: resolucija racuna ide PRVA;
+        // bez stuba bi settle pukao na resolve-u, ne na commitStock-u — a ovde testiramo
+        // bas commitStock-failure granu).
+        Account sellerUsd = buildAccount(MY_RN + "700088", "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE);
+        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of(sellerUsd));
+
+        // Settlement pukne na isporuci hartija (commitStock) — POSLE uspesne rezolucije
+        // racuna. Status NE sme da se flip-uje (settle baca → @Transactional rollback).
+        doThrow(new InterbankExceptions.InterbankProtocolException("trading down"))
+                .when(reservationApplier).commitStock(anyString(), eq(42L), eq("CLIENT"), eq("AAPL"), eq(10), eq(false));
+
+        assertThatThrownBy(() -> service.commitLocal(tx.transactionId()))
+                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class);
+
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+        assertThat(contract.getExercisedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("T5(A) FINDING-1: inbound exercise, prodavac nema racun u strike valuti → settle baca PRE commitStock (hartije se NE isporucuju), contract ostaje ACTIVE")
+    void settleSellerInboundExercise_sellerHasNoStrikeAccount_noStockDelivered() throws Exception {
+        // FINDING 1 — stranded share delivery: ako prodavac nema ACTIVE racun u
+        // strike valuti, resolucija racuna baca. Pre fix-a je commitStock (REALAN
+        // out-of-process side effect — isporuka k hartija trading-service-u) bio
+        // pozvan PRE bacajuce rezolucije → hartije zaglavljene, prodavac nikad
+        // kreditiran, contract nikad ne flip-uje → §2.9 re-delivery petlja. Posle
+        // fix-a (resolve-first), settle baca PRE bilo kakvog commitStock-a.
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-sell-noacct");
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500); // 10 × 150
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Option(negId), money, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Option(negId), qty.negate(), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), qty, new Asset.Stock(new StockDescription("AAPL")))
+        ), new ForeignBankId(REMOTE_RN, "tx-sell-noacct"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(99L);
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-sell-noacct"))).thenReturn(Optional.of(neg));
+
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+        contract.setLocalPartyType(InterbankPartyType.SELLER);
+        contract.setLocalPartyId(42L);
+        contract.setLocalPartyRole("CLIENT");
+        contract.setTicker("AAPL");
+        contract.setQuantity(qty);
+        contract.setStrikePrice(BigDecimal.valueOf(150));
+        contract.setStrikeCurrency("USD");
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(99L)).thenReturn(Optional.of(contract));
+
+        // Prodavac NEMA nijedan racun u strike valuti (USD) → resolucija baca.
+        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.commitLocal(tx.transactionId()))
+                .isInstanceOf(InterbankExceptions.InterbankProtocolException.class);
+
+        // commitStock NIJE pozvan (resolve-first → nema stranded isporuke hartija).
+        verify(reservationApplier, never())
+                .commitStock(anyString(), anyLong(), anyString(), anyString(), anyInt(), anyBoolean());
+        // Prirodno ni kredit nije isao, i contract ostaje ACTIVE (nema flip-a).
+        verify(reservationApplier, never())
+                .commitRecipientCredit(anyString(), any(), anyString(), any());
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+        assertThat(contract.getExercisedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("T5(A) FINDING-2: drugi commit exercise-a cija je contract vec EXERCISED → settle se preskace (nema dvostruke isporuke/kredita)")
+    void commitLocal_inboundExercise_alreadyExercised_skipsSettlement() throws Exception {
+        // FINDING 2 — konkurentni double-exercise: dve razlicite-txId exercise poruke
+        // istog ugovora oba commit-uju. Bez statusnog gate-a + lock-a, oba settle-uju
+        // → 2k hartija isporuceno i 2×strike kreditirano. Posle fix-a, settle se gate-uje
+        // na contract.status: ako je vec EXERCISED, settle je no-op (nema novog
+        // commitStock-a ni commitRecipientCredit-a). Ovde simuliramo "drugi" commit
+        // tako sto je contract vec u EXERCISED stanju.
+        ForeignBankId negId = new ForeignBankId(MY_RN, "neg-sell-dup");
+        BigDecimal qty = BigDecimal.valueOf(10);
+        BigDecimal money = BigDecimal.valueOf(1500);
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Option(negId), money, new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(REMOTE_RN + "000001"), money.negate(), new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Option(negId), qty.negate(), new Asset.Stock(new StockDescription("AAPL"))),
+                new Posting(new TxAccount.Person(new ForeignBankId(REMOTE_RN, "buyer")), qty, new Asset.Stock(new StockDescription("AAPL")))
+        ), new ForeignBankId(REMOTE_RN, "tx-sell-dup-2"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        InterbankOtcNegotiation neg = new InterbankOtcNegotiation();
+        neg.setId(101L);
+        when(otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                eq(MY_RN), eq("neg-sell-dup"))).thenReturn(Optional.of(neg));
+
+        // Contract je VEC EXERCISED (prvi exercise ga je vec settle-ovao i flip-ovao).
+        InterbankOtcContract contract = new InterbankOtcContract();
+        contract.setStatus(InterbankOtcContractStatus.EXERCISED);
+        contract.setExercisedAt(LocalDateTime.now().minusMinutes(1));
+        contract.setLocalPartyType(InterbankPartyType.SELLER);
+        contract.setLocalPartyId(42L);
+        contract.setLocalPartyRole("CLIENT");
+        contract.setTicker("AAPL");
+        contract.setQuantity(qty);
+        contract.setStrikePrice(BigDecimal.valueOf(150));
+        contract.setStrikeCurrency("USD");
+        when(otcContractRepository.findBySourceNegotiationIdForUpdate(101L)).thenReturn(Optional.of(contract));
+
+        // Seller-account stub je lenient: NE sme da bude potreban (settle se preskace),
+        // ali ga drzimo da bi pre-fix kod (koji bi settle-ovao) stigao do verify-a.
+        Account sellerUsd = buildAccount(MY_RN + "700099", "USD", BigDecimal.valueOf(1000), AccountStatus.ACTIVE);
+        lenient().when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(42L, AccountStatus.ACTIVE))
+                .thenReturn(List.of(sellerUsd));
+
+        service.commitLocal(tx.transactionId());
+
+        // Settle se preskace — NEMA dvostruke isporuke hartija ni dvostrukog kredita.
+        verify(reservationApplier, never())
+                .commitStock(anyString(), anyLong(), anyString(), anyString(), anyInt(), anyBoolean());
+        verify(reservationApplier, never())
+                .commitRecipientCredit(anyString(), any(), anyString(), any());
+        // Status ostaje EXERCISED (idempotentno).
+        assertThat(contract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXERCISED);
     }
 
     @Test
@@ -1779,6 +2614,55 @@ class TransactionExecutorServiceTest {
         service.rollbackLocal(tx.transactionId());
 
         verifyNoInteractions(otcNegotiationRepository, otcContractRepository, reservationApplier);
+        assertThat(ibt.getStatus()).isEqualTo(InterbankTransactionStatus.ROLLED_BACK);
+    }
+
+    @Test
+    @DisplayName("F2: rollbackLocal accept-shape — buyer Monas+Person premium leg → releaseMonas(chosenAccount, premium)")
+    void rollbackLocal_buyerPremiumMonasPerson_releasesReservation() throws Exception {
+        // F2 — buyer premium se rezervise (prepare Pass-2) na Monas+Person leg-u na
+        // stabilnom settlement racunu. Kad accept abortira (seller NO / 2PC abort /
+        // presumed-abort), rollbackLocal MORA osloboditi BAS tu rezervaciju, inace
+        // ostaje zaglavljena zauvek. Resolucija mora biti identicna prepare/commit-u
+        // (izabrani settlement racun s pregovora).
+        ForeignBankId negId = new ForeignBankId(REMOTE_RN, "neg-seller"); // autoritativan kod prodavca
+        OptionDescription opt = buildOptionDescription(
+                negId, "AAPL", BigDecimal.valueOf(50), "USD", BigDecimal.valueOf(200));
+        BigDecimal premium = BigDecimal.valueOf(700);
+        String settlementAccount = MY_RN + "700002";
+
+        // Lokalni mirror pregovora: MI smo BUYER, settlement racun je izabran pri accept-u.
+        InterbankOtcNegotiation buyerNeg = new InterbankOtcNegotiation();
+        buyerNeg.setLocalPartyType(InterbankPartyType.BUYER);
+        buyerNeg.setBuyerSettlementAccountNumber(settlementAccount);
+        when(otcNegotiationRepository
+                        .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(eq(REMOTE_RN), eq("neg-seller")))
+                .thenReturn(Optional.of(buyerNeg));
+
+        // §3.6 accept-shape: buyer (LOCAL Person) charge premium (CREDIT, negativan iznos),
+        // seller (REMOTE Account) prima; optionContract legovi Person↔Person.
+        ForeignBankId buyerParty = new ForeignBankId(MY_RN, "C-7");
+        ForeignBankId sellerParty = new ForeignBankId(REMOTE_RN, "C-1");
+        Transaction tx = new Transaction(List.of(
+                new Posting(new TxAccount.Person(buyerParty), premium.negate(),
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Account(ACCT_REMOTE), premium,
+                        new Asset.Monas(new MonetaryAsset(CurrencyCode.USD))),
+                new Posting(new TxAccount.Person(buyerParty), BigDecimal.ONE,
+                        new Asset.OptionAsset(opt)),
+                new Posting(new TxAccount.Person(sellerParty), BigDecimal.ONE.negate(),
+                        new Asset.OptionAsset(opt))
+        ), new ForeignBankId(REMOTE_RN, "accept-rollback-1"), null, null, null, null);
+
+        InterbankTransaction ibt = savedIbt(tx, InterbankTransactionStatus.PREPARED);
+        when(txRepo.findForUpdateByTransactionRoutingNumberAndTransactionIdString(anyInt(), any()))
+                .thenReturn(Optional.of(ibt));
+        stubTxSave();
+
+        service.rollbackLocal(tx.transactionId());
+
+        // Rezervacija premije je oslobodjena na ISTOM (izabranom) settlement racunu.
+        verify(reservationApplier).releaseMonas(eq(settlementAccount), eq(premium));
         assertThat(ibt.getStatus()).isEqualTo(InterbankTransactionStatus.ROLLED_BACK);
     }
 

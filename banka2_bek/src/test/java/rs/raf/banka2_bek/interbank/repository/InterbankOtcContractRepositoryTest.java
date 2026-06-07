@@ -96,6 +96,26 @@ class InterbankOtcContractRepositoryTest {
     }
 
     @Test
+    @DisplayName("findBySourceNegotiationIdForUpdate — PESSIMISTIC_WRITE round-trip (FINDING 2 seller-settle lock)")
+    void persistAndLookupBySourceForUpdate() {
+        // Verifikuje da je @Query + @Lock(PESSIMISTIC_WRITE) JPQL validan protiv DB-a
+        // i da vraca isti red kao non-locking finder (seller-settle ga koristi da
+        // serijalizuje konkurentne exercise-e istog ugovora).
+        InterbankOtcContract toSave = buildBuyerSideContract(
+                4242L, "MSFT", new BigDecimal("25"),
+                LocalDate.now().plusDays(30), InterbankOtcContractStatus.ACTIVE);
+        repository.save(toSave);
+
+        Optional<InterbankOtcContract> found = repository.findBySourceNegotiationIdForUpdate(4242L);
+
+        assertThat(found).isPresent();
+        assertThat(found.get().getTicker()).isEqualTo("MSFT");
+        assertThat(found.get().getStatus()).isEqualTo(InterbankOtcContractStatus.ACTIVE);
+
+        assertThat(repository.findBySourceNegotiationIdForUpdate(123_456L)).isEmpty();
+    }
+
+    @Test
     @DisplayName("findByLocalPartyIdAndLocalPartyRole — vraca sve ugovore za korisnika nezavisno od statusa")
     void allContractsForUser() {
         repository.save(buildBuyerSideContract(

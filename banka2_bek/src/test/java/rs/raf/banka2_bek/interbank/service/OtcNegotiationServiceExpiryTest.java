@@ -123,9 +123,53 @@ class OtcNegotiationServiceExpiryTest {
 
         assertThat(count).isEqualTo(1);
         assertThat(buyerContract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXPIRED);
-        // Kao buyer ne diramo lokalnu rezervaciju — ona zivi u partner banci.
+        // Kao buyer ne diramo lokalnu rezervaciju hartija — ona zivi u partner banci.
         verify(reservationApplier, never()).releaseStock(anyString(), anyLong(), anyString(),
                 anyString(), anyInt());
+    }
+
+    @Test
+    @DisplayName("T8/S10 expireOneContract: BUYER ugovor sa rezervisanim strike-om → EXPIRED + "
+            + "releaseMonas(reservedStrikeAccount, reservedStrikeAmount); premija NETAKNUTA, BEZ stock-release")
+    void expireOneContract_buyerWithReservedStrike_releasesStrikeMoney() {
+        // T3 — strike (pi*k) je rezervisan pri accept-u; expiry ga MORA osloboditi
+        // ("pare za kupovinu se vracaju"), premija ostaje prodavcu.
+        InterbankOtcContract buyerContract = activeContract(
+                10L, InterbankPartyType.BUYER, 99L, "CLIENT", "MSFT", 10,
+                OffsetDateTime.now().minusDays(1));
+        buyerContract.setReservedStrikeAccountNumber("222000111111111111");
+        buyerContract.setReservedStrikeAmount(new BigDecimal("1000.00"));
+        when(contractRepository.findById(10L)).thenReturn(Optional.of(buyerContract));
+        when(contractRepository.save(any(InterbankOtcContract.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        service.expireOneContract(10L);
+
+        assertThat(buyerContract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXPIRED);
+        // "pare za kupovinu se vracaju" — strike rezervacija oslobodjena na BAS taj racun.
+        verify(reservationApplier).releaseMonas(eq("222000111111111111"), eq(new BigDecimal("1000.00")));
+        // BUYER nema lokalnu rezervaciju hartija (ona je u partner banci).
+        verify(reservationApplier, never()).releaseStock(anyString(), anyLong(), anyString(),
+                anyString(), anyInt());
+        verify(contractRepository).save(buyerContract);
+    }
+
+    @Test
+    @DisplayName("T8/S10 expireOneContract: BUYER ugovor BEZ rezervisanog strike-a (legacy/null) → "
+            + "EXPIRED bez releaseMonas (idempotentno-bezbedno)")
+    void expireOneContract_buyerWithoutReservedStrike_noMoneyRelease() {
+        InterbankOtcContract buyerContract = activeContract(
+                11L, InterbankPartyType.BUYER, 99L, "CLIENT", "MSFT", 10,
+                OffsetDateTime.now().minusDays(1));
+        // reservedStrikeAccountNumber/reservedStrikeAmount ostaju null (legacy ugovor).
+        when(contractRepository.findById(11L)).thenReturn(Optional.of(buyerContract));
+        when(contractRepository.save(any(InterbankOtcContract.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        service.expireOneContract(11L);
+
+        assertThat(buyerContract.getStatus()).isEqualTo(InterbankOtcContractStatus.EXPIRED);
+        verify(reservationApplier, never()).releaseMonas(anyString(), any());
     }
 
     @Test

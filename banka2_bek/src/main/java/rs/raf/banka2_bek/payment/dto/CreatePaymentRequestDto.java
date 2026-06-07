@@ -18,11 +18,12 @@ public class CreatePaymentRequestDto {
     @Length(min = 10, max = 20, message = "Account number must be between 10 and 20 characters")
     private String fromAccount;
 
-    // [P2-input-validation-1 / R1 327] kolona payments.to_account_number je
-    // length=18 — DTO koji dozvoljava do 20 cifara je proizvodio sirovu
-    // DataIntegrityViolation (500) na cuvanju. Cap na 18 → cista 400 validacija.
+    // [P2-input-validation-1 / R1 327] kolona payments.to_account_number sada je
+    // length=34 (Payment.toAccountNumber) — inter-bank primalac moze imati racun
+    // razlicite duzine (Banka 1 = 19 cifara). Cap na 34 (IBAN max) da cross-bank
+    // placanje ne padne na DTO validaciji, a i dalje cisto 400 umesto 500.
     @NotBlank(message = "Destination account is required")
-    @Length(min = 10, max = 18, message = "Account number must be between 10 and 18 characters")
+    @Length(min = 10, max = 34, message = "Account number must be between 10 and 34 characters")
     private String toAccount;
 
     // [R1-645] kolona payments.amount je precision=19, scale=4 (15 cifara ispred +

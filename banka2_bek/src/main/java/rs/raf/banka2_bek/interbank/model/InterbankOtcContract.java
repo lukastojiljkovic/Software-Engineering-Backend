@@ -139,6 +139,20 @@ public class InterbankOtcContract {
     @Column(name = "exercised_at")
     private LocalDateTime exercisedAt;
 
+    /**
+     * T3 — racun kupca na kome je rezervisan strike novac (pi*k) pri prihvatanju
+     * ponude (§3.6 / Celina 5 Postignut dogovor). Garancija da ce kupac imati
+     * sredstva za exercise. Exercise (T5) konzumira BAS ovu rezervaciju, a
+     * expiry/decline (T8/T9) je oslobadja. Nullable jer stari ugovori (pre T3)
+     * nemaju strike-reservaciju, a SELLER strana nikad ne rezervise strike.
+     */
+    @Column(name = "reserved_strike_account_number", length = 20)
+    private String reservedStrikeAccountNumber;
+
+    /** T3 — rezervisan strike iznos (pi*k) u strike valuti (= {@link #strikeCurrency}). */
+    @Column(name = "reserved_strike_amount", precision = 19, scale = 4)
+    private BigDecimal reservedStrikeAmount;
+
     @PrePersist
     void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();

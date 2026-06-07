@@ -108,14 +108,23 @@ public class TransactionExecutorService {
             if (vote.vote() == TransactionVote.Vote.YES) {
                 self.commitLocal(tx.transactionId());
             } else {
+                // 2PC ATOMICITY: local NO is an ABORT. Roll back locally FIRST (sets
+                // InterbankTransaction → ROLLED_BACK), THEN signal the caller by throwing
+                // so its compensation runs (see InterbankTransactionAbortedException).
                 self.rollbackLocal(tx.transactionId());
+                throw abort(tx, "local prepare vote=NO", vote);
             }
             return;
         }
 
         // §2.8.5: promote to coordinator — prepare + log outbound atomically
         Phase1Result phase1 = self.prepareTxPhase(tx, remoteRns);
-        if (phase1.vote().vote() == TransactionVote.Vote.NO) return;
+        if (phase1.vote().vote() == TransactionVote.Vote.NO) {
+            // 2PC ATOMICITY: local-prepare NO is an ABORT. prepareTxPhase already set the
+            // status to ROLLED_BACK (two-pass validate-and-reserve found violations in
+            // pass 1, so no local reservation was made). Signal the caller by throwing.
+            throw abort(tx, "coordinator local-prepare vote=NO", phase1.vote());
+        }
 
         // Network I/O outside any @Transactional
         Map<Integer, TransactionVote> votes = sendPhase1Network(phase1);
@@ -125,9 +134,29 @@ public class TransactionExecutorService {
             Map<Integer, IdempotenceKey> commitKeys = self.commitTxPhase(tx.transactionId(), remoteRns);
             sendPhase2Network(commitKeys, MessageType.COMMIT_TX, new CommitTransaction(tx.transactionId()));
         } else {
+            // 2PC ATOMICITY: a partner NO (or treated-as-NO network/auth failure) is an
+            // ABORT. Roll back locally (→ ROLLED_BACK, releases reservations) and dispatch
+            // ROLLBACK_TX to partners FIRST; sendPhase2Network is fire-and-forget so a
+            // phase-2 send error never propagates here. THEN signal the caller by throwing.
             Map<Integer, IdempotenceKey> rollbackKeys = self.rollbackTxPhase(tx.transactionId(), remoteRns);
             sendPhase2Network(rollbackKeys, MessageType.ROLLBACK_TX, new RollbackTransaction(tx.transactionId()));
+            throw abort(tx, "partner vote=NO (or network/auth failure treated as NO)", null);
         }
+    }
+
+    /**
+     * Builds the abort exception thrown on every {@code execute()} abort branch. Kept as
+     * a helper so the message is consistent and includes the transactionId (which is what
+     * callers log / surface). Caller-side compensation is keyed off the THROWN type
+     * ({@link InterbankExceptions.InterbankTransactionAbortedException}), not the message.
+     */
+    private InterbankExceptions.InterbankTransactionAbortedException abort(
+            Transaction tx, String reason, TransactionVote vote) {
+        String voteDetail = (vote != null && vote.reasons() != null && !vote.reasons().isEmpty())
+                ? " reasons=" + vote.reasons() : "";
+        return new InterbankExceptions.InterbankTransactionAbortedException(
+                "Inter-bank 2PC aborted for transaction " + tx.transactionId().id()
+                        + " — " + reason + voteDetail);
     }
 
     /**
@@ -323,12 +352,45 @@ public class TransactionExecutorService {
                     // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
                     // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
                     // HTTP round-trip unutar @Transactional.
-                    Long userId = Long.parseLong(pe.id().id());
+                    // BUG-2: strip "C-"/"E-" prefix pre parse (vidi parsePersonOwnerId).
+                    Long userId = parsePersonOwnerId(pe.id().id());
                     int quantity = abs.intValueExact();
                     reservationApplier.commitStock(
                             stockIdempotencyKey(transactionId, "commit", userId, "CLIENT", ticker, i),
                             userId, "CLIENT", ticker, quantity, isDebit);
                     stockCommits.add(new StockCommitRecord(userId, "CLIENT", ticker, quantity, isDebit, i));
+
+                } else if (p.asset() instanceof Asset.Monas && p.account() instanceof TxAccount.Person
+                        && isInboundExerciseSellerCashCredit(p, tx)) {
+                    // BUG-1: inbound exercise seller-cash credit leg — commit no-op.
+                    // Prodavac je kreditiran kroz settleSellerOnInboundExercise (OPTION→
+                    // prodavac sweep, izvrsen u exercise-shape grani ispod). commitMonas
+                    // OVDE bi DEBITOVAO prodavca (pogresan smer) i dvostruko knjizio —
+                    // zato exactly-once: ovaj leg se ne konzumira (nema ni rezervacije).
+
+                } else if (p.asset() instanceof Asset.Monas m && p.account() instanceof TxAccount.Person pe) {
+                    // T1/T2 — buyer-premium Monas+Person commit grana. CREDIT (kupac se
+                    // tereti, amount<0) je §3.6 accept premium: prepare faza ga je
+                    // rezervisala na stabilnom settlement racunu (reserveMonas), pa ga
+                    // ovde konzumiramo (commitMonas, sender-debit) na ISTOM racunu. Bez
+                    // ove grane rezervacija je ostajala zauvek (novac zaglavljen,
+                    // narusena konzervacija). Resolucija mora biti identicna prepare-u.
+                    if (!isDebit) {
+                        // BUG-2: role-aware resolucija (E- zaposleni NE razresava se na klijentski racun).
+                        PersonOwner owner = resolvePersonOwner(pe.id().id());
+                        String postingCcy = m.asset().currency().name();
+                        String chosenAccount = resolveBuyerSettlementAccount(tx);
+                        String commitOn = (chosenAccount != null)
+                                ? chosenAccount
+                                : resolveLocalAccountDeterministic(owner.role(), owner.id(), postingCcy)
+                                        .map(Account::getAccountNumber)
+                                        .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                                                "Person+Monas commit: missing account for ownerId=" + pe.id().id()
+                                                        + " currency=" + postingCcy));
+                        reservationApplier.commitMonas(commitOn, abs);
+                    }
+                    // DEBIT Monas+Person (kupac prima novac na exercise) — kasniji unit;
+                    // ovde no-op (taj tok jos nije wired).
 
                 }
                 // OptionAsset+Person posting (accept-shape) i Monas/Stock+Option posting
@@ -361,6 +423,10 @@ public class TransactionExecutorService {
         // kao EXERCISED. Trazimo prvu (Stock, Option) posting i razresimo negotiationId
         // iz nje (TxAccount.Option.id() je negotiation id po §2.7.2).
         if (isExercise) {
+            // Trazimo prvi (Stock, Option) leg → negotiationId → contract. Resolucija
+            // je ista za BUYER i SELLER stranu (oba Option leg-a nose isti kompozitni
+            // negotiationId po §2.7.2, sa routing-om prodavceve banke). Razlika je u
+            // contract.localPartyType: ako smo SELLER, dodatno settlujemo (T5(A)/S9).
             postings.stream()
                     .filter(pp -> pp.account() instanceof TxAccount.Option)
                     .filter(pp -> pp.asset() instanceof Asset.Stock)
@@ -371,20 +437,94 @@ public class TransactionExecutorService {
                         otcNegotiationRepository
                                 .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
                                         negId.routingNumber(), negId.id())
+                                // FINDING 2 — PESSIMISTIC_WRITE lock na ugovoru: serijalizuje
+                                // konkurentne razlicite-txId exercise-e ISTOG ugovora. Per-tx
+                                // red-lock ne pomaze (razliciti txId-ovi), a non-locking
+                                // findBySourceNegotiationId bi pustio oba da settle-uju (dvostruka
+                                // isporuka hartija + dvostruki kredit). Drugi commit ceka na ovom
+                                // lock-u, pa pod lock-om vidi EXERCISED i preskace settle.
                                 .ifPresent(neg -> otcContractRepository
-                                        .findBySourceNegotiationId(neg.getId())
+                                        .findBySourceNegotiationIdForUpdate(neg.getId())
                                         .ifPresent(contract -> {
+                                            // Status-gate (FINDING 2): settle + flip se rade SAMO ako je
+                                            // ugovor jos ACTIVE ili EXERCISING (claimed). Ako je vec
+                                            // EXERCISED (prethodni/konkurentni commit ga je settle-ovao),
+                                            // ovo je no-op — bez ponovne isporuke/kredita (idempotentno).
+                                            boolean exercisable =
+                                                    contract.getStatus() == InterbankOtcContractStatus.ACTIVE
+                                                            || contract.getStatus() == InterbankOtcContractStatus.EXERCISING;
+                                            if (!exercisable) {
+                                                return;
+                                            }
+                                            // T5(A) — S9: prodavceva settlement (MI smo SELLER/host).
+                                            // Kupceva banka exercise-uje: nasem prodavcu MORAMO
+                                            // (1) osloboditi+predati k rezervisanih hartija
+                                            //     (commitStock isDebit=false → quantity i
+                                            //      reservedQuantity se umanjuju), i
+                                            // (2) kreditirati strike (k*pi) na njegov racun u
+                                            //     strike valuti (FX-aware commitRecipientCredit).
+                                            // Pre fix-a ovo je bilo NO-OP: rezervacija hartija je
+                                            // ostajala zaglavljena zauvek, prodavac nikad nije primio
+                                            // novac → narusena konzervacija novca/asseta. Settlement
+                                            // se izvrsava SAMO ako smo SELLER; status flip ide TEK
+                                            // posle uspesnog settlement-a (transakciono).
+                                            if (contract.getLocalPartyType() == InterbankPartyType.SELLER) {
+                                                settleSellerOnInboundExercise(transactionId, contract);
+                                            }
                                             // P1-interbank-otc-2 (1336): exercise claim flip-uje
                                             // ACTIVE→EXERCISING pre 2PC; uspesan COMMIT_TX finalizuje
                                             // i EXERCISING (claimed) i ACTIVE (legacy, inbound seller
-                                            // strana koja ne prolazi kroz wrapper claim).
-                                            if (contract.getStatus() == InterbankOtcContractStatus.ACTIVE
-                                                    || contract.getStatus() == InterbankOtcContractStatus.EXERCISING) {
-                                                contract.setStatus(InterbankOtcContractStatus.EXERCISED);
-                                                contract.setExercisedAt(LocalDateTime.now());
-                                                otcContractRepository.save(contract);
-                                            }
+                                            // strana koja ne prolazi kroz wrapper claim). Flip na ISTOJ
+                                            // lock-ovanoj instanci, TEK posle uspesnog settle-a.
+                                            contract.setStatus(InterbankOtcContractStatus.EXERCISED);
+                                            contract.setExercisedAt(LocalDateTime.now());
+                                            otcContractRepository.save(contract);
                                         }));
+                    });
+        }
+
+        // S4 — buyer-side contract storage. Accept-shape tx (OptionAsset legovi, ne
+        // exercise): kad smo MI BUYER, nas lokalni leg je Buyer-DEBIT optionContract
+        // (+1 OptionAsset na nasem Person-u). Perzistujemo InterbankOtcContract
+        // (localPartyType=BUYER) da kupac moze da ga vidi ("Sklopljeni ugovori") i
+        // kasnije iskoristi. Ranije se ugovor NIKAD nije kreirao kad smo kupac
+        // (commitLocal je OptionAsset+Person tretirao kao no-op), pa je lista bila
+        // prazna i exercise je 404-ovao. Idempotentno: preskoci ako ugovor za ovaj
+        // pregovor vec postoji (seller put ga je vec kreirao, ili commit replay).
+        if (!isExercise) {
+            postings.stream()
+                    .filter(pp -> !isPostingRemote(pp))
+                    .filter(pp -> pp.asset() instanceof Asset.OptionAsset
+                            && pp.account() instanceof TxAccount.Person
+                            && pp.amount().compareTo(BigDecimal.ZERO) > 0) // buyer DEBIT (+1)
+                    .findFirst()
+                    .ifPresent(pp -> {
+                        ForeignBankId negId = ((Asset.OptionAsset) pp.asset()).asset().negotiationId();
+                        otcNegotiationRepository
+                                .findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                                        negId.routingNumber(), negId.id())
+                                .filter(neg -> neg.getLocalPartyType() == InterbankPartyType.BUYER)
+                                .filter(neg -> otcContractRepository
+                                        .findBySourceNegotiationId(neg.getId()).isEmpty())
+                                .ifPresent(neg -> {
+                                    InterbankOtcContract contract = new InterbankOtcContract();
+                                    contract.setSourceNegotiationId(neg.getId());
+                                    contract.setLocalPartyType(InterbankPartyType.BUYER);
+                                    contract.setLocalPartyId(neg.getLocalPartyId());
+                                    contract.setLocalPartyRole(neg.getLocalPartyRole());
+                                    contract.setForeignPartyRoutingNumber(neg.getForeignPartyRoutingNumber());
+                                    contract.setForeignPartyIdString(neg.getForeignPartyIdString());
+                                    contract.setTicker(neg.getTicker());
+                                    contract.setQuantity(neg.getAmount());
+                                    contract.setStrikePrice(neg.getPricePerUnit());
+                                    contract.setStrikeCurrency(neg.getPriceCurrency());
+                                    contract.setPremium(neg.getPremium());
+                                    contract.setPremiumCurrency(neg.getPremiumCurrency());
+                                    contract.setSettlementDate(neg.getSettlementDate());
+                                    contract.setStatus(InterbankOtcContractStatus.ACTIVE);
+                                    contract.setCreatedAt(LocalDateTime.now());
+                                    otcContractRepository.save(contract);
+                                });
                     });
         }
 
@@ -425,13 +565,41 @@ public class TransactionExecutorService {
             if (p.asset() instanceof Asset.Monas && p.account() instanceof TxAccount.Account a) {
                 reservationApplier.releaseMonas(a.num(), abs);
 
+            } else if (p.asset() instanceof Asset.Monas && p.account() instanceof TxAccount.Person
+                    && isInboundExerciseSellerCashCredit(p, tx)) {
+                // BUG-1: inbound exercise seller-cash credit leg — rollback no-op.
+                // Ovaj leg nikad nije rezervisan (recognized no-op u Pass-2), pa
+                // releaseMonas OVDE bi oslobodio nepostojecu rezervaciju (knjizni rascep).
+
+            } else if (p.asset() instanceof Asset.Monas m && p.account() instanceof TxAccount.Person pe) {
+                // T1/T2 — buyer-premium Monas+Person rollback grana (simetrija sa prepare
+                // reserveMonas / commitLocal commitMonas). CREDIT leg (kupac se tereti,
+                // amount<0) je §3.6 accept premium: prepare faza ga je rezervisala na
+                // stabilnom settlement racunu; ovde MORAMO osloboditi BAS tu rezervaciju
+                // (releaseMonas) na ISTOM racunu. Bez ove grane, abortiran/rollback-ovan
+                // accept (seller NO / 2PC abort / presumed-abort) ostavlja premiju zauvek
+                // zaglavljenu u rezervaciji. Resolucija mora biti identicna prepare/commit-u.
+                // BUG-2: role-aware resolucija (E- zaposleni NE razresava se na klijentski racun).
+                PersonOwner owner = resolvePersonOwner(pe.id().id());
+                String postingCcy = m.asset().currency().name();
+                String chosenAccount = resolveBuyerSettlementAccount(tx);
+                String releaseOn = (chosenAccount != null)
+                        ? chosenAccount
+                        : resolveLocalAccountDeterministic(owner.role(), owner.id(), postingCcy)
+                                .map(Account::getAccountNumber)
+                                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                                        "Person+Monas rollback: missing account for ownerId=" + pe.id().id()
+                                                + " currency=" + postingCcy));
+                reservationApplier.releaseMonas(releaseOn, abs);
+
             } else if (p.asset() instanceof Asset.Stock s && p.account() instanceof TxAccount.Person pe) {
                 String ticker = s.asset().ticker();
                 // releaseStock razresava listing po ticker-u u trading-service-u i
                 // mapira odsustvo u "Listing not found: <ticker>" (→ InterbankProtocolException),
                 // pa zaseban findListingByTicker pre-check ne treba — bio je redundantan
                 // HTTP round-trip unutar @Transactional.
-                Long userId = Long.parseLong(pe.id().id());
+                // BUG-2: strip "C-"/"E-" prefix pre parse (vidi parsePersonOwnerId).
+                Long userId = parsePersonOwnerId(pe.id().id());
                 reservationApplier.releaseStock(
                         stockIdempotencyKey(transactionId, "release", userId, "CLIENT", ticker, i),
                         userId, "CLIENT", ticker, abs.intValueExact());
@@ -661,7 +829,13 @@ public class TransactionExecutorService {
                 // kao za komunikacione greske; log isto kao postojeci handler.
                 log.warn("Phase-1 NEW_TX to routing {} failed ({}): {} — treating as NO vote (abort)",
                         remoteRn, e.getClass().getSimpleName(), e.getMessage());
-                messageService.markOutboundFailed(key, e.getMessage());
+                // Facet 1: koordinator ABORTUJE ovu transakciju (NO glas → rollbackTxPhase
+                // → rollbackLocal). Outbound NEW_TX red se TERMINALIZUJE (markOutboundAborted),
+                // a NE ostavlja PENDING preko markOutboundFailed — inace bi ga
+                // InterbankRetryScheduler re-slao za transakciju koja vise ne postoji
+                // (beskonacni/visekratni re-send + ERROR spam). Re-send NEW_TX-a za
+                // abortovanu tx je i logicki pogresan.
+                messageService.markOutboundAborted(key, e.getMessage());
                 vote = new TransactionVote(TransactionVote.Vote.NO, List.of());
             }
             votes.put(remoteRn, vote);
@@ -900,6 +1074,66 @@ public class TransactionExecutorService {
                 });
     }
 
+    /**
+     * T5(A) — S9: prodavceva settlement na INBOUND exercise (MI smo prodavceva/option
+     * host banka; kupceva banka je inicirala exercise §2.7.2). Pri commit-u exercise
+     * COMMIT_TX-a, nas Option pseudo-account je autoritativan, pa MORAMO:
+     * <ol>
+     *   <li><b>Predati hartije:</b> {@code commitStock(isDebit=false)} — prodavcevih
+     *       k rezervisanih hartija (rezervisanih na accept-u u
+     *       {@code OtcNegotiationService.acceptReceivedNegotiation}) se oslobadja i
+     *       predaje (trading-service umanjuje {@code quantity} i {@code reservedQuantity}).
+     *       Bez ovoga rezervacija ostaje zaglavljena zauvek (asset se ne predaje kupcu).</li>
+     *   <li><b>Naplatiti strike:</b> {@code commitRecipientCredit} — prodavac prima
+     *       strike (k*pi) u strike valuti na svoj racun (FX-aware). Bez ovoga prodavac
+     *       isporuci hartije ali nikad ne primi novac → narusena konzervacija.</li>
+     * </ol>
+     * Settlement se izvrsava unutar {@code commitLocal} {@code @Transactional} granice
+     * PRE statusnog flip-a na EXERCISED (pozivalac flip-uje TEK po uspesnom povratku);
+     * ako bilo koji korak baci, transakcija se ne commit-uje (Monas leg roll-back-uje
+     * Spring; idempotency-keyed retransmit §2.9 ponavlja COMMIT_TX).
+     *
+     * <p>Strike racun prodavca se rezolvise deterministicki po (localPartyId, strikeCcy);
+     * commitStock idempotency kljuc je vezan za inter-bank transakciju (retransmit-safe).
+     */
+    private void settleSellerOnInboundExercise(ForeignBankId transactionId, InterbankOtcContract contract) {
+        Long sellerUserId = contract.getLocalPartyId();
+        String sellerRole = contract.getLocalPartyRole();
+        String ticker = contract.getTicker();
+        int qty = contract.getQuantity().intValueExact();
+        BigDecimal strike = contract.getStrikePrice().multiply(contract.getQuantity());
+        String strikeCcy = contract.getStrikeCurrency();
+
+        // FINDING 1 — resolve-first: prodavcev strike racun (JEDINI korak koji moze
+        // da baci) razresavamo PRE bilo kakvog out-of-process side effect-a. Pre
+        // fix-a je commitStock(isDebit=false) (REALNA isporuka k hartija trading-
+        // service-u — zaseban tx boundary) isao PRE bacajuce rezolucije racuna: ako
+        // prodavac nema racun u strike valuti, orElseThrow je pucao TEK posle isporuke
+        // → @Transactional roll-back banka-core, ali NE i out-of-process isporuku
+        // hartija → hartije zaglavljene, prodavac nikad kreditiran, contract nikad
+        // flip-uje → §2.9 re-delivery petlja zauvek. Resolve-first cini settle
+        // all-or-nothing: ako racuna nema, NISTA out-of-process se nije desilo.
+        String sellerAccount = resolveLocalAccountDeterministic(sellerRole, sellerUserId, strikeCcy)
+                .map(Account::getAccountNumber)
+                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
+                        "Seller settlement: prodavac " + sellerUserId + " nema racun u valuti "
+                                + strikeCcy + " za naplatu strike-a (exercise)"));
+
+        // (1) Predaja prodavcevih k rezervisanih hartija (isDebit=false → quantity i
+        //     reservedQuantity se umanjuju). Idempotency kljuc po inter-bank tx-u.
+        //     Sad se izvrsava TEK posle uspesne rezolucije racuna (zero stranded delivery).
+        reservationApplier.commitStock(
+                stockIdempotencyKey(transactionId, "seller-deliver", sellerUserId, sellerRole, ticker, 0),
+                sellerUserId, sellerRole, ticker, qty, false);
+
+        // (2) Naplata strike-a (k*pi) na vec razresen prodavcev racun u strike valuti.
+        //     Kredit je uvek iste valute (racun razresen u strikeCcy, kredit u strikeCcy)
+        //     pa commitRecipientCredit ne moze da baci posle resolve-a — settle ostaje
+        //     all-or-nothing. pinnedFxRate iz vote faze (null za same-currency);
+        //     commitRecipientCredit je FX-svestan i za same-ccy radi obican kredit.
+        reservationApplier.commitRecipientCredit(sellerAccount, strike, strikeCcy, null);
+    }
+
     private void updateTransactionStatus(ForeignBankId txId,
             InterbankTransactionStatus status, String failureReason) {
         txRepo.findByTransactionRoutingNumberAndTransactionIdString(
@@ -918,6 +1152,64 @@ public class TransactionExecutorService {
         if (asset instanceof Asset.OptionAsset o) return "OPTION:" + o.asset().negotiationId().id();
         return "UNKNOWN:" + asset.getClass().getSimpleName();
     }
+
+    /**
+     * §2.6 — TxAccount.Person foreign id resolve: nasi Person id-evi su prefiksirani
+     * sa {@code "C-"} (klijent) ili {@code "E-"} (zaposleni) da bi se razlikovala dva
+     * id-prostora (clients.id vs employees.id) koji se preklapaju. Numericki id se
+     * dobija odbacivanjem prefiksa.
+     *
+     * <p>BUG-2 fix: Stock+Person leg-ovi (prepare/commit/rollback) su ranije zvali
+     * {@code Long.parseLong(pe.id().id())} DIREKTNO na prefiksiranom id-u ({@code "C-1"})
+     * → {@link NumberFormatException} → prepare glasao NO sa {@code NO_SUCH_ACCOUNT},
+     * pa je buyer stock-delivery exercise pucao. Monas+Person grane su prefiks vec
+     * strip-ovale inline; ovaj helper centralizuje istu logiku za sve grane.
+     *
+     * @return numericki owner id; baca {@link NumberFormatException} ako string nije broj
+     *         ni posle skidanja prefiksa (caller ga mapira na {@code NO_SUCH_ACCOUNT})
+     */
+    private static long parsePersonOwnerId(String personId) {
+        return resolvePersonOwner(personId).id();
+    }
+
+    /**
+     * §2.6 — role-aware Person foreign-id resolve. Nasi Person id-evi su prefiksirani
+     * sa {@code "C-"} (klijent) ili {@code "E-"} (zaposleni). Vraca PAR (role, numericki id)
+     * da pozivaoci mogu da razresavaju racune ROLE-AWARE.
+     *
+     * <p><b>BUG-2 [WRONG PARTY CHARGED / IDOR] fix:</b> ranije se prefiks samo odbacivao
+     * pa je {@code "E-3"} (zaposleni) i {@code "C-3"} (klijent) davalo ISTI numericki id 3,
+     * a {@link #resolveLocalAccountDeterministic} je slepo zvao {@code findByClientId(3)} →
+     * zaposleni {@code E-3} bi se razresio na racun TUDJEG klijenta {@code C-3} i naplata
+     * (premija/strike) bi pala na pogresno lice. Sad caller dobija i ULOGU, pa
+     * {@code resolveLocalAccountDeterministic} klijentske racune trazi SAMO za {@code "C-"};
+     * za {@code "E-"} (zaposleni nemaju klijentske settlement racune u ovom modelu —
+     * {@code Account.client} je {@code null}, {@code Account.employee} je samo kreator)
+     * vraca {@link Optional#empty()} → accept-guard cisto odbija (400), a inbound debit
+     * pukne glasno umesto da tereti stranca.
+     *
+     * @return {@link PersonOwner} (role + numericki id); {@code role} je {@code "CLIENT"} za
+     *         {@code "C-"}, {@code "EMPLOYEE"} za {@code "E-"}, {@code null} ako nema poznatog
+     *         prefiksa (legacy/strani opaque id). Baca {@link NumberFormatException} ako
+     *         ostatak nije broj (caller ga mapira na {@code NO_SUCH_ACCOUNT}).
+     */
+    private static PersonOwner resolvePersonOwner(String personId) {
+        String id = personId;
+        String role = null;
+        if (id != null) {
+            if (id.startsWith("C-")) {
+                role = "CLIENT";
+                id = id.substring(2);
+            } else if (id.startsWith("E-")) {
+                role = "EMPLOYEE";
+                id = id.substring(2);
+            }
+        }
+        return new PersonOwner(role, Long.parseLong(id));
+    }
+
+    /** BUG-2: role + numericki owner id izveden iz prefiksiranog Person foreign-id-a. */
+    private record PersonOwner(String role, long id) {}
 
     /**
      * N3 helper: is this posting a charge against a LOCAL currency account?
@@ -1027,6 +1319,143 @@ public class TransactionExecutorService {
         return prefix + neg.getLocalPartyId();
     }
 
+    /** Formira "C-<id>"/"E-<id>" iz contract lokalne strane (mirror buyerForeignId, za contract). */
+    private static String localPartyForeignId(InterbankOtcContract contract) {
+        String prefix = "CLIENT".equalsIgnoreCase(contract.getLocalPartyRole()) ? "C-" : "E-";
+        return prefix + contract.getLocalPartyId();
+    }
+
+    /**
+     * BUG-1 [MONEY DESTROYED] — is {@code p} the §2.7.2/§S7 inbound EXERCISE
+     * "credit seller real cash pi*k" leg targeting OUR local seller?
+     *
+     * <p>Na inbound EXERCISE-u (kupceva banka inicira, MI smo seller/option-host),
+     * partner ukljucuje EKSPLICITAN seller-cash credit leg:
+     * {@code Posting(Person(ourSeller@myRouting), -pi*k, Monas(strikeCcy))} — protokolarni
+     * "credit" je NEGATIVAN iznos (prodavac PRIMA). Mi prodavca kreditiramo kroz
+     * {@link #settleSellerOnInboundExercise} (OPTION→prodavac sweep iz Option money leg-a),
+     * pa ovaj leg NE smemo da rezervisemo/teretimo/kreditiramo zasebno (to bi bilo
+     * dvostruko knjizenje / pogresan smer / N3 drain-reject). Ovaj prepoznavac vraca
+     * {@code true} SAMO za pravu seller-cash exercise nogu — vezano za RELACIJU ugovora
+     * (NE strukturalno), pa napadac ne moze da ga zloupotrebi:
+     * <ol>
+     *   <li>tx je exercise-shape (nosi {@code (Stock, Option)} leg, ne {@code OptionAsset}),</li>
+     *   <li>{@code p} je {@code (Monas, Person)} sa Person routing-om == nas routing (lokalno),
+     *       negativan iznos (protokolarni credit),</li>
+     *   <li>postoji {@code (Monas, Option)} ili {@code (Stock, Option)} leg cija opcija
+     *       razresava LOKALNI ugovor u kojem smo SELLER, a {@code p}-ova Person je BAS
+     *       taj prodavac (foreign-id match), valuta == strike valuta, a
+     *       {@code |amount| == strikePrice*quantity}.</li>
+     * </ol>
+     */
+    private boolean isInboundExerciseSellerCashCredit(Posting p, Transaction tx) {
+        if (!(p.asset() instanceof Asset.Monas chargeMonas)) return false;
+        if (!(p.account() instanceof TxAccount.Person sellerPerson)) return false;
+        if (sellerPerson.id().routingNumber() != routing.myRoutingNumber()) return false;
+        // Protokolarni "credit seller" = negativan iznos (prodavac PRIMA).
+        if (p.amount().compareTo(BigDecimal.ZERO) >= 0) return false;
+
+        // Mora biti exercise-shape: nosi (Stock, Option) leg (accept nosi OptionAsset).
+        boolean exerciseShape = tx.postings().stream().anyMatch(
+                sp -> sp.asset() instanceof Asset.Stock && sp.account() instanceof TxAccount.Option);
+        if (!exerciseShape) return false;
+
+        String chargeCcy = chargeMonas.asset().currency().name();
+        BigDecimal chargeAmount = p.amount().abs();
+
+        // Razresi opciju (Option pseudo-account) → lokalni ugovor u kojem smo SELLER.
+        for (Posting optLeg : tx.postings()) {
+            if (!(optLeg.account() instanceof TxAccount.Option opt)) continue;
+            ForeignBankId negId = opt.id();
+            if (negId == null) continue;
+
+            Optional<InterbankOtcNegotiation> negOpt =
+                    otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                            negId.routingNumber(), negId.id());
+            if (negOpt.isEmpty()) continue;
+            Optional<InterbankOtcContract> contractOpt =
+                    otcContractRepository.findBySourceNegotiationId(negOpt.get().getId());
+            if (contractOpt.isEmpty()) continue;
+            InterbankOtcContract contract = contractOpt.get();
+
+            // Moramo biti SELLER (option-host) ovog ugovora.
+            if (contract.getLocalPartyType() != InterbankPartyType.SELLER) continue;
+            // Person mora biti BAS nas prodavac (foreign-id match).
+            if (!localPartyForeignId(contract).equalsIgnoreCase(sellerPerson.id().id())) continue;
+            // Valuta + iznos moraju biti tacno strike (pi*k) u strike valuti.
+            if (contract.getStrikeCurrency() == null
+                    || !contract.getStrikeCurrency().equalsIgnoreCase(chargeCcy)) continue;
+            BigDecimal strike = contract.getStrikePrice().multiply(contract.getQuantity());
+            if (strike.compareTo(chargeAmount) != 0) continue;
+
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * T1/T2 — stabilan kupcev settlement racun za buyer-premium Monas+Person leg.
+     * Kad {@code tx} nosi {@link Asset.OptionAsset} leg (accept-shape §3.6), razresava
+     * pregovor isto kao {@link #isAuthorizedOtcPremiumCharge} (OptionAsset →
+     * {@code negotiationId} → lokalni pregovor) i, ako taj pregovor ima postavljen
+     * {@code buyerSettlementAccountNumber} (kupac ga je izabrao na FE-u pri accept-u),
+     * vraca bas taj broj racuna. Prepare (rezervacija) i commit (commitMonas) tako
+     * UVEK gadjaju ISTI racun — nema balance-desc drift-a koji bi rasporedio
+     * rezervaciju i commit na razlicite racune.
+     *
+     * @return izabrani broj racuna ili {@code null} ako nema OptionAsset leg-a ili
+     *         pregovor nema postavljen settlement racun (caller pada na deterministicki
+     *         fallback po broju racuna).
+     */
+    private String resolveBuyerSettlementAccount(Transaction tx) {
+        for (Posting optLeg : tx.postings()) {
+            if (!(optLeg.asset() instanceof Asset.OptionAsset oa)) continue;
+            ForeignBankId negId = oa.asset().negotiationId();
+            if (negId == null) continue;
+            Optional<InterbankOtcNegotiation> negOpt =
+                    otcNegotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
+                            negId.routingNumber(), negId.id());
+            if (negOpt.isEmpty()) continue;
+            String chosen = negOpt.get().getBuyerSettlementAccountNumber();
+            if (chosen != null && !chosen.isBlank()) return chosen;
+        }
+        return null;
+    }
+
+    /**
+     * T1/T2 — deterministicki fallback resolucije lokalnog racuna za Person+Monas leg
+     * kad pregovor nema izabran settlement racun (legacy pregovor ili plain inter-bank
+     * placanje §2.6 T2-B). Bira PRVI ACTIVE racun vlasnika u trazenoj valuti SORTIRAN
+     * po broju racuna RASTUCE — NE po available balansu. Balance-desc je nestabilan:
+     * rezervacija u prepare fazi smanji balans pa commit moze izabrati drugi racun.
+     *
+     * <p><b>P0 [MONEY CREATED] ugovor:</b> oslanja se na {@code findByClientId...}, pa za
+     * NE-klijentskog vlasnika (zaposleni/admin — nemaju klijentske racune) vraca
+     * {@link Optional#empty()}. Vraca {@code Optional} BAS zato da pozivac NIKAD tiho
+     * ne no-op-uje debit kad racuna nema — SVI pozivaoci MORAJU empty tretirati kao
+     * tvrdu gresku ({@code .orElseThrow(...)} na commit/reserve/rollback granama, ili
+     * {@code NO_SUCH_ACCOUNT} NoVote u validate fazi → 2PC abort/kompenzacija). Tiho
+     * preskakanje debita = stvaranje novca. (Outbound strana je dodatno zatvorena:
+     * {@code InterbankOtcWrapperService.acceptOffer} odbija accept PRE outbound 2PC ako
+     * kupac nema resolvabilan settlement racun u valuti premije.)
+     */
+    private Optional<Account> resolveLocalAccountDeterministic(String ownerRole, Long ownerId, String postingCcy) {
+        // BUG-2 [WRONG PARTY CHARGED / IDOR]: razresavamo SAMO klijentske racune i SAMO
+        // kad je vlasnik klijent (role == CLIENT ili nepoznat-legacy prefiks). Za
+        // zaposlenog (role == EMPLOYEE) NE smemo da zovemo findByClientId(ownerId) — to
+        // bi razresilo racun KLIJENTA sa istim numerickim id-em (tudje lice). Zaposleni
+        // nemaju klijentske settlement racune u ovom modelu → vracamo empty (pozivac to
+        // tretira kao tvrdu gresku: NO_SUCH_ACCOUNT / accept reject / glasni inbound fail).
+        if ("EMPLOYEE".equalsIgnoreCase(ownerRole)) {
+            return Optional.empty();
+        }
+        return accountRepository
+                .findByClientIdAndStatusOrderByAvailableBalanceDesc(ownerId, AccountStatus.ACTIVE)
+                .stream()
+                .filter(a -> a.getCurrency() != null && postingCcy.equals(a.getCurrency().getCode()))
+                .min(Comparator.comparing(Account::getAccountNumber));
+    }
+
     private boolean isPostingRemote(Posting p) {
         TxAccount account = p.account();
         if (account instanceof TxAccount.Account a) {
@@ -1102,9 +1531,19 @@ public class TransactionExecutorService {
             // their own and smuggle an unrelated victim-account charge alongside it. The
             // relationship gate binds the charged account to the buyer of the resolved
             // negotiation, so a victim's account never matches and is never reserved.
+            //
+            // BUG-1 [MONEY DESTROYED] addendum: a SECOND legitimate inbound "credit"
+            // (negative MONAS) leg on a LOCAL Person is the §2.7.2/§S7 exercise
+            // seller-cash credit ("credit seller real cash pi*k"). The partner buyer-bank
+            // sends it so seller banks that credit their seller off an explicit leg get
+            // paid; for US it is the book representation of the OPTION→seller sweep we
+            // perform in settleSellerOnInboundExercise. It is NOT a drain (the seller
+            // RECEIVES, not pays), so it must bypass the N3 reject and is then handled as
+            // a recognized no-op below (exactly-once credit stays in the sweep).
             if (inbound && isCredit && asset instanceof Asset.Monas
                     && isLocalChargePosting(account)
-                    && !isAuthorizedOtcPremiumCharge(p, tx)) {
+                    && !isAuthorizedOtcPremiumCharge(p, tx)
+                    && !isInboundExerciseSellerCashCredit(p, tx)) {
                 log.warn("N3 inbound authz: rejecting credit (charge) posting on local currency "
                         + "account from remote tx {} — counterparty not authorized to debit it.",
                         tx.transactionId());
@@ -1181,7 +1620,8 @@ public class TransactionExecutorService {
             } else if (asset instanceof Asset.Stock s && account instanceof TxAccount.Person pe) {
                 Long userId;
                 try {
-                    userId = Long.parseLong(pe.id().id());
+                    // BUG-2: strip "C-"/"E-" prefix pre parse (vidi parsePersonOwnerId).
+                    userId = parsePersonOwnerId(pe.id().id());
                 } catch (NumberFormatException e) {
                     violations.add(new NoVoteReason(NoVoteReason.Reason.NO_SUCH_ACCOUNT, p));
                     continue;
@@ -1264,6 +1704,21 @@ public class TransactionExecutorService {
                 // hartija ide kroz acceptReceivedNegotiation-ov reservationApplier.
                 // C-3 fix). Validan posting — no-op.
 
+            } else if (asset instanceof Asset.Monas && account instanceof TxAccount.Person
+                    && isInboundExerciseSellerCashCredit(p, tx)) {
+                // BUG-1 [MONEY DESTROYED] — inbound exercise seller-cash credit leg.
+                // §2.7.2 / §S7: kupceva banka (partner) salje EXERCISE tx koji nosi
+                // EKSPLICITAN "credit seller real cash pi*k" leg (Person@ourRouting, iznos
+                // negativan = protokolarni "credit" = prodavac PRIMA). Ovaj leg je SAMO
+                // knjizni izraz onoga sto MI ionako radimo kao seller-host banka u
+                // settleSellerOnInboundExercise (OPTION→prodavac sweep iz Option money
+                // leg-a). Validacija ga MORA prepoznati (inace bi pala kroz N3 inbound
+                // drain-gate ILI kroz Person+Monas funds-check jer prodavac "ne moze da
+                // plati" strike koji zapravo PRIMA). Tretiramo ga kao validan no-op leg:
+                // bez rezervacije, bez tereta — exactly-once kredit ide kroz
+                // settleSellerOnInboundExercise. Balance-check je vec verifikovao da
+                // OPTION money (+pi*k) i ovaj seller leg (-pi*k) ponistavaju MONAS grupu.
+
             } else if (asset instanceof Asset.Monas m && account instanceof TxAccount.Person pe) {
                 // T2-B fix (Tim 1 cross-bank Stage A, 2026-05-20): Person+Monas
                 // defenzivna grana — partner banka moze poslati MONAS leg sa
@@ -1272,24 +1727,25 @@ public class TransactionExecutorService {
                 // opaque foreign-bank-id koji receiver bank resolve-uje). isPostingRemote
                 // je vec uklonio partner-side Person (line 605); ovde stizemo samo
                 // za lokalne (myRouting) Person. Mirror Tim 1 P0.1 resolvePersonToAccount.
-                Long ownerId;
+                PersonOwner owner;
                 try {
-                    String foreignId = pe.id().id();
-                    if (foreignId != null && (foreignId.startsWith("C-") || foreignId.startsWith("E-"))) {
-                        foreignId = foreignId.substring(2);
-                    }
-                    ownerId = Long.valueOf(foreignId);
+                    // BUG-2: role-aware (E- zaposleni NE razresava se na klijentski racun).
+                    owner = resolvePersonOwner(pe.id().id());
                 } catch (NumberFormatException ex) {
                     violations.add(new NoVoteReason(NoVoteReason.Reason.NO_SUCH_ACCOUNT, p));
                     continue;
                 }
                 String postingCcy = m.asset().currency().name();
-                Optional<Account> resolved = accountRepository
-                        .findByClientIdAndStatusOrderByAvailableBalanceDesc(ownerId, AccountStatus.ACTIVE)
-                        .stream()
-                        .filter(a -> a.getCurrency() != null
-                                && postingCcy.equals(a.getCurrency().getCode()))
-                        .findFirst();
+                // T1/T2 — stabilna resolucija: ako je ovo buyer-premium leg (tx ima
+                // OptionAsset) i pregovor nosi izabran settlement racun, koristi BAS taj.
+                // Inace deterministicki fallback po broju racuna (NE balance-desc).
+                String chosenAccount = resolveBuyerSettlementAccount(tx);
+                Optional<Account> resolved = (chosenAccount != null)
+                        ? accountRepository.findByAccountNumber(chosenAccount)
+                                .filter(a -> a.getStatus() == AccountStatus.ACTIVE
+                                        && a.getCurrency() != null
+                                        && postingCcy.equals(a.getCurrency().getCode()))
+                        : resolveLocalAccountDeterministic(owner.role(), owner.id(), postingCcy);
                 if (resolved.isEmpty()) {
                     violations.add(new NoVoteReason(NoVoteReason.Reason.NO_SUCH_ACCOUNT, p));
                     continue;
@@ -1326,29 +1782,36 @@ public class TransactionExecutorService {
                 if (asset instanceof Asset.Monas && account instanceof TxAccount.Account a) {
                     reservationApplier.reserveMonas(a.num(), abs);
 
+                } else if (asset instanceof Asset.Monas && account instanceof TxAccount.Person
+                        && isInboundExerciseSellerCashCredit(p, tx)) {
+                    // BUG-1: inbound exercise seller-cash credit leg — NE rezervisemo nista.
+                    // Prodavac PRIMA strike (kredit ide kroz settleSellerOnInboundExercise
+                    // OPTION→prodavac sweep), pa rezervacija na prodavcevom racunu ne sme da
+                    // se desi (to bi bio teret koji ne postoji). Recognized no-op.
+
                 } else if (asset instanceof Asset.Monas m && account instanceof TxAccount.Person pe) {
                     // T2-B reservation pair: Person+Monas — resolve do 18-cifrenog
                     // racuna pa rezervisi normalno. validacija je vec prosla u Pass 1
                     // (NO_SUCH_ACCOUNT / INSUFFICIENT_ASSET) pa ovde garantovano postoji.
-                    String foreignId = pe.id().id();
-                    if (foreignId != null && (foreignId.startsWith("C-") || foreignId.startsWith("E-"))) {
-                        foreignId = foreignId.substring(2);
-                    }
-                    Long ownerId = Long.valueOf(foreignId);
+                    // T1/T2 — MORA koristiti istu (stabilnu) resoluciju kao Pass 1 i
+                    // commitLocal: izabrani settlement racun ako postoji, inace
+                    // deterministicki po broju racuna (NE balance-desc).
+                    // BUG-2: role-aware (E- zaposleni NE razresava se na klijentski racun).
+                    PersonOwner owner = resolvePersonOwner(pe.id().id());
                     String postingCcy = m.asset().currency().name();
-                    Account resolvedAcct = accountRepository
-                            .findByClientIdAndStatusOrderByAvailableBalanceDesc(ownerId, AccountStatus.ACTIVE)
-                            .stream()
-                            .filter(acc -> acc.getCurrency() != null
-                                    && postingCcy.equals(acc.getCurrency().getCode()))
-                            .findFirst()
-                            .orElseThrow(() -> new IllegalStateException(
-                                    "Person+Monas reservation: missing account for ownerId=" + pe.id().id()
-                                            + " currency=" + postingCcy + " (validation prosao ali resolve fail)"));
-                    reservationApplier.reserveMonas(resolvedAcct.getAccountNumber(), abs);
+                    String chosenAccount = resolveBuyerSettlementAccount(tx);
+                    String reserveOn = (chosenAccount != null)
+                            ? chosenAccount
+                            : resolveLocalAccountDeterministic(owner.role(), owner.id(), postingCcy)
+                                    .map(Account::getAccountNumber)
+                                    .orElseThrow(() -> new IllegalStateException(
+                                            "Person+Monas reservation: missing account for ownerId=" + pe.id().id()
+                                                    + " currency=" + postingCcy + " (validation prosao ali resolve fail)"));
+                    reservationApplier.reserveMonas(reserveOn, abs);
 
                 } else if (asset instanceof Asset.Stock s && account instanceof TxAccount.Person pe) {
-                    Long userId = Long.parseLong(pe.id().id());
+                    // BUG-2: strip "C-"/"E-" prefix pre parse (vidi parsePersonOwnerId).
+                    Long userId = parsePersonOwnerId(pe.id().id());
                     String ticker = s.asset().ticker();
                     reservationApplier.reserveStock(
                             stockIdempotencyKey(tx.transactionId(), "reserve", userId, "CLIENT", ticker, i),

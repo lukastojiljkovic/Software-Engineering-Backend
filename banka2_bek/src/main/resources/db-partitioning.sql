@@ -93,6 +93,20 @@ DROP INDEX IF EXISTS idx_ibm_idempotence;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ibm_idempotence
     ON interbank_messages (sender_routing_number, locally_generated_key, created_at);
 
+-- ─── retry/dead-letter backstop kolone (2PC outbox reliability fix) ──────────
+-- Outbox retry reliability fix: retry_count je attempt-counter (facet c
+-- dead-letter backstop), last_error nosi razlog terminalizacije. Hibernate
+-- ddl-auto=update OBICNO doda ove kolone, ali na PARTICIONISANOJ tabeli auto-DDL
+-- moze biti nepouzdan (ddl-auto najpouzdanije radi samo ADD na ne-particionisanim
+-- tabelama — vidi application.properties P2-config-2 napomenu). Defanzivno i
+-- idempotentno ih obezbedjujemo ovde da prod particionisana tabela sigurno ima
+-- attempt-counter i da postojeci redovi ne ostanu sa NULL retry_count (Hibernate
+-- optimisticki/aritmeticki rad nad NULL counter-om puca). DEAD_LETTER je novi
+-- status enum-a (varchar kolona — bez DDL promene tipa).
+ALTER TABLE interbank_messages ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
+ALTER TABLE interbank_messages ADD COLUMN IF NOT EXISTS last_error varchar(1024);
+UPDATE interbank_messages SET retry_count = 0 WHERE retry_count IS NULL;
+
 -- ─── audit_logs ──────────────────────────────────────────────────────────
 -- B7 audit log — particionisemo po created_at (append-only, immutable zapisi,
 -- mesecno raste sa svakom administrativnom akcijom).

@@ -207,6 +207,98 @@ class InterbankRetrySchedulerTest {
         verify(messageService).markOutboundSent(eq(key2), eq(200), any());
     }
 
+    @Test
+    @DisplayName("facet-b: unresolvable routing (InterbankProtocolException) → markOutboundNonRetryable, NOT left PENDING")
+    void retryNewTx_unresolvableRouting_terminalizes() throws Exception {
+        // Facet 2: client.sendMessage baca InterbankProtocolException ("Target routing
+        // number 666 could not be resolved"). Stari inner catch (samo Communication/Auth)
+        // ga NE hvata → escape u generic catch koji SAMO loguje → poruka ostaje PENDING
+        // zauvek (retry svaka 2 min). Sad mora biti terminalizovana kao non-retryable.
+        Transaction tx = sampleTransaction();
+        IdempotenceKey key = new IdempotenceKey(MY_RN, "key-666");
+        Message<Transaction> envelope = new Message<>(key, MessageType.NEW_TX, tx);
+        InterbankMessage msg = newTxMessage(key, objectMapper.writeValueAsString(envelope));
+
+        when(messageRepository.findPendingForRetry(any(), any())).thenReturn(List.of(msg));
+        when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.NEW_TX), any(), eq(TransactionVote.class)))
+                .thenThrow(new InterbankExceptions.InterbankProtocolException(
+                        "Target routing number 666 could not be resolved."));
+
+        scheduler.retryStaleMessages();
+
+        verify(messageService).markOutboundNonRetryable(eq(key), contains("could not be resolved"));
+        verify(messageService, never()).markOutboundFailed(any(), any());
+    }
+
+    @Test
+    @DisplayName("facet-b: ROLLBACK_TX with unresolvable routing terminalizes too (never succeeds, do not retry forever)")
+    void retryRollbackTx_unresolvableRouting_terminalizes() throws Exception {
+        IdempotenceKey key = new IdempotenceKey(MY_RN, "rb-666");
+        RollbackTransaction body = new RollbackTransaction(new ForeignBankId(MY_RN, TX_ID));
+        Message<RollbackTransaction> envelope = new Message<>(key, MessageType.ROLLBACK_TX, body);
+        InterbankMessage msg = buildMessage(key, MessageType.ROLLBACK_TX,
+                objectMapper.writeValueAsString(envelope));
+
+        when(messageRepository.findPendingForRetry(any(), any())).thenReturn(List.of(msg));
+        when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.ROLLBACK_TX), any(), eq(Void.class)))
+                .thenThrow(new InterbankExceptions.InterbankProtocolException(
+                        "Target routing number 666 could not be resolved."));
+
+        scheduler.retryStaleMessages();
+
+        verify(messageService).markOutboundNonRetryable(eq(key), contains("could not be resolved"));
+    }
+
+    @Test
+    @DisplayName("facet-d: null requestBody → markOutboundNonRetryable, does not throw out / stay PENDING")
+    void retry_nullRequestBody_terminalizes() {
+        IdempotenceKey key = new IdempotenceKey(MY_RN, "null-body");
+        InterbankMessage msg = buildMessage(key, MessageType.NEW_TX, null);
+
+        when(messageRepository.findPendingForRetry(any(), any())).thenReturn(List.of(msg));
+
+        scheduler.retryStaleMessages();
+
+        verify(messageService).markOutboundNonRetryable(eq(key), any());
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    @DisplayName("facet-d: garbage (un-deserializable) requestBody → markOutboundNonRetryable, not left PENDING")
+    void retry_garbageRequestBody_terminalizes() {
+        IdempotenceKey key = new IdempotenceKey(MY_RN, "garbage-body");
+        InterbankMessage msg = buildMessage(key, MessageType.NEW_TX, "{not valid json at all");
+
+        when(messageRepository.findPendingForRetry(any(), any())).thenReturn(List.of(msg));
+
+        scheduler.retryStaleMessages();
+
+        verify(messageService).markOutboundNonRetryable(eq(key), any());
+        verify(messageService, never()).markOutboundFailed(any(), any());
+    }
+
+    @Test
+    @DisplayName("guard: COMMIT_TX on a transient comm error still calls markOutboundFailed (retries — does NOT terminalize)")
+    void retryCommitTx_transientCommError_staysRetryable() throws Exception {
+        // 2PC durability guard: prelazna komunikaciona greska za COMMIT_TX NE sme da
+        // terminalizuje poruku — mora ostati u retry toku (markOutboundFailed →
+        // PENDING dok ne dosegne maxAttempts dead-letter backstop).
+        IdempotenceKey key = new IdempotenceKey(MY_RN, "commit-transient");
+        CommitTransaction body = new CommitTransaction(new ForeignBankId(MY_RN, TX_ID));
+        Message<CommitTransaction> envelope = new Message<>(key, MessageType.COMMIT_TX, body);
+        InterbankMessage msg = buildMessage(key, MessageType.COMMIT_TX,
+                objectMapper.writeValueAsString(envelope));
+
+        when(messageRepository.findPendingForRetry(any(), any())).thenReturn(List.of(msg));
+        when(client.sendMessage(eq(REMOTE_RN), eq(MessageType.COMMIT_TX), any(), eq(Void.class)))
+                .thenThrow(new InterbankExceptions.InterbankCommunicationException("connection refused"));
+
+        scheduler.retryStaleMessages();
+
+        verify(messageService).markOutboundFailed(eq(key), contains("connection refused"));
+        verify(messageService, never()).markOutboundNonRetryable(any(), any());
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

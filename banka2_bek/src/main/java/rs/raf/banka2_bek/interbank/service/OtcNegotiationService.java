@@ -805,26 +805,50 @@ public class OtcNegotiationService {
     /**
      * Istice jedan inter-bank OTC ugovor u sopstvenoj transakciji ({@code REQUIRES_NEW}).
      * Status-guard: samo ACTIVE → EXPIRED (race sa exercise-om koji je u medjuvremenu
-     * markirao EXERCISED ne sme biti pregazen). Sellerova rezervacija hartija se
-     * oslobadja PRE flip-a statusa; idempotentan release ne pravi stetu pri retry-u.
+     * markirao EXERCISED — ili decline koji je markirao DECLINED — ne sme biti
+     * pregazen). Rezervacije se oslobadjaju PRE flip-a statusa; idempotentan release
+     * ne pravi stetu pri retry-u.
+     *
+     * <p>Per-strana oslobadjanje (§2.7.2 "if that option was not used, the resources
+     * stuck in an option shall be un-reserved"):
+     * <ul>
+     *   <li><b>SELLER</b> (mi smo prodavac) — oslobadjamo lokalnu rezervaciju HARTIJA
+     *       ({@code releaseStock}); buyer-ov strike novac je u kupcevoj (partner) banci.</li>
+     *   <li><b>BUYER</b> (mi smo kupac, T8/S10) — oslobadjamo accept-time rezervaciju
+     *       STRIKE novca ({@code reservedStrikeAccountNumber}/{@code reservedStrikeAmount}
+     *       postavljeni pri accept-u kroz T3) — "pare za kupovinu se vracaju". Premija
+     *       se NE refundira (ostaje prodavcu, vec placena pri accept-u). Sellerova
+     *       rezervacija hartija je u partner banci.</li>
+     * </ul>
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void expireOneContract(Long contractId) {
         InterbankOtcContract contract = contractRepository.findById(contractId).orElse(null);
         if (contract == null || contract.getStatus() != InterbankOtcContractStatus.ACTIVE) {
-            // Vec EXERCISED/EXPIRED u medjuvremenu (race) — ne diramo.
+            // Vec EXERCISED/EXPIRED/DECLINED u medjuvremenu (race) — ne diramo.
             return;
         }
 
-        // Oslobodi sellerovu rezervaciju hartija SAMO ako smo MI seller. Ako smo
-        // buyer, sellerova rezervacija je u partner banci (njihov lokalni bookkeeping).
+        boolean releasedBuyerStrike = false;
         if (contract.getLocalPartyType() == InterbankPartyType.SELLER) {
+            // Oslobodi sellerovu rezervaciju hartija. Ako smo buyer, sellerova
+            // rezervacija hartija je u partner banci (njihov lokalni bookkeeping).
             int qty = contract.getQuantity() != null ? contract.getQuantity().intValueExact() : 0;
             if (qty > 0) {
                 reservationApplier.releaseStock(
                         otcExpiryReleaseKey(contract.getId()),
                         contract.getLocalPartyId(), contract.getLocalPartyRole(),
                         contract.getTicker(), qty);
+            }
+        } else if (contract.getLocalPartyType() == InterbankPartyType.BUYER) {
+            // T8/S10 — oslobodi buyer-ovu accept-time strike rezervaciju ("pare za
+            // kupovinu se vracaju"). Premija ostaje prodavcu (ne refundira se).
+            if (contract.getReservedStrikeAccountNumber() != null
+                    && contract.getReservedStrikeAmount() != null) {
+                reservationApplier.releaseMonas(
+                        contract.getReservedStrikeAccountNumber(),
+                        contract.getReservedStrikeAmount());
+                releasedBuyerStrike = true;
             }
         }
 
@@ -833,7 +857,8 @@ public class OtcNegotiationService {
         log.info("OTC inter-bank ugovor #{} istekao (settlementDate={}) — status EXPIRED{}",
                 contract.getId(), contract.getSettlementDate(),
                 contract.getLocalPartyType() == InterbankPartyType.SELLER
-                        ? ", sellerova rezervacija hartija oslobodjena" : "");
+                        ? ", sellerova rezervacija hartija oslobodjena"
+                        : (releasedBuyerStrike ? ", buyer strike rezervacija oslobodjena" : ""));
     }
 
     /**

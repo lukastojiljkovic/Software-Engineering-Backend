@@ -156,6 +156,38 @@ class OtcNegotiationServiceInboundTest {
     }
 
     @Test
+    @DisplayName("§3.6 2PC ABORT (real InterbankTransactionAbortedException from execute()) -> "
+            + "compensateAccept runs (negotiation reverted, contract deleted, stock released) AND "
+            + "failure surfaces — NO silent 204 orphan")
+    void acceptReceivedNegotiation_2pcAborts_realAbortException_compensatesAndSurfaces() {
+        // ORPHAN REPRODUCTION (the live cross-bank bug): pre-fix, execute() returned
+        // NORMALLY on a partner NO vote, so this catch never fired — the negotiation
+        // stayed ACCEPTED, an InterbankOtcContract persisted ACTIVE, the seller stock
+        // stayed reserved, the money tx was ROLLED_BACK, and the endpoint returned 204
+        // success → both banks permanently inconsistent. The fix makes execute() THROW
+        // InterbankTransactionAbortedException on abort; this test asserts the caller's
+        // catch then runs compensateAccept AND re-surfaces the failure (no 204 orphan).
+        ForeignBankId negotiationId = new ForeignBankId(OUR_RN, "neg-abort");
+        Transaction tx = buildExpectedAcceptTx(negotiationId);
+        OtcNegotiationService.AcceptPrep prep = new OtcNegotiationService.AcceptPrep(
+                42L, 99L, tx, 7L, "CLIENT", "AAPL", 50);
+        when(selfMock.persistAcceptArtifacts(eq(negotiationId), eq((Integer) null))).thenReturn(prep);
+
+        // Stock reservation succeeds; the 2PC aborts with the REAL abort type execute() throws.
+        doNothing().when(reservationApplier).reserveStock(anyString(), any(), anyString(), anyString(), anyInt());
+        doThrow(new InterbankExceptions.InterbankTransactionAbortedException(
+                "Inter-bank 2PC aborted for transaction " + tx.transactionId().id()))
+                .when(transactionExecutor).execute(any(Transaction.class));
+
+        // The failure MUST surface (no silent success / 204) — the abort type propagates.
+        assertThatThrownBy(() -> service.acceptReceivedNegotiation(negotiationId))
+                .isInstanceOf(InterbankExceptions.InterbankTransactionAbortedException.class);
+
+        // Compensation ran: revert negotiation to ACTIVE, delete contract, release seller stock.
+        verify(selfMock).compensateAccept(42L, 99L, 7L, "CLIENT", "AAPL", 50);
+    }
+
+    @Test
     @DisplayName("§3.6: reservation fail -> compensateAccept pozvan i protokol exception izbacen")
     void acceptReceivedNegotiation_reservationFails_compensatesAndThrowsProtocol() {
         ForeignBankId negotiationId = new ForeignBankId(OUR_RN, "neg-resfail");

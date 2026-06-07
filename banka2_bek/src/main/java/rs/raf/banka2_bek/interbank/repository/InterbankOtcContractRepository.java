@@ -29,6 +29,22 @@ public interface InterbankOtcContractRepository extends JpaRepository<InterbankO
     Optional<InterbankOtcContract> findBySourceNegotiationId(Long sourceNegotiationId);
 
     /**
+     * FINDING 2 — PESSIMISTIC_WRITE lookup po sourceNegotiationId za inbound
+     * seller-settlement (§2.7.2 exercise). Per-{@code InterbankTransaction} red-lock u
+     * {@code commitLocal} NE serijalizuje dva RAZLICITA-txId konkurentna exercise-a
+     * ISTOG ugovora; {@code findBySourceNegotiationId} je non-locking, pa bi oba commit-a
+     * procitala ACTIVE i oba settle-ovala → {@code commitStock} isporuci 2k hartija i
+     * {@code commitRecipientCredit} (bez idempotency kljuca) kreditira 2×strike. Lock na
+     * ovom finder-u serijalizuje konkurentne commit-ove: drugi ceka, pa pod lock-om vidi
+     * EXERCISED i preskace settle. Mirror pattern {@code findByIdForUpdate} /
+     * {@code InterbankTransactionRepository#findForUpdateByTransactionRoutingNumberAndTransactionIdString}.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from InterbankOtcContract c where c.sourceNegotiationId = :sourceNegotiationId")
+    Optional<InterbankOtcContract> findBySourceNegotiationIdForUpdate(
+            @Param("sourceNegotiationId") Long sourceNegotiationId);
+
+    /**
      * P1-interbank-otc-2 (1336/1535) — PESSIMISTIC_WRITE lookup za exercise claim.
      * Intra-bank SAGA exercise koristi {@code findByIdForUpdate}; inter-bank
      * exercise pre ovog fix-a nije imao lock izmedju {@code status==ACTIVE} provere

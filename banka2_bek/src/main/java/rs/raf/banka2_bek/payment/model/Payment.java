@@ -31,7 +31,12 @@ public class Payment {
     @JoinColumn(name = "from_account_id", nullable = false)
     private Account fromAccount;        // Račun platioca
 
-    @Column(nullable = false, length = 18)
+    // Interbank: partnerske banke mogu imati racune razlicite duzine (Banka 1 koristi
+    // 19 cifara, ne 18). Cap podignut na 34 (IBAN max) da inter-bank placanje ka
+    // partneru sa duzim brojem racuna ne padne na DataIntegrityViolation. Vidi i
+    // CreatePaymentRequestDto.toAccount @Length. NAPOMENA: ddl-auto=update NE siri
+    // postojecu kolonu — na vec-deployovanoj bazi treba rucni ALTER (vidi INSTRUKCIJE).
+    @Column(nullable = false, length = 34)
     private String toAccountNumber;     // Broj računa primaoca (string — može biti u drugoj banci)
 
     @Column(nullable = false, precision = 19, scale = 4)

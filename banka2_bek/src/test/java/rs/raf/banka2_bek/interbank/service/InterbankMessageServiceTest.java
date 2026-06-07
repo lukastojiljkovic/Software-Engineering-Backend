@@ -4,7 +4,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import rs.raf.banka2_bek.interbank.exception.InterbankExceptions;
@@ -37,11 +36,17 @@ class InterbankMessageServiceTest {
     @Mock
     private rs.raf.banka2_bek.monitoring.BusinessMetrics businessMetrics;
 
-    @InjectMocks
     private InterbankMessageService service;
 
     private static final int MY_RN = 222;
     private static final IdempotenceKey KEY = new IdempotenceKey(111, "abc123key");
+
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() {
+        // Default dead-letter backstop = 50 (facet c). Pojedinacni testovi koji
+        // ispituju dead-letter prag re-instanciraju servis sa nizim maxAttempts.
+        service = new InterbankMessageService(repository, bankRoutingService, businessMetrics, 50);
+    }
 
     // -------------------------------------------------------------------------
     // findCachedResponse
@@ -339,16 +344,17 @@ class InterbankMessageServiceTest {
         // unilateralno da abort-uje — koordinator MORA da retransmituje COMMIT_TX
         // dok ne dobije potvrdu. Ako COMMIT_TX izadje iz retry pool-a (STUCK),
         // recipient nikad ne sazna ishod i novac je unisten. Phase-2 mora ostati
-        // PENDING (retry-uje se beskonacno), bez obzira na retryCount.
+        // PENDING (retry-uje se) daleko iznad MAX_RETRIES (5) — sve do dead-letter
+        // backstop-a (maxAttempts=50, facet c; vidi zaseban dead-letter test).
         InterbankMessage msg = pendingMessage();
         msg.setMessageType(MessageType.COMMIT_TX);
-        msg.setRetryCount(50); // daleko iznad MAX_RETRIES
+        msg.setRetryCount(20); // daleko iznad MAX_RETRIES (5), ispod maxAttempts (50)
         when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
                 .thenReturn(Optional.of(msg));
 
         service.markOutboundFailed(KEY, "connection refused");
 
-        assertThat(msg.getRetryCount()).isEqualTo(51);
+        assertThat(msg.getRetryCount()).isEqualTo(21);
         assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.PENDING);
     }
 
@@ -357,13 +363,13 @@ class InterbankMessageServiceTest {
     void markOutboundFailed_rollbackTxAtMaxRetries_staysPending() {
         InterbankMessage msg = pendingMessage();
         msg.setMessageType(MessageType.ROLLBACK_TX);
-        msg.setRetryCount(99);
+        msg.setRetryCount(30); // iznad MAX_RETRIES (5), ispod maxAttempts (50)
         when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
                 .thenReturn(Optional.of(msg));
 
         service.markOutboundFailed(KEY, "connection refused");
 
-        assertThat(msg.getRetryCount()).isEqualTo(100);
+        assertThat(msg.getRetryCount()).isEqualTo(31);
         assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.PENDING);
     }
 
@@ -408,6 +414,135 @@ class InterbankMessageServiceTest {
 
         assertThatThrownBy(() -> service.markOutboundFailed(KEY, "error"))
                 .isInstanceOf(InterbankExceptions.InterbankProtocolException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // markOutboundAborted (facet a) — terminalize a definitively-aborted NEW_TX
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("facet-a: markOutboundAborted terminalizes a PENDING NEW_TX to FAILED_PERMANENT (not retried)")
+    void markOutboundAborted_newTx_failedPermanent() {
+        // Facet 1: koordinator je doneo definitivan abort za fazu-1 (NO vote / partner
+        // 4xx / mrezna greska tretirana kao NO). Lokalna tx je rollback-ovana. Outbound
+        // NEW_TX red NE sme da ostane PENDING — inace ga scheduler re-salje zauvek za
+        // transakciju koja vise ne postoji. Terminalizujemo ga.
+        InterbankMessage msg = pendingMessage();
+        msg.setMessageType(MessageType.NEW_TX);
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundAborted(KEY, "partner voted NO");
+
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.FAILED_PERMANENT);
+        assertThat(msg.getLastError()).contains("partner voted NO");
+        verify(repository).save(msg);
+    }
+
+    @Test
+    @DisplayName("facet-a: markOutboundAborted on already-terminal message is a no-op")
+    void markOutboundAborted_alreadyTerminal_noOp() {
+        InterbankMessage msg = pendingMessage();
+        msg.setStatus(InterbankMessageStatus.SENT);
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundAborted(KEY, "late abort");
+
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.SENT);
+        verify(repository, never()).save(any());
+    }
+
+    // -------------------------------------------------------------------------
+    // markOutboundNonRetryable (facets b, d) — permanently-unsendable message
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("facet-b/d: markOutboundNonRetryable terminalizes any message type to FAILED_PERMANENT")
+    void markOutboundNonRetryable_newTx_failedPermanent() {
+        // Facet 2/d: nerazresivo routing / nemoguce-deserijalizovati telo — poruka
+        // NIKAD ne moze da uspe. Terminalizujemo je bez obzira na tip (cak i phase-2,
+        // jer beskonacni retry nerazresive rute je cista buka).
+        InterbankMessage msg = pendingMessage();
+        msg.setMessageType(MessageType.NEW_TX);
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundNonRetryable(KEY, "routing 666 could not be resolved");
+
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.FAILED_PERMANENT);
+        assertThat(msg.getLastError()).contains("666");
+        verify(repository).save(msg);
+    }
+
+    @Test
+    @DisplayName("facet-b: markOutboundNonRetryable terminalizes even ROLLBACK_TX (unresolvable routing can never succeed)")
+    void markOutboundNonRetryable_rollbackTx_failedPermanent() {
+        InterbankMessage msg = pendingMessage();
+        msg.setMessageType(MessageType.ROLLBACK_TX);
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundNonRetryable(KEY, "could not be resolved");
+
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.FAILED_PERMANENT);
+    }
+
+    @Test
+    @DisplayName("facet-b/d: markOutboundNonRetryable on already-terminal message is a no-op")
+    void markOutboundNonRetryable_alreadyTerminal_noOp() {
+        InterbankMessage msg = pendingMessage();
+        msg.setStatus(InterbankMessageStatus.FAILED_PERMANENT);
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundNonRetryable(KEY, "x");
+
+        verify(repository, never()).save(any());
+    }
+
+    // -------------------------------------------------------------------------
+    // max-attempts dead-letter backstop (facet c)
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("facet-c: COMMIT_TX moves to DEAD_LETTER after maxAttempts transient failures (bounds infinite retry)")
+    void markOutboundFailed_commitTxAtMaxAttempts_deadLetter() {
+        // Facet c: phase-2 se po §2.9 retransmituje neograniceno, ALI mora postojati
+        // gornja granica da partner koji je TRAJNO mrtav ne spamuje logove zauvek.
+        // Posle maxAttempts (default 50; ovde override-ovan na 3) → DEAD_LETTER +
+        // jedan WARN; operativci intervenisu rucno. Default je namerno visok da se
+        // ne napusti partner koji je samo nakratko pao.
+        service = new InterbankMessageService(repository, bankRoutingService, businessMetrics, 3);
+        InterbankMessage msg = pendingMessage();
+        msg.setMessageType(MessageType.COMMIT_TX);
+        msg.setRetryCount(2); // after increment → 3 == maxAttempts
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundFailed(KEY, "connection refused");
+
+        assertThat(msg.getRetryCount()).isEqualTo(3);
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.DEAD_LETTER);
+    }
+
+    @Test
+    @DisplayName("facet-c: COMMIT_TX still retries (stays PENDING) on a transient failure BELOW maxAttempts (2PC durability)")
+    void markOutboundFailed_commitTxBelowMaxAttempts_staysPending() {
+        // Guard 2PC invarijante: COMMIT_TX se NE napusta jeftino — sve do maxAttempts
+        // ostaje PENDING (retransmituje se). Ovo stiti durability fazu-2 (recipient u
+        // PREPARED ceka ishod).
+        service = new InterbankMessageService(repository, bankRoutingService, businessMetrics, 50);
+        InterbankMessage msg = pendingMessage();
+        msg.setMessageType(MessageType.COMMIT_TX);
+        msg.setRetryCount(10); // far below 50
+        when(repository.findBySenderRoutingNumberAndLocallyGeneratedKey(111, "abc123key"))
+                .thenReturn(Optional.of(msg));
+
+        service.markOutboundFailed(KEY, "connection refused");
+
+        assertThat(msg.getRetryCount()).isEqualTo(11);
+        assertThat(msg.getStatus()).isEqualTo(InterbankMessageStatus.PENDING);
     }
 
     // -------------------------------------------------------------------------

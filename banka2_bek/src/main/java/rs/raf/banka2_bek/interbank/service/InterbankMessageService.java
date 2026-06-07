@@ -1,7 +1,7 @@
 package rs.raf.banka2_bek.interbank.service;
 
 import lombok.extern.slf4j.Slf4j;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,14 +20,38 @@ import java.util.Optional;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class InterbankMessageService {
 
+    /**
+     * Faza-1 (NEW_TX) STUCK prag: posle ovoliko transientnih neuspeha NEW_TX
+     * (gde koordinator jos nije doneo odluku) eskalira na STUCK (presumed-abort
+     * bezbedan). NE vazi za fazu-2 (vidi {@link #markOutboundFailed}).
+     */
     private static final int MAX_RETRIES = 5;
 
     private final InterbankMessageRepository repository;
     private final BankRoutingService bankRoutingService;
     private final BusinessMetrics businessMetrics;
+
+    /**
+     * Facet c — dead-letter backstop. Posle ovoliko transientnih neuspeha SVAKA
+     * poruka (ukljucujuci COMMIT_TX/ROLLBACK_TX, koje se inace po §2.9 retransmituju
+     * neograniceno) prelazi u {@link InterbankMessageStatus#DEAD_LETTER} i loguje se
+     * jednom na WARN. Ogranicava beskonacni log-spam kad je partner TRAJNO mrtav, a
+     * default je namerno visok (50) da se ne napusti partner koji je samo nakratko pao.
+     * Override preko {@code interbank.retry.max-attempts}.
+     */
+    private final int maxAttempts;
+
+    public InterbankMessageService(InterbankMessageRepository repository,
+                                   BankRoutingService bankRoutingService,
+                                   BusinessMetrics businessMetrics,
+                                   @Value("${interbank.retry.max-attempts:50}") int maxAttempts) {
+        this.repository = repository;
+        this.bankRoutingService = bankRoutingService;
+        this.businessMetrics = businessMetrics;
+        this.maxAttempts = maxAttempts;
+    }
 
 
     public Optional<String> findCachedResponse(IdempotenceKey key) {
@@ -264,21 +288,142 @@ public class InterbankMessageService {
         boolean isPhaseTwo = ibMessage.getMessageType() == MessageType.COMMIT_TX
                 || ibMessage.getMessageType() == MessageType.ROLLBACK_TX;
 
-        if (!isPhaseTwo && ibMessage.getRetryCount() >= MAX_RETRIES) {
+        if (ibMessage.getRetryCount() >= maxAttempts) {
+            // Facet c — dead-letter backstop. VAZI ZA SVE tipove (ukljucujuci fazu-2).
+            // §2.9 retransmituje fazu-2 neograniceno, ali kad partner TRAJNO ne
+            // odgovara (maxAttempts, default 50 — daleko iznad kratkotrajnog ispada)
+            // beskonacni retry samo puni logove ERROR-ima svaka 2 min i zagadjuje
+            // payments view. DEAD_LETTER je terminalan (scheduler ga preskace) i
+            // zahteva operativnu intervenciju; logujemo JEDNOM na WARN.
+            ibMessage.setStatus(InterbankMessageStatus.DEAD_LETTER);
+            log.warn("Interbank outbound {} for key={} moved to DEAD_LETTER after {} attempts "
+                            + "(maxAttempts={}); requires operator intervention. Last error: {}",
+                    ibMessage.getMessageType(), key, ibMessage.getRetryCount(), maxAttempts, errorMessage);
+        } else if (!isPhaseTwo && ibMessage.getRetryCount() >= MAX_RETRIES) {
             ibMessage.setStatus(InterbankMessageStatus.STUCK);
 
             log.error("Interbank outbound message STUCK after {} for key={}, error message: {} ", MAX_RETRIES, key, errorMessage);
 
         } else if (isPhaseTwo && ibMessage.getRetryCount() >= MAX_RETRIES) {
-            // Phase-2 ostaje PENDING (retry-uje se i dalje); logujemo da operativci
-            // znaju da partner dugo ne potvrdjuje, ali NE napustamo retransmisiju.
+            // Phase-2 ostaje PENDING (retry-uje se i dalje) sve do maxAttempts; logujemo
+            // da operativci znaju da partner dugo ne potvrdjuje, ali NE napustamo
+            // retransmisiju pre dead-letter backstop-a (§2.9).
             log.warn("Interbank phase-2 {} for key={} still unacknowledged after {} attempts — "
-                            + "continuing unbounded retransmission per §2.9 (NOT escalating to STUCK).",
-                    ibMessage.getMessageType(), key, ibMessage.getRetryCount());
+                            + "continuing retransmission per §2.9 (NOT escalating to STUCK; dead-letter at {}).",
+                    ibMessage.getMessageType(), key, ibMessage.getRetryCount(), maxAttempts);
         }
 
         repository.save(ibMessage);
 
+    }
+
+    /**
+     * Facet a — terminalizuje outbound NEW_TX red ciju je transakciju koordinator
+     * definitivno ABORTOVAO u fazi-1 (partner glasao NO / partner 4xx / mrezna greska
+     * tretirana kao NO → {@code rollbackLocal}).
+     *
+     * <p>Pre fix-a, abort putanja u {@code sendPhase1Network} je zvala
+     * {@link #markOutboundFailed} koja za NEW_TX inkrementira {@code retryCount} i
+     * ostavlja red PENDING (do MAX_RETRIES → STUCK). To znaci da je
+     * {@code InterbankRetryScheduler} re-slao NEW_TX za transakciju koja vise NE
+     * postoji (lokalno rollback-ovana) — beskonacni/visekratni re-send i ERROR spam.
+     * Re-send NEW_TX-a za abortovanu transakciju je i logicki pogresan.
+     *
+     * <p>Resenje: red se prebacuje u {@link InterbankMessageStatus#FAILED_PERMANENT}
+     * (terminalno; scheduler ga ne pokupi). Idempotentno: no-op ako je red vec
+     * terminalan/resolvovan (race sa glavnim send-om).
+     *
+     * <p>VAZNO (durability): poziva se SAMO za fazu-1 (NEW_TX), gde koordinator jos
+     * nije commit-ovao i presumed-abort je bezbedan. Phase-2 (COMMIT/ROLLBACK) se
+     * NIKAD ne terminalizuje ovim putem.
+     */
+    @Transactional
+    public void markOutboundAborted(IdempotenceKey key, String reason) {
+        InterbankMessage ibMessage =
+                repository.findBySenderRoutingNumberAndLocallyGeneratedKey(
+                        key.routingNumber(), key.locallyGeneratedKey()
+                ).orElseThrow(() ->
+                        new InterbankExceptions.InterbankProtocolException(
+                                "No outbound message for the key " + key + " was found."
+                        )
+                );
+
+        if (isTerminalState(ibMessage.getStatus())) {
+            log.debug("markOutboundAborted no-op: message key={} already in terminal status {}",
+                    key, ibMessage.getStatus());
+            return;
+        }
+
+        ibMessage.setStatus(InterbankMessageStatus.FAILED_PERMANENT);
+        ibMessage.setLastError("Phase-1 NEW_TX aborted (terminal): " + reason);
+        ibMessage.setLastAttemptAt(LocalDateTime.now());
+        repository.save(ibMessage);
+        businessMetrics.recordInterbankOutboundFailed();
+        log.warn("Interbank outbound NEW_TX key={} terminalized (aborted) — not retried. Reason: {}",
+                key, reason);
+    }
+
+    /**
+     * Facets b + d — terminalizuje outbound red koji NIKAD ne moze da uspe, bez obzira
+     * na tip poruke (ukljucujuci COMMIT_TX/ROLLBACK_TX):
+     * <ul>
+     *   <li>nerazresivo target routing (npr. "Target routing number 666 could not be
+     *       resolved" — {@code InterbankProtocolException} iz {@code InterbankClient}),</li>
+     *   <li>{@code requestBody} koje je null/prazno ili se ne moze deserijalizovati u
+     *       validan {@code Message<...>} envelope.</li>
+     * </ul>
+     *
+     * <p>Pre fix-a, ovakve greske su escape-ovale inner {@code try/catch} u
+     * {@code InterbankRetryScheduler.retryOne} (koji je hvatao samo Communication/Auth)
+     * pa su padale u generic {@code catch} u {@code retryStaleMessages} koji SAMO loguje
+     * → {@code markOutboundFailed} se NIKAD ne pozove → {@code retryCount} se ne
+     * inkrementira → poruka ostaje PENDING <b>zauvek</b> (retry svaka 2 min).
+     *
+     * <p>Posto su ovi uslovi trajni (ni jedan retry ih ne moze popraviti), red se odmah
+     * prebacuje u {@link InterbankMessageStatus#FAILED_PERMANENT}. Ovo je izuzetak od
+     * §2.9 "phase-2 retransmituj zauvek" pravila: poruka koja je fizicki neisporuciva
+     * (nerazresiva ruta / neispravno telo) ne moze biti dostavljena ni jednim brojem
+     * pokusaja, pa je zadrzavanje u retry pool-u cista buka. Idempotentno: no-op ako je
+     * red vec terminalan.
+     */
+    @Transactional
+    public void markOutboundNonRetryable(IdempotenceKey key, String reason) {
+        InterbankMessage ibMessage =
+                repository.findBySenderRoutingNumberAndLocallyGeneratedKey(
+                        key.routingNumber(), key.locallyGeneratedKey()
+                ).orElseThrow(() ->
+                        new InterbankExceptions.InterbankProtocolException(
+                                "No outbound message for the key " + key + " was found."
+                        )
+                );
+
+        if (isTerminalState(ibMessage.getStatus())) {
+            log.debug("markOutboundNonRetryable no-op: message key={} already in terminal status {}",
+                    key, ibMessage.getStatus());
+            return;
+        }
+
+        ibMessage.setStatus(InterbankMessageStatus.FAILED_PERMANENT);
+        ibMessage.setLastError("Non-retryable (terminal): " + reason);
+        ibMessage.setLastAttemptAt(LocalDateTime.now());
+        repository.save(ibMessage);
+        businessMetrics.recordInterbankOutboundFailed();
+        log.warn("Interbank outbound {} key={} terminalized (non-retryable) — not retried. Reason: {}",
+                ibMessage.getMessageType(), key, reason);
+    }
+
+    /**
+     * Svi stvarno-terminalni statusi (poruka je razresena i scheduler je vise ne
+     * pokupi). Koristi se kao no-op guard u {@link #markOutboundAborted} /
+     * {@link #markOutboundNonRetryable} da zakasneli/dupli signal ne pregazi vec
+     * razresen red. Sira od {@link #isTerminalSentState} — ukljucuje i STUCK/DEAD_LETTER.
+     */
+    private static boolean isTerminalState(InterbankMessageStatus status) {
+        return status == InterbankMessageStatus.SENT
+                || status == InterbankMessageStatus.SENT_WAITING_ASYNC
+                || status == InterbankMessageStatus.FAILED_PERMANENT
+                || status == InterbankMessageStatus.STUCK
+                || status == InterbankMessageStatus.DEAD_LETTER;
     }
 
 }

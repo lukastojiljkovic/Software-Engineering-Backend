@@ -207,6 +207,45 @@ class InterbankOtcWrapperControllerIntegrationTest {
         assertThat(response.getStatusCode().value()).isIn(401, 403);
     }
 
+    @Test
+    void declineContract_unauthenticated_returns401or403() {
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/interbank/otc/contracts/123/decline"),
+                new HttpEntity<>(jsonHeaders(null)),
+                String.class);
+        assertThat(response.getStatusCode().value()).isIn(401, 403);
+    }
+
+    @Test
+    void declineContract_authenticatedClient_unknownContract_returns4xx() throws Exception {
+        // T9/S10b — ruta je wirovana sa istim auth + path obrascem kao /exercise.
+        // Klijent sme da trguje (canTradeStocks), ali ugovor #123 ne postoji →
+        // ProtocolException (4xx) umesto 5xx (dokaz da je ruta uvezana i prolazi gate).
+        String email = "otcw.decline@test.com";
+        Client c = new Client();
+        c.setFirstName("Otc"); c.setLastName("Decline");
+        c.setDateOfBirth(LocalDate.of(1995, 1, 1));
+        c.setGender("M"); c.setEmail(email);
+        c.setPhone("+381600000019"); c.setAddress("Test");
+        c.setPassword("x"); c.setSaltPassword("salt"); c.setActive(true);
+        c.setCanTradeStocks(true);
+        clientRepository.save(c);
+
+        User user = new User();
+        user.setFirstName("Otc"); user.setLastName("Decline");
+        user.setEmail(email); user.setPassword("x");
+        user.setActive(true); user.setRole("CLIENT");
+        userRepository.save(user);
+        String token = jwtService.generateAccessToken(user);
+
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/interbank/otc/contracts/123/decline"),
+                new HttpEntity<>(jsonHeaders(token)),
+                String.class);
+
+        assertThat(response.getStatusCode().is4xxClientError()).isTrue();
+    }
+
     // ===== Helpers =====
 
     /** Kreira i {@link User} (za JWT) i {@link Client} (za UserResolver) sa istim email-om; vraca JWT. */
