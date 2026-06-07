@@ -785,7 +785,11 @@ public class TransactionExecutorService {
             if (posting.account() instanceof TxAccount.Person p) {
                 rn = p.id().routingNumber();
             } else if (posting.account() instanceof TxAccount.Account a) {
-                rn = routing.parseRoutingNumber(a.num());
+                // routingForAccount (NE parseRoutingNumber): za banke kojima se
+                // account-prefix razlikuje od routing-a (EXBanka 2: 666 -> 265)
+                // mora se prevesti, inace bi koordinacija ciljala nepostojeci
+                // routing 666 i transakcija bi pala.
+                rn = routing.routingForAccount(a.num());
             } else if (posting.account() instanceof TxAccount.Option o) {
                 rn = o.id().routingNumber();
             } else {

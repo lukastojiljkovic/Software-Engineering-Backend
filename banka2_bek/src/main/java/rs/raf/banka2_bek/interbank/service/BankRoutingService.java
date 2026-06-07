@@ -48,8 +48,41 @@ public class BankRoutingService {
     }
 
     public Optional<InterbankProperties.PartnerBank> resolvePartner(String accountNumber) {
-        int accountOwnerBankRouting = parseRoutingNumber(accountNumber);
-        return resolvePartnerByRouting(accountOwnerBankRouting);
+        return resolvePartnerByRouting(routingForAccount(accountNumber));
+    }
+
+    /**
+     * Vraca PROTOKOL routing broj banke koja je vlasnik datog racuna.
+     * <p>
+     * Vecina banaka koristi account-prefix == routing (prve 3 cifre racuna su
+     * routing broj). Izuzetak su partneri kojima se account-prefix razlikuje od
+     * inter-bank routing-a — npr. EXBanka 2: racuni pocinju sa 666, ali je njihov
+     * protokol routing 265 (vidi {@code interbank.partners[*].account-prefix} u
+     * application.properties). Za takve banke mapiramo prefix -> routing iz
+     * konfiguracije.
+     * <p>
+     * Bez ovog, outbound 2PC bi rezolvovao partnera po sirovom prefiksu (666) i
+     * pao sa "Target routing number 666 could not be resolved", pa bi SVAKO
+     * placanje/transakcija ka EXBanka 2 racunu bilo odbijeno.
+     *
+     * @param accountNumber broj racuna (min 3 cifre)
+     * @return routing broj banke-vlasnika (preveden iz account-prefiksa ako treba),
+     *         ili sirov prefiks ako nijedan partner ne odgovara (nepoznata banka)
+     */
+    public int routingForAccount(String accountNumber) {
+        int prefix = parseRoutingNumber(accountNumber);
+        return properties.getPartners().stream()
+                .filter(p -> p.getRoutingNumber() != null && effectivePrefix(p) == prefix)
+                .map(InterbankProperties.PartnerBank::getRoutingNumber)
+                .findFirst()
+                .orElse(prefix);
+    }
+
+    /** Efektivni account-prefix partnera: {@code accountPrefix} ako je zadat, inace {@code routingNumber}. */
+    private static int effectivePrefix(InterbankProperties.PartnerBank partner) {
+        return partner.getAccountPrefix() != null
+                ? partner.getAccountPrefix()
+                : partner.getRoutingNumber();
     }
 
     public Optional<InterbankProperties.PartnerBank> resolvePartnerByRouting(int routingNumber) {

@@ -31,6 +31,7 @@ class BankRoutingServiceTest {
 
     private InterbankProperties.PartnerBank partner111;
     private InterbankProperties.PartnerBank partner333;
+    private InterbankProperties.PartnerBank partner265;
 
     @BeforeEach
     void setUp() {
@@ -47,6 +48,56 @@ class BankRoutingServiceTest {
         partner333.setBaseUrl("http://bank3:8080");
         partner333.setOutboundToken("outToken3");
         partner333.setInboundToken("inToken3");
+
+        // EXBanka 2 — racuni pocinju sa 666, ali je inter-bank routing 265
+        // (account-prefix != routing). Vidi application.properties partners[1].
+        partner265 = new InterbankProperties.PartnerBank();
+        partner265.setRoutingNumber(265);
+        partner265.setAccountPrefix(666);
+        partner265.setDisplayName("EXBanka 2");
+        partner265.setBaseUrl("http://exbanka2:8080");
+        partner265.setOutboundToken("outToken265");
+        partner265.setInboundToken("inToken265");
+    }
+
+    // -------------------------------------------------------------------------
+    // routingForAccount — account-prefix != routing (EXBanka 2: 666 -> 265)
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("routingForAccount mapira account-prefix 666 na routing 265 (EXBanka 2)")
+    void routingForAccount_prefixDiffersFromRouting_translates() {
+        when(properties.getPartners()).thenReturn(List.of(partner111, partner265));
+
+        assertThat(service.routingForAccount("666000111960466030")).isEqualTo(265);
+    }
+
+    @Test
+    @DisplayName("routingForAccount vraca prefix kad je account-prefix == routing (Banka 1: 111)")
+    void routingForAccount_prefixEqualsRouting_returnsPrefix() {
+        when(properties.getPartners()).thenReturn(List.of(partner111, partner265));
+
+        assertThat(service.routingForAccount("111000001")).isEqualTo(111);
+    }
+
+    @Test
+    @DisplayName("routingForAccount vraca prefix za nepoznatu banku (nema partnera)")
+    void routingForAccount_unknownPrefix_returnsPrefix() {
+        when(properties.getPartners()).thenReturn(List.of(partner111, partner265));
+
+        assertThat(service.routingForAccount("222999888")).isEqualTo(222);
+    }
+
+    @Test
+    @DisplayName("resolvePartner po 666-prefiksu racuna nalazi EXBanka 2 (routing 265)")
+    void resolvePartner_accountPrefixDiffersFromRouting_findsPartner() {
+        when(properties.getPartners()).thenReturn(List.of(partner111, partner265));
+
+        Optional<InterbankProperties.PartnerBank> result = service.resolvePartner("666000111960466030");
+
+        assertThat(result).isPresent();
+        assertThat(result.get().getRoutingNumber()).isEqualTo(265);
+        assertThat(result.get().getDisplayName()).isEqualTo("EXBanka 2");
     }
 
     // -------------------------------------------------------------------------

@@ -947,3 +947,29 @@ BEGIN
             CHECK (status IN ('ACTIVE','EXERCISING','EXERCISED','EXPIRED','DECLINED'));
     END IF;
 END $$;
+
+-- ============================================================
+-- BUG-2 (08.06.2026): interbank_messages.status CHECK mora dozvoliti DEAD_LETTER
+-- ============================================================
+-- Enum InterbankMessageStatus ima 7 vrednosti (PENDING, SENT, SENT_WAITING_ASYNC,
+-- STUCK, FAILED_PERMANENT, DEAD_LETTER, INBOUND), ali je live DB CHECK constraint
+-- nastao PRE nego sto je DEAD_LETTER dodat u enum. `ddl-auto=update` NIKAD ne menja
+-- postojeci CHECK, pa je ostao stari skup (bez DEAD_LETTER) → kad InterbankRetryScheduler
+-- posle 50 pokusaja pomera outbound poruku u DEAD_LETTER, UPDATE pada sa
+-- "new row ... violates check constraint interbank_messages_status_check"
+-- (DataIntegrityViolationException). To je curilo do GlobalExceptionHandler-a kao
+-- generic 409 "Zahtev je u konfliktu sa postojecim podacima." (PDF: inter-bank OTC
+-- exercise / 2PC), a u pozadini je spam-ovalo ERROR svaki retry-ciklus jer poruka
+-- nikad nije mogla da terminalizuje u DEAD_LETTER. Isti idempotentni DROP+ADD pattern
+-- kao interbank_otc_contracts gore (radi i na fresh deploy-u — samo normalizuje skup).
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE c.relname = 'interbank_messages' AND n.nspname = 'public') THEN
+        ALTER TABLE interbank_messages
+            DROP CONSTRAINT IF EXISTS interbank_messages_status_check;
+        ALTER TABLE interbank_messages
+            ADD CONSTRAINT interbank_messages_status_check
+            CHECK (status IN ('PENDING','SENT','SENT_WAITING_ASYNC','STUCK','FAILED_PERMANENT','DEAD_LETTER','INBOUND'));
+    END IF;
+END $$;

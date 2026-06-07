@@ -85,6 +85,18 @@ public class InterbankClient {
         catch (JsonProcessingException e) {
             throw new InterbankExceptions.InterbankProtocolException("Envelope serialization failed with message : " + e.getMessage());
         }
+        catch (RestClientException e) {
+            // Sirov transport fail (connection refused / read-timeout / DNS) iz
+            // .toEntity(). Bez ovog catch-a propagira kao bare RestClientException
+            // koji sendPhase1Network NE hvata (hvata samo InterbankException) —
+            // pa rollbackLocal nikad ne pozove i senderova rezervacija ostaje
+            // zauvek zakljucana. Mapiramo u InterbankCommunicationException (extends
+            // InterbankException) → tretira se kao NO/abort glas i radi se pravi
+            // rollback. Isti ugovor kao ostale client metode (fetchPublicStocks itd.).
+            throw new InterbankExceptions.InterbankCommunicationException(
+                    "Network error sending " + type + " to routing " + targetRoutingNumber
+                            + ": " + e.getMessage());
+        }
     }
 
     /**

@@ -521,51 +521,20 @@ public class InterbankOtcWrapperService {
             negotiationRepository.save(entity);
         }
 
-        // ─── T3/T4 — strike (pi*k) racun + sinhroni funds-guard ────────────────────
-        // Strike novac (pricePerUnit * amount, u priceCurrency) je ono sto ce kupac
-        // platiti pri exercise-u (§2.7.2). Rezervacijom @accept ga garantujemo
-        // (T3), a PRE outbound accept-a proveravamo da kupac pokriva premium + strike
-        // (T4) — inace bismo commit-ovali premium kod partnera pa pali na strike-rezervaciji.
-        BigDecimal strike = entity.getPricePerUnit().multiply(entity.getAmount());
-        Account strikeAccount = null;
-        if (settlementAccount != null) {
-            boolean sameCurrency = entity.getPriceCurrency() != null
-                    && entity.getPriceCurrency().equalsIgnoreCase(entity.getPremiumCurrency());
-            if (sameCurrency) {
-                // priceCurrency == premiumCurrency → strike se rezervise na ISTOM racunu
-                // kao premium (settlement). Funds-guard tada proverava premium + strike na njemu.
-                strikeAccount = settlementAccount;
-                if (strikeAccount.getAvailableBalance().compareTo(entity.getPremium().add(strike)) < 0) {
-                    throw new InterbankExceptions.InterbankExerciseConflictException(
-                            "Nedovoljno sredstava na racunu " + strikeAccount.getAccountNumber()
-                                    + ". Potrebno (premium + strike): " + entity.getPremium().add(strike)
-                                    + " " + entity.getPremiumCurrency());
-                }
-            } else {
-                // Cross-currency: strike je u drugoj valuti od premije. FX konverzija
-                // strike-a je T7 — za sada zahtevamo da kupac ima ACTIVE racun u
-                // priceCurrency (deterministicki, kao settlement resolver), inace 409.
-                strikeAccount = accountRepository
-                        .findByClientIdAndStatusOrderByAvailableBalanceDesc(userId, AccountStatus.ACTIVE)
-                        .stream()
-                        .filter(a -> a.getCurrency() != null
-                                && entity.getPriceCurrency().equalsIgnoreCase(a.getCurrency().getCode()))
-                        .min(java.util.Comparator.comparing(Account::getAccountNumber))
-                        .orElseThrow(() -> new InterbankExceptions.InterbankExerciseConflictException(
-                                "Nemate ACTIVE racun u valuti " + entity.getPriceCurrency()
-                                        + " za rezervaciju strike iznosa (cross-currency strike — FX konverzija nije podrzana)"));
-                // Premium (settlement) i strike (strikeAccount) su razdvojeni racuni/valute.
-                if (settlementAccount.getAvailableBalance().compareTo(entity.getPremium()) < 0) {
-                    throw new InterbankExceptions.InterbankExerciseConflictException(
-                            "Nedovoljno sredstava na racunu " + settlementAccount.getAccountNumber()
-                                    + ". Potrebno (premium): " + entity.getPremium() + " " + entity.getPremiumCurrency());
-                }
-                if (strikeAccount.getAvailableBalance().compareTo(strike) < 0) {
-                    throw new InterbankExceptions.InterbankExerciseConflictException(
-                            "Nedovoljno sredstava na racunu " + strikeAccount.getAccountNumber()
-                                    + ". Potrebno (strike): " + strike + " " + entity.getPriceCurrency());
-                }
-            }
+        // ─── Bug 4 (PDF) — pri ACCEPT-u kupac placa SAMO PREMIJU ───────────────────
+        // Opcioni ugovor: premija se naplacuje pri SKLAPANJU (accept), a strike (pi*k)
+        // za akcije TEK pri ISKORISCENJU (exercise, §2.7.2). RANIJE smo @accept rezervisali
+        // i strike (premium+strike funds-guard, stari T3/T4) — pa je kupac koji ima dovoljno
+        // za premiju ali ne i za ceo strike dobijao "Nedovoljno sredstava (premium + strike)"
+        // i NIJE mogao da sklopi ugovor (PDF screenshot). Sad proveravamo SAMO da kupac
+        // pokriva premiju (koja se kroz 2PC commit kreditira prodavcu u drugoj banci);
+        // strike se rezervise i naplacuje TEK u exerciseContract
+        // (claimForExercise → reserveMonas → commitMonas posle uspesnog 2PC-a).
+        if (settlementAccount != null
+                && settlementAccount.getAvailableBalance().compareTo(entity.getPremium()) < 0) {
+            throw new InterbankExceptions.InterbankExerciseConflictException(
+                    "Nedovoljno sredstava na racunu " + settlementAccount.getAccountNumber()
+                            + ". Potrebno (premija): " + entity.getPremium() + " " + entity.getPremiumCurrency());
         }
 
         // Outbound GET .../accept — sinhrono ceka da prodavceva banka commit-uje 2PC.
@@ -577,68 +546,10 @@ public class InterbankOtcWrapperService {
         entity.setOngoing(false);
         negotiationRepository.save(entity);
 
-        // T3 — posle uspesnog 2PC commit-a buyer ugovor postoji (commitLocal ga je
-        // kreirao kroz Asset.OptionAsset postings). Rezervisemo strike novac na
-        // izabranom racunu i belezimo (racun + iznos) na ugovor da exercise (T5)
-        // konzumira BAS ovu rezervaciju, a expiry/decline (T8/T9) je oslobodi.
-        //
-        // BUG-1 (money-conservation lost-update): strike rezervacija MORA ici u
-        // zaseban REQUIRES_NEW (svez persistence context), NE inline u ovoj tx.
-        // Razlog: outbound `negotiationService.acceptOffer(...)` (gore) izazove da
-        // partnerova banka posalje COMMIT_TX nazad, koji KONKURENTAN inbound thread
-        // (handleCommitTx) DEBITuje kupcevu premiju i COMMITuje je u DB. Ali ova
-        // acceptOffer @Transactional je vec ucitala kupcev racun (settlementAccount/
-        // strikeAccount) na STAROM balansu. reserveMonas joinuje OVU tx i — posto je
-        // entitet vec managed u kontekstu — Hibernate vraca KEŠIRANU staru instancu
-        // (SELECT FOR UPDATE red se odbacuje), pa bi write-back PREGAZIO commit-ovani
-        // premium debit → premija se gubi → novac se stvara (live test: seller +50,
-        // buyer ne-zaduzen). REQUIRES_NEW dobija prazan kontekst → reserveMonas-ov
-        // findForUpdate cita SVEZ balans (premium debit vidljiv) → bez gaženja.
-        // (Isti obrazac kao claimForExercise/T5.)
-        if (strikeAccount != null) {
-            self.reserveStrikeAfterAccept(entity.getId(), strikeAccount.getAccountNumber(), strike);
-        }
-
-        // Posle accept-a contract postoji na obema stranama (kreiraju se kroz 2PC commit
-        // u TransactionExecutorService.commitLocal koji handluje Asset.OptionAsset postings).
+        // Posle accept-a contract postoji na obema stranama (kreiran kroz 2PC commit u
+        // TransactionExecutorService.commitLocal — Asset.OptionAsset postings). Strike se
+        // NE rezervise ovde (Bug 4) — exerciseContract ga rezervise/naplacuje pri iskoriscenju.
         return mapNegotiationToDto(entity);
-    }
-
-    /**
-     * BUG-1 — strike rezervacija posle accept-a u ZASEBNOJ ({@code REQUIRES_NEW})
-     * transakciji. Mora imati SVEZ persistence context (ne nasledjivati onaj iz
-     * {@code acceptOffer} koji je vec ucitao kupcev racun na starom balansu), tako
-     * da {@code reserveMonas}-ov {@code findForUpdateByAccountNumber} procita SVEZ
-     * red — ukljucujuci premium debit koji je konkurentni inbound COMMIT_TX thread
-     * vec commit-ovao — i ne pregazi ga. Bez ove izolacije premija se gubila
-     * (lost-update → stvaranje novca).
-     *
-     * <p>Idempotency/atomicnost: ako upis rezervacije na ugovor padne, oslobadjamo
-     * monas hold da ne ostane viseci (isti compensate kao ranija inline verzija).
-     * Pokrece se POSLE uspesnog outbound accept-a; ugovor je vec kreiran kroz 2PC
-     * {@code commitLocal} (OptionAsset postings), pa ga nalazimo po
-     * {@code sourceNegotiationId}.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void reserveStrikeAfterAccept(Long sourceNegotiationId, String strikeAccountNumber,
-                                         BigDecimal strike) {
-        InterbankOtcContract contract = contractRepository.findBySourceNegotiationId(sourceNegotiationId)
-                .orElseThrow(() -> new InterbankExceptions.InterbankProtocolException(
-                        "Ugovor za pregovor " + sourceNegotiationId
-                                + " ne postoji posle accept-a (2PC nije kreirao opciju)"));
-        // reserveMonas baca InterbankProtocolException ako se availableBalance u
-        // medjuvremenu smanjio ispod strike-a (race izmedju funds-guarda i ove
-        // rezervacije). U REQUIRES_NEW kontekstu cita SVEZ red (premium debit vidljiv).
-        reservationApplier.reserveMonas(strikeAccountNumber, strike);
-        try {
-            contract.setReservedStrikeAccountNumber(strikeAccountNumber);
-            contract.setReservedStrikeAmount(strike);
-            contractRepository.save(contract);
-        } catch (RuntimeException ex) {
-            // Kompenzacija: ne ostavljamo rezervaciju visecu ako upis na ugovor padne.
-            reservationApplier.releaseMonas(strikeAccountNumber, strike);
-            throw ex;
-        }
     }
 
     // ─── Ugovori ──────────────────────────────────────────────────────────────

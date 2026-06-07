@@ -1,5 +1,8 @@
 package rs.raf.banka2_bek.interbank.wrapper;
 
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -20,6 +23,7 @@ import java.util.Map;
  * InterbankExceptions.InterbankException}-e bi {@code GlobalExceptionHandler}
  * mapirao u 400 preko {@code handleRuntimeException}.
  */
+@Slf4j
 @RestControllerAdvice(assignableTypes = InterbankOtcWrapperController.class)
 public class InterbankOtcWrapperExceptionHandler {
 
@@ -28,6 +32,33 @@ public class InterbankOtcWrapperExceptionHandler {
     public ResponseEntity<Map<String, String>> handleExerciseConflict(
             InterbankExceptions.InterbankExerciseConflictException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", ex.getMessage()));
+    }
+
+    /**
+     * Bug 2 (PDF "Zahtev je u konfliktu sa postojecim podacima.") — DB constraint /
+     * unique / particija pad tokom inter-bank OTC (accept/exercise 2PC, koji upisuje
+     * interbank_transactions / interbank_messages). Bez ovog handler-a DIV bi pao na
+     * GlobalExceptionHandler i korisnik bi dobio OPAQUE generic poruku bez ikakvog
+     * traga uzroka. Ovde LOGUJEMO {@code getMostSpecificCause()} (pravi SQL/constraint
+     * razlog — vidljiv u serverskim logovima pri live testu) i vracamo akcionabilan 409.
+     * (SQL detalj se NE prosledjuje korisniku — info-disclosure.)
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, String>> handleDataIntegrity(DataIntegrityViolationException ex) {
+        Throwable specific = ex.getMostSpecificCause();
+        log.warn("Inter-bank OTC DataIntegrityViolation (constraint/unique/particija): {}",
+                specific != null ? specific.getMessage() : ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message",
+                "Konflikt pri obradi inter-bank zahteva (resurs vec postoji ili je u medjuvremenu "
+                        + "izmenjen). Osvezite i pokusajte ponovo."));
+    }
+
+    /** @Version concurrent update tokom inter-bank 2PC commit faze → 409 (UI moze retry). */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<Map<String, String>> handleOptimisticLock(OptimisticLockingFailureException ex) {
+        log.warn("Inter-bank OTC optimistic-lock konflikt: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message",
+                "Resurs je u medjuvremenu izmenjen. Osvezite stranicu i pokusajte ponovo."));
     }
 
     @ExceptionHandler(InterbankExceptions.InterbankNegotiationConflictException.class)

@@ -30,6 +30,19 @@ public class InterbankProperties {
         /** Routing number partnerske banke. */
         private Integer routingNumber;
 
+        /**
+         * Prefiks broja racuna ove banke (prve 3 cifre racuna) AKO se razlikuje
+         * od inter-bank routing broja. EXBanka 2: racuni pocinju sa 666, ali su
+         * inter-bank routing postavili na 265 — pa je {@code accountPrefix=666},
+         * {@code routingNumber=265}. Kad je null, prefiks racuna == routingNumber
+         * (uobicajeno, npr. Banka 1: 111/111).
+         *
+         * <p>Bez ovog mapiranja, {@code BankRoutingService.routingForAccount} bi
+         * iz racuna {@code 666...} izveo routing 666 i 2PC bi pao
+         * ("Target routing number 666 could not be resolved").
+         */
+        private Integer accountPrefix;
+
         /** Display name partnerske banke (za UI). */
         private String displayName;
 

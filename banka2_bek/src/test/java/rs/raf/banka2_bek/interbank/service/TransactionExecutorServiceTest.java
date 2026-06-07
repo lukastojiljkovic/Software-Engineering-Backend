@@ -102,6 +102,14 @@ class TransactionExecutorServiceTest {
             return Integer.parseInt(num.substring(0, 3));
         });
 
+        // routingForAccount: za testne racune prefix == routing (isto kao parseRoutingNumber).
+        // EXBanka 2 prefix->routing translacija (666->265) se zasebno pokriva u
+        // BankRoutingServiceTest; ovde collectRemoteRoutingNumbers koristi routingForAccount.
+        lenient().when(routing.routingForAccount(any())).thenAnswer(inv -> {
+            String num = (String) inv.getArgument(0);
+            return Integer.parseInt(num.substring(0, 3));
+        });
+
         // isLocalAccount: true when account number starts with MY_RN
         lenient().when(routing.isLocalAccount(any())).thenAnswer(inv -> {
             String num = (String) inv.getArgument(0);

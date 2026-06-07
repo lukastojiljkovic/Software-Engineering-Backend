@@ -17,8 +17,6 @@ import rs.raf.banka2_bek.employee.repository.EmployeeRepository;
 import rs.raf.banka2_bek.interbank.client.TradingServiceInternalClient;
 import rs.raf.banka2_bek.interbank.config.InterbankProperties;
 import rs.raf.banka2_bek.interbank.exception.InterbankExceptions;
-import rs.raf.banka2_bek.interbank.model.InterbankOtcContract;
-import rs.raf.banka2_bek.interbank.model.InterbankOtcContractStatus;
 import rs.raf.banka2_bek.interbank.model.InterbankOtcNegotiation;
 import rs.raf.banka2_bek.interbank.model.InterbankOtcNegotiationStatus;
 import rs.raf.banka2_bek.interbank.model.InterbankPartyType;
@@ -122,13 +120,10 @@ class InterbankOtcWrapperServiceStateGuardTest {
         when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         // Buyer je na FE-u izabrao SVOJ ACTIVE USD racun id=101 → cuvamo njegov broj racuna.
-        // Balans pokriva premium (100) + strike (2000) — T4 funds-guard prolazi.
+        // Balans pokriva premiju (100) — premium-only guard (Bug 4) prolazi.
         Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
         usdAccount.setAvailableBalance(new java.math.BigDecimal("5000"));
         when(accountRepository.findById(101L)).thenReturn(Optional.of(usdAccount));
-        // T3: posle accept-a 2PC commit kreira buyer ugovor — strike rezervacija ga nalazi.
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buildBuyerContractForNeg(neg)));
-        when(contractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.acceptOffer(OFFER_ID, 101L, 7L, "CLIENT");
 
@@ -178,148 +173,51 @@ class InterbankOtcWrapperServiceStateGuardTest {
         verify(negotiationService, never()).acceptOffer(any());
     }
 
-    // ── T3 strike rezervacija @accept + T4 accept-funds-guard ──
+    // ── Bug 4 (PDF): accept naplacuje SAMO premiju (strike tek na exercise) ──
 
     @Test
-    @DisplayName("T3: acceptOffer (same-ccy) — posle 2PC commit-a rezervise strike (pi*k) na racunu kupca i upisuje ga na ugovor")
-    void acceptOffer_reservesStrikeOnContract() {
+    @DisplayName("Bug 4: acceptOffer naplacuje SAMO premiju — uspeva i kad kupac NEMA za ceo strike; NE rezervise strike @accept")
+    void acceptOffer_chargesPremiumOnly_noStrikeReservation() {
         InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
         when(negotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
                 eq(SELLER_RN), eq("neg-1"))).thenReturn(Optional.of(neg));
         when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // Premium (100 USD) i strike (200*10 = 2000 USD) su u istoj valuti (USD).
-        // Racun id=101 ima dovoljno za premium + strike (2100 USD).
+        // Premium = 100 USD, strike = 200*10 = 2000 USD. Racun ima 150 USD: dovoljno za
+        // PREMIJU, ali NE i za premium+strike (2100). Po Bug 4 accept MORA proci (strike se
+        // ne dira na sklapanju — naplacuje se tek pri exercise-u).
         Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
-        usdAccount.setAvailableBalance(new java.math.BigDecimal("5000"));
+        usdAccount.setAvailableBalance(new java.math.BigDecimal("150"));
         when(accountRepository.findById(101L)).thenReturn(Optional.of(usdAccount));
-
-        // Posle uspesnog outbound accept-a (2PC commit) buyer ugovor postoji.
-        InterbankOtcContract buyerContract = buildBuyerContractForNeg(neg);
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buyerContract));
-        when(contractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.acceptOffer(OFFER_ID, 101L, 7L, "CLIENT");
 
-        // Strike = pricePerUnit (200) * amount (10) = 2000 USD, rezervisan na settlement racunu.
-        // BUG-1: rezervacija sad ide kroz self.reserveStrikeAfterAccept (REQUIRES_NEW), ali posto
-        // je u unit testu self==service, real metod se izvrsi inline → reserveMonas/save i dalje pozvani.
-        verify(reservationApplier).reserveMonas(eq(OUR_RN + "700002"), eq(new java.math.BigDecimal("2000")));
-        assertThat(buyerContract.getReservedStrikeAccountNumber()).isEqualTo(OUR_RN + "700002");
-        assertThat(buyerContract.getReservedStrikeAmount()).isEqualByComparingTo("2000");
-    }
-
-    // ── BUG-1 [MONEY CONSERVATION] strike rezervacija u zasebnom REQUIRES_NEW ──
-    // Lost-update: acceptOffer @Transactional ucita kupcev racun (stari balans), a
-    // konkurentan inbound COMMIT_TX thread commit-uje premium debit. Inline reserveMonas
-    // (join istog tx/persistence-context-a) je vracao KESIRANI stari entitet i pregazio
-    // premium debit → novac se stvarao. Fix: strike reserve u self.reserveStrikeAfterAccept
-    // (REQUIRES_NEW → svez context → reserveMonas-ov findForUpdate cita svez balans).
-
-    @Test
-    @DisplayName("BUG-1: acceptOffer delegira strike rezervaciju na reserveStrikeAfterAccept (REQUIRES_NEW), ne inline")
-    void acceptOffer_delegatesStrikeReserveToRequiresNew() {
-        InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
-        when(negotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
-                eq(SELLER_RN), eq("neg-1"))).thenReturn(Optional.of(neg));
-        when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-        Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
-        usdAccount.setAvailableBalance(new java.math.BigDecimal("5000"));
-        when(accountRepository.findById(101L)).thenReturn(Optional.of(usdAccount));
-
-        // self je spy → mozemo verifikovati delegaciju, a real metod se i dalje izvrsi.
-        InterbankOtcWrapperService spySelf = org.mockito.Mockito.spy(service);
-        org.springframework.test.util.ReflectionTestUtils.setField(service, "self", spySelf);
-
-        InterbankOtcContract buyerContract = buildBuyerContractForNeg(neg);
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buyerContract));
-        when(contractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-        service.acceptOffer(OFFER_ID, 101L, 7L, "CLIENT");
-
-        // Strike reserve MORA ici kroz REQUIRES_NEW metod (sa svezim persistence context-om),
-        // a NE kroz acceptOffer-ovu sopstvenu (stale) tx. Argumenti: sourceNeg=1, racun, strike=2000.
-        verify(spySelf).reserveStrikeAfterAccept(
-                eq(1L), eq(OUR_RN + "700002"), eq(new java.math.BigDecimal("2000")));
+        // Outbound accept (premium debit kod partnera) JESTE poslat; ugovor je ACCEPTED.
+        verify(negotiationService).acceptOffer(any());
+        assertThat(neg.getStatus()).isEqualTo(InterbankOtcNegotiationStatus.ACCEPTED);
+        // Strike se NE rezervise @accept — rezervacija/naplata ide tek u exerciseContract.
+        verify(reservationApplier, never()).reserveMonas(any(), any());
     }
 
     @Test
-    @DisplayName("BUG-1: reserveStrikeAfterAccept rezervise strike i upisuje (racun+iznos) na ugovor")
-    void reserveStrikeAfterAccept_reservesAndPersists() {
-        InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
-        InterbankOtcContract buyerContract = buildBuyerContractForNeg(neg);
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buyerContract));
-        when(contractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-        service.reserveStrikeAfterAccept(1L, OUR_RN + "700002", new java.math.BigDecimal("2000"));
-
-        verify(reservationApplier).reserveMonas(eq(OUR_RN + "700002"), eq(new java.math.BigDecimal("2000")));
-        assertThat(buyerContract.getReservedStrikeAccountNumber()).isEqualTo(OUR_RN + "700002");
-        assertThat(buyerContract.getReservedStrikeAmount()).isEqualByComparingTo("2000");
-    }
-
-    @Test
-    @DisplayName("BUG-1: reserveStrikeAfterAccept — ako upis na ugovor padne, oslobadja monas hold (bez visece rezervacije)")
-    void reserveStrikeAfterAccept_compensatesOnSaveFailure() {
-        InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
-        InterbankOtcContract buyerContract = buildBuyerContractForNeg(neg);
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buyerContract));
-        when(contractRepository.save(any())).thenThrow(new RuntimeException("DB down"));
-
-        assertThatThrownBy(() ->
-                service.reserveStrikeAfterAccept(1L, OUR_RN + "700002", new java.math.BigDecimal("2000")))
-                .isInstanceOf(RuntimeException.class);
-
-        // Kompenzacija: rezervacija oslobodjena (nije ostala viseca).
-        verify(reservationApplier).reserveMonas(eq(OUR_RN + "700002"), eq(new java.math.BigDecimal("2000")));
-        verify(reservationApplier).releaseMonas(eq(OUR_RN + "700002"), eq(new java.math.BigDecimal("2000")));
-    }
-
-    @Test
-    @DisplayName("T4: acceptOffer (same-ccy) — nedovoljno za premium+strike → 409, NEMA outbound accept, NEMA rezervacije")
-    void acceptOffer_insufficientFundsForPremiumPlusStrike_rejected() {
+    @DisplayName("Bug 4: acceptOffer — nedovoljno za PREMIJU → 409, NEMA outbound accept, NEMA rezervacije")
+    void acceptOffer_insufficientPremium_rejected() {
         InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
         when(negotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
                 eq(SELLER_RN), eq("neg-1"))).thenReturn(Optional.of(neg));
         lenient().when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // Potrebno premium (100) + strike (2000) = 2100 USD; racun ima samo 2050.
+        // Premium = 100 USD; racun ima samo 50 USD → ispod premije → reject (strike se vise
+        // NE racuna pri accept-u, samo premija).
         Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
-        usdAccount.setAvailableBalance(new java.math.BigDecimal("2050"));
+        usdAccount.setAvailableBalance(new java.math.BigDecimal("50"));
         when(accountRepository.findById(101L)).thenReturn(Optional.of(usdAccount));
 
         assertThatThrownBy(() -> service.acceptOffer(OFFER_ID, 101L, 7L, "CLIENT"))
                 .isInstanceOf(InterbankExceptions.InterbankExerciseConflictException.class)
                 .hasMessageContaining("Nedovoljno sredstava");
 
-        // Nista se ne salje napolje (premium debit kod partnera sprecen) i nista se ne rezervise.
-        verify(negotiationService, never()).acceptOffer(any());
-        verify(reservationApplier, never()).reserveMonas(any(), any());
-    }
-
-    @Test
-    @DisplayName("T3: acceptOffer (cross-ccy, strike EUR≠premium USD) — kupac nema racun u strike valuti → 409, NEMA outbound accept")
-    void acceptOffer_noAccountInStrikeCurrency_rejected() {
-        // Strike (price) u EUR, premium u USD — kupac ima samo USD racun, nema EUR.
-        InterbankOtcNegotiation neg = buildBuyerSideNegotiation(InterbankOtcNegotiationStatus.ACTIVE);
-        neg.setPriceCurrency("EUR");
-        when(negotiationRepository.findByForeignNegotiationRoutingNumberAndForeignNegotiationIdString(
-                eq(SELLER_RN), eq("neg-1"))).thenReturn(Optional.of(neg));
-        lenient().when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-        // Settlement racun (premium, USD) je validan; ali nema racuna u EUR (strike valuti).
-        Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
-        usdAccount.setAvailableBalance(new java.math.BigDecimal("5000"));
-        when(accountRepository.findById(101L)).thenReturn(Optional.of(usdAccount));
-        // Vlasnikova lista ACTIVE racuna ima samo USD — nema EUR racuna za strike.
-        when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(7L, AccountStatus.ACTIVE))
-                .thenReturn(java.util.List.of(usdAccount));
-
-        assertThatThrownBy(() -> service.acceptOffer(OFFER_ID, 101L, 7L, "CLIENT"))
-                .isInstanceOf(InterbankExceptions.InterbankExerciseConflictException.class)
-                .hasMessageContaining("EUR");
-
+        // Premium debit kod partnera sprecen; nista se ne salje napolje i nista se ne rezervise.
         verify(negotiationService, never()).acceptOffer(any());
         verify(reservationApplier, never()).reserveMonas(any(), any());
     }
@@ -392,13 +290,11 @@ class InterbankOtcWrapperServiceStateGuardTest {
                 eq(SELLER_RN), eq("neg-1"))).thenReturn(Optional.of(neg));
         when(negotiationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // Klijent 7 ima ACTIVE USD racun sa dovoljno za premium (100) + strike (2000).
+        // Klijent 7 ima ACTIVE USD racun sa dovoljno za premiju (100).
         Account usdAccount = buildOwnedAccount(OUR_RN + "700002", 7L, AccountStatus.ACTIVE, "USD");
         usdAccount.setAvailableBalance(new java.math.BigDecimal("5000"));
         when(accountRepository.findByClientIdAndStatusOrderByAvailableBalanceDesc(7L, AccountStatus.ACTIVE))
                 .thenReturn(java.util.List.of(usdAccount));
-        when(contractRepository.findBySourceNegotiationId(1L)).thenReturn(Optional.of(buildBuyerContractForNeg(neg)));
-        when(contractRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.acceptOffer(OFFER_ID, null, 7L, "CLIENT");
 
@@ -510,28 +406,4 @@ class InterbankOtcWrapperServiceStateGuardTest {
         return a;
     }
 
-    /**
-     * Buyer-strana ugovor koji 2PC commit (TransactionExecutorService.commitLocal)
-     * kreira posle uspesnog accept-a — koristi se za T3 strike-rezervaciju.
-     * Strike = pricePerUnit/priceCurrency pregovora (kao u commitLocal mapiranju).
-     */
-    private InterbankOtcContract buildBuyerContractForNeg(InterbankOtcNegotiation neg) {
-        InterbankOtcContract c = new InterbankOtcContract();
-        c.setId(900L);
-        c.setSourceNegotiationId(neg.getId());
-        c.setLocalPartyType(InterbankPartyType.BUYER);
-        c.setLocalPartyId(neg.getLocalPartyId());
-        c.setLocalPartyRole(neg.getLocalPartyRole());
-        c.setForeignPartyRoutingNumber(neg.getForeignPartyRoutingNumber());
-        c.setForeignPartyIdString(neg.getForeignPartyIdString());
-        c.setTicker(neg.getTicker());
-        c.setQuantity(neg.getAmount());
-        c.setStrikePrice(neg.getPricePerUnit());
-        c.setStrikeCurrency(neg.getPriceCurrency());
-        c.setPremium(neg.getPremium());
-        c.setPremiumCurrency(neg.getPremiumCurrency());
-        c.setSettlementDate(neg.getSettlementDate());
-        c.setStatus(InterbankOtcContractStatus.ACTIVE);
-        return c;
-    }
 }
