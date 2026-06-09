@@ -652,13 +652,22 @@ public class PaymentServiceImpl implements PaymentService {
         } catch (IllegalArgumentException notInLedger) {
             // Inter-bank placanja se knjize kroz 2PC postings i NEMAJU lokalni Transaction
             // ledger zapis (transactions tabela je prazna za njih), pa getReceiptTransaction
-            // baca "not found". Fallback: generisi PDF potvrdu direktno iz Payment-a, uz isti
-            // IDOR ownership guard kao getPaymentById.
-            Payment payment = paymentRepository.findById(paymentId)
-                    .orElseThrow(() -> new rs.raf.banka2_bek.payment.exception.PaymentNotFoundException(
-                            "Placanje nije pronadjeno."));
-            if (!isPartyToPayment(payment, clientId)) {
-                throw new PaymentNotOwnedException("Placanje ne pripada korisniku.");
+            // baca "not found". Fallback gradi PDF potvrdu direktno iz Payment-a.
+            //
+            // DETERMINIZAM + SECURITY: getReceiptTransaction baca ISTU IllegalArgumentException
+            // i za "ne postoji" i za "postoji ali nije vlasnikova". Za same-bank placanja je
+            // {paymentId} zapravo Transaction (ledger) id, pa Payment.findById(paymentId) moze
+            // da (a) ne nadje nista, ili (b) slucajno nadje NEPODUDARAN Payment (id-namespace
+            // poklapanje). Zato fallback vazi ISKLJUCIVO za INTER-BANK placanje
+            // (interbankTxIdString != null) ciji je ulogovani klijent strana — u svim ostalim
+            // slucajevima (same-bank not-owned, nepostojece, tudje) vracamo 404 i NE otkrivamo
+            // postojanje niti serviramo nepodudaran receipt.
+            Payment payment = paymentRepository.findById(paymentId).orElse(null);
+            if (payment == null
+                    || payment.getInterbankTxIdString() == null
+                    || !isPartyToPayment(payment, clientId)) {
+                throw new rs.raf.banka2_bek.payment.exception.PaymentNotFoundException(
+                        "Placanje nije pronadjeno.");
             }
             transaction = toReceiptDto(payment, clientId);
         }

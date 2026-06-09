@@ -577,11 +577,11 @@ class PaymentControllerIntegrationTest {
                 String.class
         );
 
-        // Receipt fallback (interbank placanja bez ledger Transaction reda) razresava
-        // vlasnistvo nad Payment-om: tudji klijent -> PaymentNotOwnedException -> 403 FORBIDDEN
-        // (autorizaciona greska, semanticki ispravnije od ranijeg 400; usaglaseno sa
-        // GlobalExceptionHandler.handlePaymentNotOwned konvencijom).
-        assertThat(deniedResponse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        // Receipt fallback vazi ISKLJUCIVO za inter-bank placanja ciji je trazilac strana.
+        // Ovo je same-bank placanje (IMA ledger Transaction): tudji klijent -> getReceiptTransaction
+        // baca not-owned, fallback ga DETERMINISTICKI odbija sa 404 NOT_FOUND (ne otkriva
+        // postojanje, ne servira nepodudaran receipt; {id} je za same-bank zapravo Transaction id).
+        assertThat(deniedResponse.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     private ResponseEntity<String> postPayment(String fromAccount,
